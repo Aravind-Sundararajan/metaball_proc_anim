@@ -189,16 +189,42 @@ and it is most of why Rain World creatures read as animals rather than instances
 
 ### Phase 5 — editor rework
 
-- Document plus command stack, which makes the two `undo`/`redo` stubs at `main.py:749`
-  real.
-- Currently `main.py`, `opengl_widget.py`, and `spline_generator_simple.py` all mutate the
-  manager directly and then each manually calls `bone_model.update_bones()` and
-  `opengl_widget.update()`. Miss one and the UI goes stale. Move to document-emits-signals,
-  views-subscribe.
+- Document plus command stack, which makes the `undo`/`redo` stubs real. The legacy app
+  had both menu actions wired to empty methods.
+- The legacy app had `main.py`, `opengl_widget.py` and `spline_generator_simple.py` all
+  mutating the manager directly and then each manually calling `bone_model.update_bones()`
+  and `opengl_widget.update()`. Miss one and the UI goes stale. Move to
+  document-emits-signals, views-subscribe.
 - The app splits into **Rig mode** (author chunks, links, curves) and **Play mode** (run
   the sim, scrub, tweak live).
 - The curve editor generalizes from "radius" to any named curve on the rig — taper,
   stiffness-along-chain, gait timing, squash response.
+
+#### Interaction inventory carried forward from the deleted editor
+
+The legacy app was never used in anger, but its UI is the only written record of the
+intended interaction, so it is transcribed here and the code deleted rather than kept
+around. Retrieve the original with `git show ec05cdf:main.py` if a detail is needed.
+
+| Panel | Controls |
+| --- | --- |
+| Create Sphere | radius spin box; create-at-origin button |
+| Edit Position | X / Y / Z spin boxes, live-bound to the selection |
+| Armature | connection mode combo (Direct / Chain); editable bone-name table; connect, disconnect, clear-connections, clear-selection, delete |
+| Spline Generator | sphere count, base radius, spline length, curve type (Linear / Sine / Spiral / Custom), radius-curve editor, generate |
+| Export | export to XML |
+| Menus | New / Open / Save / Exit, Undo / Redo, on standard shortcuts |
+
+Viewport interactions, all of which the new viewport must eventually regain: left-drag to
+orbit, wheel to zoom, click to select, shift-click to connect under the active mode,
+right-click to create at the ground-plane intersection, Delete to remove the selection.
+
+Two of these are worth rethinking rather than reproducing. **Chain Connect** existed
+because the old model could not express a cycle, so building a loop meant sequencing edges
+by hand; the constraint graph makes it far less necessary. And **right-click creation onto
+the y=0 ground plane** is a 2-D affordance in a 3-D scene — it was clamped to ±10 and fell
+back to the origin whenever the ray missed. Placement relative to the current selection, or
+onto the surface itself, fits the tool better.
 
 ---
 

@@ -1,96 +1,85 @@
-# Mesh XML Editor
+# mesh_xml
 
-A PySide6 application for creating 3D armatures with spheres and exporting them to XML format.
+A procedural animation and metaball framework for soft, jointed creatures, modelled on
+Rain World's approach: a body is a handful of masses joined by distance constraints, and
+the surface is a smooth field implied by them rather than a mesh anyone authored.
 
-## Features
+## Status
 
-- **3D OpenGL View**: Interactive 3D viewport with camera controls
-- **Sphere Creation**: Create spheres by clicking or using the UI controls
-- **Bone Connections**: Connect spheres to create armature structures
-- **XML Export**: Export armatures to XML format compatible with your existing structure
-- **Real-time Rendering**: Smooth 60 FPS rendering with lighting and materials
+Mid-refactor. The original application — an XML sphere-placement editor built on
+fixed-function OpenGL — has been retired; see [docs/REFACTOR_PLAN.md](docs/REFACTOR_PLAN.md)
+for the diagnosis, the phase plan, and a progress log.
 
-## Installation
+**There is currently no runnable editor.** The simulation core, the serialization layer and
+the rendering scaffolding are in place and tested; the editor that drives them is Phase 5.
+The original app is recoverable at the baseline commit if you need it:
+`git show ec05cdf:main.py`.
 
-1. Make sure you have Python 3.10+ installed
-2. Install dependencies using Poetry:
-   ```bash
-   poetry install
-   ```
+| Layer | State |
+| --- | --- |
+| `core/` — body graph, solver, curves | done |
+| `io/` — v2 format, legacy reader | done |
+| `anim/` — fixed-rate clock | done |
+| `render/` — smoothing, SDF packing, CPU field, GL scaffolding | in progress |
+| `render/gl/shaders/` — metaball raymarcher | next |
+| `anim/controllers/` — spine, limb IK, footholds | not started |
+| `editor/` — document, commands, panels | not started |
 
-## Usage
+## Architecture
 
-### Running the Application
-
-```bash
-poetry run python main.py
+```
+mesh_xml/
+  core/     body.py solver.py curve.py     pure math — no Qt, no OpenGL
+  io/       xml_v2.py xml_legacy.py        serialization, versioned
+  anim/     clock.py                       fixed-timestep driving
+  render/   draw_points.py sdf.py field.py surface + visual smoothing
+    gl/     context.py camera.py program.py  core-profile 3.3
 ```
 
-### Controls
+The dependency rule is one-directional: `core` imports nothing from the others, and only
+`render/gl/` may import OpenGL.
 
-#### 3D Viewport
-- **Left Mouse Button + Drag**: Rotate camera around the scene
-- **Mouse Wheel**: Zoom in/out
-- **Left Click on Sphere**: Select a bone/sphere
-- **Right Click**: Create a new sphere at the clicked position
+### The body is a graph, not a hierarchy
 
-#### UI Controls
-- **Radius SpinBox**: Set the radius for new spheres
-- **Create Sphere Button**: Create a sphere at the origin
-- **Bone List**: View and select all created bones
-- **Connect Selected Bones**: Connect two selected bones
-- **Clear Selection**: Clear current selection
-- **Export to XML**: Save the armature to an XML file
+A `Body` holds chunks — position, radius, inverse mass — joined by undirected distance
+constraints. There is no parent transform at simulation time, exactly as Rain World's
+`PhysicalObject` has none. Cycles are legal, because the topologies worth building (a hip
+girdle, a ribcage, a palm) are cyclic. Hierarchy is derived on demand when something needs
+a tree, and the derivation is total: non-tree edges are reported, never dropped.
 
-### Creating an Armature
+Chunk identity is a stable integer id. Names are an editable field and may repeat.
 
-1. **Create Spheres**: Use the "Create Sphere" button or right-click in the 3D view
-2. **Select Bones**: Click on spheres in the 3D view or select them from the bone list
-3. **Connect Bones**: Select two bones and click "Connect Selected Bones"
-4. **Export**: Click "Export to XML" to save your armature
+### Links do the work
 
-### XML Format
+A `Link` carries a rest length and a type — `NORMAL` holds distance in both directions,
+`PULL` resists only stretching, `PUSH` only compression. That distinction is what separates
+a spine from a rope, and it is Rain World's `BodyChunkConnection` in all but name.
 
-The application exports XML files in the following format:
+### Draw positions are not chunk positions
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<armature>
-    <bone name="Root" position="0.000,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
-        <mesh type="sphere" radius="0.500" material="body" />
-        <bone name="Child" position="1.000,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
-            <mesh type="sphere" radius="0.300" material="body" />
-        </bone>
-    </bone>
-</armature>
-```
+`render/draw_points.py` keeps a second set of points that chase the chunks through damped
+springs, arriving late and overshooting. That lag is the secondary motion. Rain World's
+bodies read as gelatinous because of this layer, not because the physics is soft.
 
-## Project Structure
+### The surface is built from links
 
-- `main.py`: Main application window and UI setup
-- `opengl_widget.py`: OpenGL rendering widget with 3D interaction
-- `armature_manager.py`: Bone data management and XML import/export
-- `character_armature.xml`: Example armature file
-
-## Dependencies
-
-- **PySide6**: Qt bindings for Python
-- **PyOpenGL**: OpenGL bindings for Python
-- **NumPy**: Numerical computing library
+Every SDF primitive is a round cone — a capsule with a different radius at each end — so
+radius varies continuously along a chain. A chunk contributes a primitive only when nothing
+links it, since a cone already contains its end spheres.
 
 ## Development
 
-The application is built with:
-- **PySide6** for the user interface
-- **OpenGL** for 3D rendering
-- **XML** for data export/import
+```bash
+poetry install
+```
 
-### Key Components
+```bash
+poetry run pytest -q
+```
 
-1. **MeshXMLEditor**: Main application window with UI controls
-2. **OpenGLWidget**: 3D rendering widget with mouse interaction
-3. **ArmatureManager**: Data management for bones and connections
+```bash
+poetry run ruff check .
+```
 
-## License
-
-This project is open source and available under the MIT License. 
+`examples/` holds authored rigs, `tests/data/` holds fixtures — including one deliberately
+kept in the pre-versioning coordinate format, as a regression case for the legacy reader.

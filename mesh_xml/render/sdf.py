@@ -20,6 +20,16 @@ overlap them. That is not free: the smooth minimum of a shape with itself is
 of the blend radius. Chunks therefore contribute a primitive only when nothing
 links them.
 
+That removes a *third* overlapping copy at every joint; it does not remove the
+first two, and it cannot. A chunk of degree two is an endpoint of both its cones
+and each cone contains its whole end sphere, so the field at that chunk's centre
+is ``-r - k/4`` exactly, not ``-r``. The practical consequence, which anyone
+tuning radii against a visual target will hit: **authored radii read about
+``k/4`` fat wherever a chunk has two or more links, so a body beads slightly at
+its joints.** Degree-one tips are unaffected. Compensating for it belongs in the
+authoring layer, not here — the packing has to stay a faithful description of
+the rig.
+
 The whole point of building the surface from links rather than chunks is that
 spheres alone read as beads on a string. ``examples/character_armature.xml`` was
 hand-authored with ``type="capsule"`` for exactly this reason, and the old
@@ -43,6 +53,22 @@ PRIMITIVE_STRIDE = 8
 #: Below this end separation a round cone is treated as a sphere. The exact
 #: formula divides by the squared axis length, so the degenerate case has to be
 #: branched around rather than left to produce a NaN.
+#:
+#: .. important::
+#:    This covers only the *first* of two degeneracies, and a consumer that
+#:    guards on it alone will still render NaN. The second has no epsilon
+#:    because it is not a near-miss but an exact geometric condition:
+#:
+#:        ``abs(ra - rb) >= |b - a|``  —  one end ball contains the other.
+#:
+#:    The exact formulation takes the square root of ``|b-a|² - (ra-rb)²``,
+#:    which goes negative there. The fallback is the larger-radius end sphere,
+#:    and that is exact rather than an approximation: the convex hull of two
+#:    balls where one contains the other *is* the larger ball.
+#:
+#:    :func:`pack` emits such records in ordinary use — a large head chunk with
+#:    a small eye chunk linked close to it produces one — so both branches are
+#:    live paths, not defensive padding. Any GLSL port must carry both.
 DEGENERATE_EPSILON = 1e-6
 
 
