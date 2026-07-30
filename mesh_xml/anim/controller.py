@@ -58,11 +58,24 @@ class ControlContext:
     dt: float
     time: float
     rng: np.random.Generator
+    config: SolverConfig | None = None
 
     def slot(self, chunk_id: int) -> int:
         return self.body.slot(chunk_id)
 
+    def has(self, chunk_id: int) -> bool:
+        return self.body.has_chunk(chunk_id)
+
     def add_force(self, chunk_id: int, vector) -> None:
+        """Add force to a chunk. A chunk that no longer exists is ignored.
+
+        Silence rather than a raise because deleting a chunk is a routine edit,
+        and a controller still holding that id is the expected state for the rest
+        of the tick, not a programming error. Raising here would take the whole
+        simulation down in response to pressing Delete.
+        """
+        if not self.body.has_chunk(chunk_id):
+            return
         self.forces[self.body.slot(chunk_id)] += np.asarray(vector, dtype=np.float32)
 
     def position(self, chunk_id: int) -> np.ndarray:
@@ -72,6 +85,21 @@ class ControlContext:
         """Implicit Verlet velocity in world units per second."""
         slot = self.body.slot(chunk_id)
         return (self.body.pos[slot] - self.body.prev_pos[slot]) / np.float32(self.dt)
+
+    def ground_level(self, chunk_id: int) -> float | None:
+        """The world ``y`` a chunk of this radius comes to rest at, or ``None``.
+
+        Not ``config.ground_y``. Collision resolves by holding a chunk one radius
+        clear of the plane, so a controller aiming a foot at the plane itself is
+        aiming one radius underground and will seek into the floor forever. This
+        is the number a foothold wants, and having it here keeps every controller
+        from rediscovering the offset — or, worse, not rediscovering it.
+        """
+        if self.config is None or self.config.ground_y is None:
+            return None
+        if not self.body.has_chunk(chunk_id):
+            return None
+        return float(self.config.ground_y + self.body.radius[self.body.slot(chunk_id)])
 
     def seek(
         self,
@@ -91,7 +119,18 @@ class ControlContext:
         ``max_force`` clamps the result. A chunk far from its target otherwise
         receives a force proportional to that distance, and one badly placed
         target can inject enough energy in a single tick to throw the rig.
+
+        .. warning::
+           This is **one-sided**: the chunk is pulled and nothing is pushed back.
+           So seeking a chunk toward another chunk is not a spring between them,
+           it is a thruster, and a chain of them injects net momentum that
+           accumulates. A free chain whose every link seeks the one ahead will
+           slowly fly. Where a mutual attraction is what you want, apply equal
+           and opposite force to both ends yourself, or lean on the link
+           constraint that is already there.
         """
+        if not self.body.has_chunk(chunk_id):
+            return np.zeros(self.body.dim, dtype=np.float32)
         slot = self.body.slot(chunk_id)
         offset = np.asarray(target, dtype=np.float32) - self.body.pos[slot]
         force = offset * np.float32(strength)
@@ -147,12 +186,24 @@ class ControllerStack:
         self.controllers.clear()
 
     def reset(self) -> None:
-        """Rewind time and randomness. A replay from the same rig is identical."""
+        """Rewind time, randomness, and any controller state.
+
+        Controllers that derive everything from ``ctx.time`` rewind for free, but
+        some genuinely cannot — a foothold and a gait mode are not functions of a
+        clock. Any controller exposing ``reset()`` gets called, so the caller does
+        not have to know which kind each one is.
+        """
         self.time = 0.0
         self.rng = np.random.default_rng(self.seed)
         self._forces[:] = 0.0
+        for controller in self.controllers:
+            reset = getattr(controller, "reset", None)
+            if callable(reset):
+                reset()
 
-    def accumulate(self, body: Body, dt: float) -> np.ndarray:
+    def accumulate(
+        self, body: Body, dt: float, config: SolverConfig | None = None
+    ) -> np.ndarray:
         """Run every enabled controller and return the force accumulator.
 
         Separated from :meth:`tick` so a caller can inspect the forces before
@@ -166,7 +217,12 @@ class ControllerStack:
             return self._forces
 
         ctx = ControlContext(
-            body=body, forces=self._forces, dt=dt, time=self.time, rng=self.rng
+            body=body,
+            forces=self._forces,
+            dt=dt,
+            time=self.time,
+            rng=self.rng,
+            config=config,
         )
         for controller in self.controllers:
             if getattr(controller, "enabled", True):
@@ -175,6 +231,6 @@ class ControllerStack:
 
     def tick(self, body: Body, dt: float, config: SolverConfig) -> None:
         """One full tick: controllers, then integration, projection, collision."""
-        forces = self.accumulate(body, dt)
+        forces = self.accumulate(body, dt, config)
         step(body, dt, config, forces)
         self.time += dt

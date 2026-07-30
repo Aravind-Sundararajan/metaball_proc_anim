@@ -149,7 +149,119 @@ class TestSeek:
         assert ctx.velocity(body.chunk_ids()[0])[0] == pytest.approx(10.0)
 
 
+class TestStaleIds:
+    """Deleting a chunk is a routine edit, not a programming error."""
+
+    def test_add_force_ignores_a_dead_chunk(self):
+        body = chain()
+        stack = ControllerStack(body)
+        doomed = body.chunk_ids()[1]
+        stack.add(Pusher(doomed))
+        body.remove_chunk(doomed)
+
+        stack.accumulate(body, 0.025)
+
+    def test_seek_ignores_a_dead_chunk(self):
+        body = chain()
+        doomed = body.chunk_ids()[1]
+        body.remove_chunk(doomed)
+        ctx = ControlContext(body, np.zeros((body.n_chunks, 3), np.float32), 0.025, 0.0, np.random.default_rng(0))
+
+        assert ctx.seek(doomed, (0.0, 1.0, 0.0), strength=1.0) == pytest.approx([0, 0, 0])
+
+    def test_has_reports_liveness(self):
+        body = chain()
+        ctx = ControlContext(body, np.zeros((body.n_chunks, 3), np.float32), 0.025, 0.0, np.random.default_rng(0))
+        alive = body.chunk_ids()[0]
+
+        assert ctx.has(alive)
+        assert not ctx.has(9999)
+
+
+class TestGroundLevel:
+    def test_it_accounts_for_the_chunk_radius(self):
+        """Aiming at the plane itself aims one radius underground."""
+        body = Body()
+        chunk = body.add_chunk("foot", [0.0, 2.0, 0.0], radius=0.3)
+        ctx = ControlContext(
+            body,
+            np.zeros((1, 3), np.float32),
+            0.025,
+            0.0,
+            np.random.default_rng(0),
+            config=SolverConfig(ground_y=1.0),
+        )
+        assert ctx.ground_level(chunk) == pytest.approx(1.3)
+
+    def test_it_matches_where_the_solver_actually_rests_a_chunk(self):
+        body = Body()
+        chunk = body.add_chunk("foot", [0.0, 5.0, 0.0], radius=0.3)
+        config = SolverConfig(ground_y=1.0)
+        stack = ControllerStack(body)
+        for _ in range(400):
+            stack.tick(body, 0.025, config)
+
+        ctx = ControlContext(
+            body, stack.forces, 0.025, 0.0, np.random.default_rng(0), config=config
+        )
+        assert body.pos[0][1] == pytest.approx(ctx.ground_level(chunk), abs=1e-3)
+
+    def test_no_floor_means_no_level(self):
+        body = Body()
+        chunk = body.add_chunk("foot", [0.0, 2.0, 0.0], radius=0.3)
+        ctx = ControlContext(
+            body, np.zeros((1, 3), np.float32), 0.025, 0.0, np.random.default_rng(0)
+        )
+        assert ctx.ground_level(chunk) is None
+
+    def test_the_stack_passes_the_config_through(self):
+        seen = {}
+
+        class Spy:
+            enabled = True
+
+            def update(self, ctx):
+                seen["config"] = ctx.config
+
+        body = chain()
+        stack = ControllerStack(body)
+        stack.add(Spy())
+        config = SolverConfig(ground_y=0.0)
+        stack.tick(body, 0.025, config)
+
+        assert seen["config"] is config
+
+
 class TestStack:
+    def test_reset_cascades_to_controllers(self):
+        """A foothold and a gait mode are not functions of a clock."""
+
+        class Stateful:
+            enabled = True
+
+            def __init__(self):
+                self.was_reset = False
+
+            def update(self, ctx):
+                pass
+
+            def reset(self):
+                self.was_reset = True
+
+        body = chain()
+        stack = ControllerStack(body)
+        stateful = stack.add(Stateful())
+        stack.reset()
+
+        assert stateful.was_reset
+
+    def test_reset_tolerates_controllers_without_one(self):
+        body = chain()
+        stack = ControllerStack(body)
+        stack.add(Pusher(body.chunk_ids()[0]))
+        stack.reset()
+
+
     def test_disabled_controllers_are_skipped(self):
         body = chain()
         stack = ControllerStack(body)

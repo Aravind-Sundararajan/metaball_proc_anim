@@ -18,8 +18,12 @@ Opens the editor on `examples/chubby_worm.xml`, or on a path given as the first 
 Space plays and pauses, `F` frames the rig, `R` toggles the rig overlay, click selects and
 drag moves. The original app is recoverable at the baseline commit: `git show ec05cdf:main.py`.
 
-Procedural controllers are the remaining gap — a rig currently moves because gravity and
-the constraint solver move it, not because anything drives it.
+```bash
+poetry run python examples/quadruped.py
+```
+
+Builds a four-legged creature driven by a foothold state machine and two-bone IK, walks it,
+and reports what it did.
 
 | Layer | State |
 | --- | --- |
@@ -29,7 +33,7 @@ the constraint solver move it, not because anything drives it.
 | `render/` — smoothing, SDF packing, CPU field, GL scaffolding | done |
 | `render/gl/shaders/` — metaball raymarcher | done |
 | `editor/` — document, commands, viewport, panels | done |
-| `anim/controllers/` — spine, limb IK, footholds | not started |
+| `anim/controllers/` — spine, limb IK, footholds | done |
 
 ![A procedurally animated worm rendered as metaballs](docs/metaballs.png)
 
@@ -71,6 +75,15 @@ a spine from a rope, and it is Rain World's `BodyChunkConnection` in all but nam
 `render/draw_points.py` keeps a second set of points that chase the chunks through damped
 springs, arriving late and overshooting. That lag is the secondary motion. Rain World's
 bodies read as gelatinous because of this layer, not because the physics is soft.
+
+### Controllers contribute force, never positions
+
+Constraint projection runs immediately after integration and will undo anything a
+controller places. So controllers state where they want to go — via `ControlContext.seek` —
+and the solver decides what the body can do about it. A controller that writes positions
+does not fail cleanly; it buzzes, or works until a link tightens.
+
+![A procedurally animated quadruped rendered as metaballs](docs/quadruped.png)
 
 ### The surface is built from links
 
