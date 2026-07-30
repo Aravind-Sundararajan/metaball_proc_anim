@@ -20,10 +20,15 @@ The original app is recoverable at the baseline commit if you need it:
 | `core/` — body graph, solver, curves | done |
 | `io/` — v2 format, legacy reader | done |
 | `anim/` — fixed-rate clock | done |
-| `render/` — smoothing, SDF packing, CPU field, GL scaffolding | in progress |
-| `render/gl/shaders/` — metaball raymarcher | next |
+| `render/` — smoothing, SDF packing, CPU field, GL scaffolding | done |
+| `render/gl/shaders/` — metaball raymarcher | done |
 | `anim/controllers/` — spine, limb IK, footholds | not started |
 | `editor/` — document, commands, panels | not started |
+
+![A procedurally animated worm rendered as metaballs](docs/metaballs.png)
+
+22 chunks, 21 round cones, blend radius 0.30 — imported, retapered by a curve,
+simulated, smoothed, and raymarched.
 
 ## Architecture
 
