@@ -18,9 +18,19 @@ Storage is struct-of-arrays so the solver vectorizes over numpy rather than
 looping in Python.
 
 .. warning::
-   The array properties return live views into the backing storage. Adding or
-   removing chunks may reallocate, which invalidates any view you were holding.
-   Re-read the property after structural edits.
+   Structural edits invalidate three things, and all three bite silently:
+
+   * **Views.** The array properties are live views into the backing storage.
+     Adding chunks or links may reallocate, so re-read the property after any
+     structural edit rather than caching it across one.
+   * **Slots.** ``link_a`` and ``link_b`` store *slot indices*, not ids, because
+     that is what lets the solver gather without a lookup table.
+     :meth:`Body.remove_chunk` relocates the last chunk into the freed slot and
+     rewrites those arrays in place, so any slot index you cached is stale.
+   * **The tail.** Growth uses ``np.resize``, which *tiles* the existing data
+     into the new tail instead of zeroing it. Everything past ``n_chunks`` /
+     ``n_links`` is a plausible-looking duplicate of live data, never zeros.
+     Only ever read through the properties, which slice to the live prefix.
 """
 
 from __future__ import annotations
@@ -58,6 +68,13 @@ class Chunk:
     Construction and serialization traffic in these records; the solver works
     on :class:`Body`'s arrays directly. Mutating a ``Chunk`` does not affect the
     body it came from.
+
+    ``meta`` is an opaque per-chunk dict that the core never reads. It exists so
+    importers can round-trip fields the simulation has no concept of — a v1
+    file's ``mesh type``, ``height`` and ``material``, for instance. Resist
+    promoting anything out of it into a real field without a simulation reason:
+    a v1 capsule's ``height`` describes a *segment*, which in this model is a
+    link's rest length, not a property of either chunk it joins.
     """
 
     id: int
@@ -65,6 +82,7 @@ class Chunk:
     pos: tuple[float, ...]
     radius: float
     inv_mass: float
+    meta: dict
 
     @property
     def pinned(self) -> bool:
@@ -108,6 +126,7 @@ class Body:
         self._inv_mass = np.zeros(self._cap, dtype=np.float32)
         self._ids = np.zeros(self._cap, dtype=np.int32)
         self._names: list[str] = []
+        self._meta: list[dict] = []
 
         self._n_links = 0
         self._link_cap = _INITIAL_CAPACITY
@@ -189,12 +208,20 @@ class Body:
         radius: float = 0.5,
         mass: float = 1.0,
         pinned: bool = False,
+        id: int | None = None,
+        meta: dict | None = None,
     ) -> int:
         """Append a chunk and return its stable id.
 
         ``pos`` is world space. Names are not checked for uniqueness — that was
         the old model's silent-overwrite bug, and it is fixed here by making the
         returned id the only identity that matters.
+
+        ``id`` forces a specific id instead of allocating the next one, which
+        deserializers need: a rig that has had chunks removed has gaps in its id
+        sequence, and those ids are what its links reference. Supplying one that
+        is already live is an error. Without this, a loader has no choice but to
+        reach into private state to restore identity.
         """
         pos = np.asarray(pos, dtype=np.float32)
         if pos.shape != (self.dim,):
@@ -204,19 +231,27 @@ class Body:
         if not pinned and mass <= 0.0:
             raise ValueError(f"mass must be positive, got {mass}")
 
+        if id is None:
+            chunk_id = self._next_id
+        else:
+            if id in self._slot_of:
+                raise ValueError(f"chunk id {id} is already in use")
+            if id < 0:
+                raise ValueError(f"chunk id must be non-negative, got {id}")
+            chunk_id = id
+        self._next_id = max(self._next_id, chunk_id + 1)
+
         if self._n == self._cap:
             self._grow_chunks()
 
         slot = self._n
-        chunk_id = self._next_id
-        self._next_id += 1
-
         self._pos[slot] = pos
         self._prev_pos[slot] = pos
         self._radius[slot] = radius
         self._inv_mass[slot] = 0.0 if pinned else 1.0 / mass
         self._ids[slot] = chunk_id
         self._names.append(name)
+        self._meta.append(dict(meta) if meta else {})
         self._slot_of[chunk_id] = slot
         self._n += 1
         return chunk_id
@@ -241,12 +276,14 @@ class Body:
             self._inv_mass[slot] = self._inv_mass[last]
             self._ids[slot] = self._ids[last]
             self._names[slot] = self._names[last]
+            self._meta[slot] = self._meta[last]
             self._slot_of[int(self._ids[last])] = slot
             # links store slots, so the moved chunk's references follow it
             np.putmask(self.link_a, self.link_a == last, slot)
             np.putmask(self.link_b, self.link_b == last, slot)
 
         self._names.pop()
+        self._meta.pop()
         del self._slot_of[chunk_id]
         self._n -= 1
 
@@ -271,7 +308,12 @@ class Body:
             pos=tuple(float(v) for v in self._pos[slot]),
             radius=float(self._radius[slot]),
             inv_mass=float(self._inv_mass[slot]),
+            meta=dict(self._meta[slot]),
         )
+
+    def meta_of(self, chunk_id: int) -> dict:
+        """The live opaque metadata dict for a chunk. Mutating it is intended."""
+        return self._meta[self._require_slot(chunk_id)]
 
     def chunks(self) -> Iterator[Chunk]:
         for slot in range(self._n):
@@ -299,7 +341,15 @@ class Body:
         self._radius[self._require_slot(chunk_id)] = radius
 
     def set_pinned(self, chunk_id: int, pinned: bool, mass: float = 1.0) -> None:
+        """Pin or unpin a chunk.
+
+        The mass check is not decoration. A negative inverse mass inverts the
+        sign of the solver's correction, so the chunk accelerates *away* from
+        every constraint acting on it and the body diverges within a few ticks.
+        """
         slot = self._require_slot(chunk_id)
+        if not pinned and mass <= 0.0:
+            raise ValueError(f"mass must be positive, got {mass}")
         self._inv_mass[slot] = 0.0 if pinned else 1.0 / mass
 
     # ------------------------------------------------------------------
@@ -377,6 +427,58 @@ class Body:
 
     def has_link(self, id_a: int, id_b: int) -> bool:
         return (min(id_a, id_b), max(id_a, id_b)) in self._link_keys
+
+    def set_link(
+        self,
+        id_a: int,
+        id_b: int,
+        rest: float | None = None,
+        type: LinkType | None = None,
+        elasticity: float | None = None,
+    ) -> None:
+        """Edit an existing link's fields, validating as :meth:`add_link` does.
+
+        Without this the only way to retune a link is to write into the
+        ``link_rest`` / ``link_type`` / ``link_elasticity`` views, which skips
+        every bounds check — an out-of-range elasticity reaches the solver as a
+        per-iteration gain above one, which overshoots and then diverges.
+        """
+        index = self._link_index(id_a, id_b)
+        if index is None:
+            raise KeyError(f"no link between {id_a} and {id_b}")
+        if rest is not None:
+            if rest < 0.0:
+                raise ValueError(f"rest must be non-negative, got {rest}")
+            self._link_rest[index] = rest
+        if type is not None:
+            self._link_type[index] = int(LinkType(type))
+        if elasticity is not None:
+            if not 0.0 <= elasticity <= 1.0:
+                raise ValueError(f"elasticity must be in [0, 1], got {elasticity}")
+            self._link_elasticity[index] = elasticity
+
+    def link(self, id_a: int, id_b: int) -> Link:
+        index = self._link_index(id_a, id_b)
+        if index is None:
+            raise KeyError(f"no link between {id_a} and {id_b}")
+        return Link(
+            a=int(self._ids[self._link_a[index]]),
+            b=int(self._ids[self._link_b[index]]),
+            rest=float(self._link_rest[index]),
+            type=LinkType(int(self._link_type[index])),
+            elasticity=float(self._link_elasticity[index]),
+        )
+
+    def _link_index(self, id_a: int, id_b: int) -> int | None:
+        if (min(id_a, id_b), max(id_a, id_b)) not in self._link_keys:
+            return None
+        slot_a = self._slot_of[id_a]
+        slot_b = self._slot_of[id_b]
+        for i in range(self._n_links):
+            pair = (int(self._link_a[i]), int(self._link_b[i]))
+            if pair == (slot_a, slot_b) or pair == (slot_b, slot_a):
+                return i
+        return None
 
     def links(self) -> Iterator[Link]:
         for i in range(self._n_links):

@@ -239,7 +239,122 @@ class TestStorage:
             body.add_chunk("bad", [1, 2, 3])
 
 
+class TestExplicitIds:
+    """Deserializers must be able to restore identity without private access."""
+
+    def test_explicit_id_is_honoured(self):
+        body = Body()
+        assert body.add_chunk("a", [0, 0, 0], id=7) == 7
+        assert body.chunk(7).name == "a"
+
+    def test_next_id_advances_past_an_explicit_one(self):
+        body = Body()
+        body.add_chunk("a", [0, 0, 0], id=7)
+        assert body.add_chunk("b", [1, 0, 0]) == 8
+
+    def test_explicit_id_below_the_counter_does_not_rewind_it(self):
+        body = Body()
+        body.add_chunk("a", [0, 0, 0], id=100)
+        body.add_chunk("b", [1, 0, 0], id=3)
+        assert body.add_chunk("c", [2, 0, 0]) == 101
+
+    def test_duplicate_explicit_id_rejected(self):
+        body = Body()
+        body.add_chunk("a", [0, 0, 0], id=4)
+        with pytest.raises(ValueError):
+            body.add_chunk("b", [1, 0, 0], id=4)
+
+    def test_negative_explicit_id_rejected(self):
+        body = Body()
+        with pytest.raises(ValueError):
+            body.add_chunk("a", [0, 0, 0], id=-1)
+
+    def test_gapped_id_sequence_reconstructs(self):
+        """The shape a loader faces: a rig whose middle chunks were deleted."""
+        body = Body()
+        for cid in (0, 3, 9):
+            body.add_chunk(f"c{cid}", [cid, 0, 0], id=cid)
+        body.add_link(0, 9)
+
+        assert body.chunk_ids() == [0, 3, 9]
+        assert body.has_link(9, 0)
+
+
+class TestMetadata:
+    def test_meta_defaults_to_empty_and_is_per_chunk(self):
+        body = Body()
+        a = body.add_chunk("a", [0, 0, 0])
+        b = body.add_chunk("b", [1, 0, 0], meta={"mesh_type": "capsule"})
+
+        assert body.chunk(a).meta == {}
+        assert body.chunk(b).meta == {"mesh_type": "capsule"}
+
+    def test_meta_snapshot_is_a_copy(self):
+        body = Body()
+        a = body.add_chunk("a", [0, 0, 0], meta={"height": 0.6})
+        body.chunk(a).meta["height"] = 99.0
+
+        assert body.chunk(a).meta["height"] == 0.6
+
+    def test_meta_of_is_live(self):
+        body = Body()
+        a = body.add_chunk("a", [0, 0, 0])
+        body.meta_of(a)["material"] = "body"
+
+        assert body.chunk(a).meta == {"material": "body"}
+
+    def test_meta_follows_the_swap_with_last_removal(self):
+        body = Body()
+        a = body.add_chunk("a", [0, 0, 0], meta={"tag": "a"})
+        b = body.add_chunk("b", [1, 0, 0], meta={"tag": "b"})
+        c = body.add_chunk("c", [2, 0, 0], meta={"tag": "c"})
+        body.remove_chunk(a)
+
+        assert body.chunk(b).meta == {"tag": "b"}
+        assert body.chunk(c).meta == {"tag": "c"}
+
+
+class TestLinkMutation:
+    def test_set_link_edits_fields(self):
+        body = Body()
+        a = body.add_chunk("a", [0, 0, 0])
+        b = body.add_chunk("b", [1, 0, 0])
+        body.add_link(a, b)
+        body.set_link(a, b, rest=2.5, type=LinkType.PUSH, elasticity=0.25)
+
+        link = body.link(b, a)
+        assert link.rest == pytest.approx(2.5)
+        assert link.type is LinkType.PUSH
+        assert link.elasticity == pytest.approx(0.25)
+
+    def test_set_link_validates_elasticity(self):
+        """Bypassing this reaches the solver as a per-iteration gain above one."""
+        body = Body()
+        a = body.add_chunk("a", [0, 0, 0])
+        b = body.add_chunk("b", [1, 0, 0])
+        body.add_link(a, b)
+        with pytest.raises(ValueError):
+            body.set_link(a, b, elasticity=5.0)
+
+    def test_set_link_on_a_missing_link_raises(self):
+        body = Body()
+        a = body.add_chunk("a", [0, 0, 0])
+        b = body.add_chunk("b", [1, 0, 0])
+        with pytest.raises(KeyError):
+            body.set_link(a, b, rest=1.0)
+
+
 class TestValidation:
+    def test_unpinning_with_non_positive_mass_rejected(self):
+        """A negative inverse mass inverts the solver correction and diverges."""
+        body = Body()
+        a = body.add_chunk("a", [0, 0, 0], pinned=True)
+        with pytest.raises(ValueError):
+            body.set_pinned(a, False, mass=-2.0)
+        with pytest.raises(ValueError):
+            body.set_pinned(a, False, mass=0.0)
+        assert body.inv_mass[body.slot(a)] == 0.0
+
     @pytest.mark.parametrize("radius", [0.0, -1.0])
     def test_non_positive_radius_rejected(self, radius):
         body = Body()
