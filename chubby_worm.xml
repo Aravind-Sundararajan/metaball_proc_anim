@@ -1,0 +1,33 @@
+<?xml version="1.0" ?>
+<armature>
+    <bone name="Spline_1" position="0.000,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+        <mesh type="sphere" radius="0.193" material="body"/>
+        <bone name="Spline_2" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+            <mesh type="sphere" radius="0.389" material="body"/>
+            <bone name="Spline_3" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                <mesh type="sphere" radius="0.534" material="body"/>
+                <bone name="Spline_4" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                    <mesh type="sphere" radius="0.630" material="body"/>
+                    <bone name="Spline_5" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                        <mesh type="sphere" radius="0.677" material="body"/>
+                        <bone name="Spline_6" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                            <mesh type="sphere" radius="0.667" material="body"/>
+                            <bone name="Spline_7" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                                <mesh type="sphere" radius="0.559" material="body"/>
+                                <bone name="Spline_8" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                                    <mesh type="sphere" radius="0.403" material="body"/>
+                                    <bone name="Spline_9" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                                        <mesh type="sphere" radius="0.264" material="body"/>
+                                        <bone name="Spline_10" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                                            <mesh type="sphere" radius="0.203" material="body"/>
+                                        </bone>
+                                    </bone>
+                                </bone>
+                            </bone>
+                        </bone>
+                    </bone>
+                </bone>
+            </bone>
+        </bone>
+    </bone>
+</armature>

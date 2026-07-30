@@ -1,0 +1,21 @@
+<?xml version="1.0" ?>
+<armature>
+    <bone name="a" position="0.075,0.000,0.184" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+        <mesh type="sphere" radius="0.500" material="body"/>
+        <bone name="Sphere_1" position="1.565,0.000,-0.505" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+            <mesh type="sphere" radius="0.500" material="body"/>
+            <bone name="Sphere_3" position="-0.470,0.000,-3.427" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                <mesh type="sphere" radius="0.500" material="body"/>
+                <bone name="Sphere_6" position="-2.649,0.000,-1.212" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                    <mesh type="sphere" radius="0.500" material="body"/>
+                    <bone name="Sphere_10" position="-2.985,0.000,0.625" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                        <mesh type="sphere" radius="0.500" material="body"/>
+                        <bone name="Sphere_8" position="-1.041,0.000,2.084" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                            <mesh type="sphere" radius="0.500" material="body"/>
+                        </bone>
+                    </bone>
+                </bone>
+            </bone>
+        </bone>
+    </bone>
+</armature>

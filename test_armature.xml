@@ -1,0 +1,9 @@
+<?xml version="1.0" ?>
+<armature>
+    <bone name="Sphere_0" position="2.000,1.000,3.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+        <mesh type="sphere" radius="0.500" material="body"/>
+        <bone name="Sphere_1" position="4.000,0.000,2.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+            <mesh type="sphere" radius="0.500" material="body"/>
+        </bone>
+    </bone>
+</armature>

@@ -1,0 +1,27 @@
+<?xml version="1.0" ?>
+<armature>
+    <bone name="Spline_Sphere_1" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+        <mesh type="sphere" radius="0.111" material="body"/>
+        <bone name="Spline_Sphere_2" position="1.111,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+            <mesh type="sphere" radius="0.222" material="body"/>
+            <bone name="Spline_Sphere_3" position="1.667,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                <mesh type="sphere" radius="0.333" material="body"/>
+                <bone name="Spline_Sphere_4" position="2.222,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                    <mesh type="sphere" radius="0.444" material="body"/>
+                    <bone name="Spline_Sphere_5" position="2.778,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                        <mesh type="sphere" radius="0.444" material="body"/>
+                        <bone name="Spline_Sphere_6" position="3.333,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                            <mesh type="sphere" radius="0.333" material="body"/>
+                            <bone name="Spline_Sphere_7" position="3.889,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                                <mesh type="sphere" radius="0.222" material="body"/>
+                                <bone name="Spline_Sphere_8" position="4.444,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
+                                    <mesh type="sphere" radius="0.111" material="body"/>
+                                </bone>
+                            </bone>
+                        </bone>
+                    </bone>
+                </bone>
+            </bone>
+        </bone>
+    </bone>
+</armature>
