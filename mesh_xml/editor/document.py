@@ -27,9 +27,9 @@ from typing import Protocol
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from mesh_xml.anim import Clock
+from mesh_xml.anim import Clock, ControllerStack
 from mesh_xml.core import Body, LinkType
-from mesh_xml.core.solver import SolverConfig, step
+from mesh_xml.core.solver import SolverConfig
 from mesh_xml.io import xml_legacy, xml_v2
 from mesh_xml.render import DrawPoints, sdf
 from mesh_xml.render.gl.metaball import MetaballSettings
@@ -265,6 +265,7 @@ class Document(QObject):
         self.metaball = MetaballSettings()
         self.clock = Clock()
         self.draw = DrawPoints(self.body)
+        self.controllers = ControllerStack(self.body)
         self.selection: set[int] = set()
         self.path: Path | None = None
 
@@ -304,6 +305,7 @@ class Document(QObject):
             if self.body.has_chunk(chunk_id):
                 self.body.set_pos(chunk_id, pos)
         self.draw.snap(self.body)
+        self.controllers.reset()
         self.clock.reset()
         self.topology_changed.emit()
 
@@ -311,12 +313,12 @@ class Document(QObject):
         """One fixed simulation tick.
 
         The single place that knows what a tick consists of. Both :meth:`advance`
-        and :meth:`step_once` route through it, so a controller added here in
-        Phase 4 runs on both paths. Two call sites each remembering the recipe is
-        the exact shape this module exists to delete, and the failure mode is
-        quiet: single-stepping would simply stop running the controllers.
+        and :meth:`step_once` route through it, so the controllers run on both
+        paths. Two call sites each remembering the recipe is the exact shape this
+        module exists to delete, and the failure mode is quiet: single-stepping
+        would simply stop running them.
         """
-        step(self.body, self.clock.dt, self.solver_config)
+        self.controllers.tick(self.body, self.clock.dt, self.solver_config)
         self.draw.update(self.body)
 
     def step_once(self) -> None:
@@ -468,6 +470,9 @@ class Document(QObject):
         self.body = body
         self.path = path
         self.draw = DrawPoints(body)
+        # Controllers hold chunk ids, and ids from the previous rig mean nothing
+        # in this one; carrying them over would silently drive the wrong chunks.
+        self.controllers = ControllerStack(body)
         self.clock.reset()
         self.selection.clear()
         self._undo.clear()

@@ -85,16 +85,24 @@ class SolverConfig:
     ground_friction: float = 0.35
 
 
-def step(body: Body, dt: float, config: SolverConfig) -> None:
+def step(
+    body: Body, dt: float, config: SolverConfig, forces: np.ndarray | None = None
+) -> None:
     """Advance ``body`` one fixed tick in place.
 
     ``dt`` must be constant across calls: a Verlet position update infers
     velocity from the previous step's displacement and silently rescales that
     velocity when the step length changes. :func:`fixed_step` supplies it.
+
+    ``forces`` is an optional ``(N, dim)`` accumulator in world units of force,
+    which is how procedural controllers get their say. They contribute here and
+    the constraint solver reconciles afterward; a controller that instead writes
+    positions is fighting the projection that runs immediately after it, and the
+    usual result is a rig that buzzes rather than one that moves.
     """
     if body.n_chunks == 0:
         return
-    _integrate(body, dt, config)
+    _integrate(body, dt, config, forces)
     _project(body, config)
     _collide_ground(body, config)
 
@@ -179,7 +187,9 @@ def render_pos(body: Body, alpha: float) -> np.ndarray:
     return prev + (body.pos - prev) * np.float32(alpha)
 
 
-def _integrate(body: Body, dt: float, config: SolverConfig) -> None:
+def _integrate(
+    body: Body, dt: float, config: SolverConfig, forces: np.ndarray | None = None
+) -> None:
     pos = body.pos
     prev = body.prev_pos
     free = body.inv_mass != 0.0
@@ -191,10 +201,18 @@ def _integrate(body: Body, dt: float, config: SolverConfig) -> None:
     if over.any():
         velocity[over] *= (limit / speed[over])[:, None]
 
-    accel = _gravity_vector(config.gravity, body.dim) * np.float32(dt * dt)
+    accel = np.broadcast_to(
+        _gravity_vector(config.gravity, body.dim), (body.n_chunks, body.dim)
+    ).astype(np.float32, copy=True)
+    if forces is not None:
+        # Force, not acceleration, so mass means something to a controller and a
+        # pinned chunk absorbs whatever is applied to it rather than needing every
+        # caller to remember to skip it.
+        accel += forces * body.inv_mass[:, None]
+    accel *= np.float32(dt * dt)
 
     saved = pos.copy()
-    pos[free] += velocity[free] + accel
+    pos[free] += velocity[free] + accel[free]
     prev[:] = saved
 
 
