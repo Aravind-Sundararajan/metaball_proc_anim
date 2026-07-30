@@ -21,6 +21,7 @@ from mesh_xml.render.gl.program import (
     ShaderSourceError,
     assemble,
     build_error_message,
+    chain_resolvers,
     error_lines,
     file_resolver,
     format_source,
@@ -148,6 +149,51 @@ class TestIncludeResolution:
         assert fragment.text.startswith("#version 330 core")
         assert "camera_ray" in fragment.text
         assert "#include" not in fragment.text
+
+
+class TestChainedResolvers:
+    """The seam between generated GLSL and GLSL on disk.
+
+    What it is for: the SDF's degenerate-case thresholds are Python constants,
+    and the round cone has two of them. Transcribing either into a GLSL literal
+    creates a second definition that silently stops matching.
+    """
+
+    def test_the_first_hit_wins(self):
+        resolve = chain_resolvers({"a.glsl": "generated;"}, {"a.glsl": "on disk;"})
+        assert resolve("a.glsl") == "generated;"
+
+    def test_it_falls_through_to_later_resolvers(self):
+        resolve = chain_resolvers({"a.glsl": "generated;"}, {"b.glsl": "on disk;"})
+        assert resolve("b.glsl") == "on disk;"
+
+    def test_generated_constants_mix_with_files_on_disk(self):
+        resolve = chain_resolvers(
+            {"limits.glsl": "const float DEGENERATE = 1e-06;"}, file_resolver()
+        )
+        result = assemble(
+            '#version 330 core\n#include "limits.glsl"\n#include "camera.glsl"',
+            "raymarch.frag",
+            resolve,
+        )
+        assert "const float DEGENERATE = 1e-06;" in result.text
+        assert "vec3 camera_ray" in result.text
+
+    def test_a_total_miss_is_reported_against_the_including_line(self):
+        """KeyError rather than a bespoke error, so assemble supplies file and line."""
+        resolve = chain_resolvers({"a.glsl": "x;"})
+        with pytest.raises(ShaderSourceError, match=r"root\.frag:2"):
+            assemble('float x;\n#include "gone.glsl"', "root.frag", resolve)
+
+    def test_a_refusal_is_not_treated_as_a_miss(self):
+        """A path escaping its directory must not fall through to the next resolver."""
+        resolve = chain_resolvers(file_resolver(SHADER_DIR), {"../secret": "leaked;"})
+        with pytest.raises(ShaderSourceError, match="escapes"):
+            resolve("../secret")
+
+    def test_an_empty_chain_misses_everything(self):
+        with pytest.raises(KeyError):
+            chain_resolvers()("anything.glsl")
 
 
 class TestOrigins:
@@ -364,6 +410,40 @@ class TestLiveGL:
             assert program.set_uniform("u_never_declared", 1.0) is False
         finally:
             program.dispose()
+
+    def test_one_shared_unit_feeds_two_programs_identically(self, gl_context):
+        """The property the SDF header will depend on.
+
+        The primary march, the normal estimate, and a shadow pass are separate
+        shaders that must evaluate the same field. This is that arrangement in
+        miniature: two roots, one included unit, byte-identical output.
+        """
+        from mesh_xml.render.gl.context import VERTEX_SHADER
+        from mesh_xml.render.gl.program import ShaderProgram
+
+        shared = "vec3 tint(vec2 uv) { return vec3(uv.x, uv.y, 0.25); }"
+        roots = {
+            "shared.glsl": shared,
+            "a.frag": '#version 330 core\n#include "shared.glsl"\n'
+            "in vec2 v_uv;\nout vec4 c;\nvoid main() { c = vec4(tint(v_uv), 1.0); }",
+            "b.frag": '#version 330 core\n#include "shared.glsl"\n'
+            "in vec2 v_uv;\nout vec4 c;\n"
+            "void main() { c = vec4(tint(v_uv).rgb, 1.0); }",
+        }
+        resolve = chain_resolvers(roots, file_resolver())
+
+        rendered = []
+        for root in ("a.frag", "b.frag"):
+            program = ShaderProgram.from_files(VERTEX_SHADER, root, resolve=resolve)
+            try:
+                program.use()
+                rendered.append(_render(program, 24, 16))
+            finally:
+                program.dispose()
+
+        assert np.array_equal(rendered[0], rendered[1])
+        # And the shared function really ran, rather than both being cleared black.
+        assert rendered[0][..., 2].min() > 0
 
     def test_a_matrix_uploads_transposed(self, gl_context):
         """Pins the one convention that would silently misplace the whole scene.

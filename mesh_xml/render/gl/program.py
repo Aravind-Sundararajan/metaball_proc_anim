@@ -10,6 +10,16 @@ shadow pass, and copy-pasting it into each is how the viewport ends up
 disagreeing with itself. Because assembly touches no GL, it is unit-tested
 headlessly, which matters because it is the part most likely to be wrong.
 
+The sharing that matters most is not between shaders, though — it is between
+the shader and Python. :mod:`mesh_xml.render.sdf` owns the primitive format and
+the thresholds its degenerate cases turn on, and the round cone has two of
+them: a near-zero axis length, and one end ball swallowing the other, which
+drives the discriminant negative and yields NaN rather than a wrong-but-finite
+distance. A GLSL literal transcribing either threshold is a copy that will
+drift. :func:`chain_resolvers` exists so the numbers can be generated from the
+Python constants and included alongside the on-disk shader units, leaving one
+definition instead of two.
+
 **Failure has to be readable.** ``glGetShaderInfoLog`` reports a line number
 against the string the driver was handed — which, once includes are spliced in,
 is not a line number in any file the author has open. So a compile failure
@@ -44,6 +54,7 @@ __all__ = [
     "ShaderSourceError",
     "assemble",
     "build_error_message",
+    "chain_resolvers",
     "error_lines",
     "file_resolver",
     "format_source",
@@ -122,6 +133,54 @@ def file_resolver(directory: Path | str = SHADER_DIR) -> Resolver:
     return resolve
 
 
+def _as_resolver(resolve: Resolver | Mapping[str, str] | None) -> Resolver:
+    if resolve is None:
+        return file_resolver()
+    if callable(resolve):
+        return resolve
+
+    mapping = resolve
+
+    def lookup(name: str) -> str:
+        return mapping[name]
+
+    return lookup
+
+
+def chain_resolvers(*resolvers: Resolver | Mapping[str, str]) -> Resolver:
+    """Consult each resolver in turn; the first hit wins.
+
+    The seam between generated GLSL and GLSL on disk. Constants that Python
+    already owns — the SDF primitive stride, the thresholds guarding the round
+    cone's degenerate cases — should reach the shader as a generated unit
+    rather than as literals somebody has to remember to update twice:
+
+    .. code-block:: python
+
+       resolve = chain_resolvers(
+           {"sdf_constants.glsl": f"const float DEGENERATE = {sdf.DEGENERATE_EPSILON:.9g};"},
+           file_resolver(),
+       )
+
+    A miss raises :class:`KeyError`, deliberately, so :func:`assemble` catches
+    it and reports the including file and line. A resolver that refuses for
+    some other reason — a path escaping its directory — raises
+    :class:`ShaderSourceError`, which passes straight through rather than
+    silently falling through to the next candidate.
+    """
+    chain = [_as_resolver(resolver) for resolver in resolvers]
+
+    def resolve(name: str) -> str:
+        for candidate in chain:
+            try:
+                return candidate(name)
+            except (OSError, LookupError):
+                continue
+        raise KeyError(name)
+
+    return resolve
+
+
 def assemble(
     source: str,
     name: str = "<source>",
@@ -139,15 +198,7 @@ def assemble(
     line, except where an include expands — so :attr:`AssembledSource.origins`
     stays a straight index and nothing has to guess at offsets.
     """
-    if resolve is None:
-        resolver: Resolver = file_resolver()
-    elif callable(resolve):
-        resolver = resolve
-    else:
-        mapping = resolve
-
-        def resolver(target: str) -> str:
-            return mapping[target]
+    resolver = _as_resolver(resolve)
 
     lines: list[str] = []
     origins: list[tuple[str, int]] = []
@@ -405,12 +456,15 @@ class ShaderProgram:
         name: str | None = None,
         resolve: Resolver | Mapping[str, str] | None = None,
     ) -> ShaderProgram:
-        """Load, assemble, and build from two names under ``shaders/``."""
-        resolver = file_resolver() if resolve is None else resolve
-        loader = resolver if callable(resolver) else resolver.__getitem__
+        """Load, assemble, and build from two names under ``shaders/``.
+
+        ``resolve`` accepts a :func:`chain_resolvers` chain, so a caller can mix
+        generated units in with the files without special-casing either.
+        """
+        resolver = _as_resolver(resolve)
         return cls(
-            assemble(loader(vertex), vertex, resolver),
-            assemble(loader(fragment), fragment, resolver),
+            assemble(resolver(vertex), vertex, resolver),
+            assemble(resolver(fragment), fragment, resolver),
             name or f"{vertex}+{fragment}",
         )
 

@@ -267,8 +267,7 @@ class OrbitCamera:
 
         Scaled by distance and field of view so one pixel of drag moves the
         world by one pixel at the target's depth — the grab stays under the
-        cursor instead of accelerating away as you dolly out. The legacy widget
-        had no pan at all; its target was hardwired to the origin.
+        cursor instead of accelerating away as you dolly out.
         """
         right, up, _ = self.basis()
         world_per_pixel = (

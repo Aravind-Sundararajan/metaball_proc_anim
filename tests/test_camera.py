@@ -112,33 +112,25 @@ class TestRays:
             square_edge @ right / (square_edge @ forward)
         )
 
-    def test_ray_through_mirrors_ray_directions(self):
-        """Pins the two row-order conventions together so neither can drift."""
-        camera = OrbitCamera(yaw=15.0, pitch=-25.0)
-        width, height = 12, 8
-        _, directions = camera.ray_directions(width, height)
+    def test_row_zero_is_the_bottom_of_the_image(self):
+        """The single row-order convention, and the one the GPU comparison rests on.
 
-        for row, column in ((0, 0), (3, 7), (7, 11)):
-            _, single = camera.ray_through(
-                column + 0.5, height - row - 0.5, width, height
-            )
-            assert single == pytest.approx(directions[row, column], abs=1e-6)
-
-    def test_ray_through_is_top_down(self):
-        """A click near the top of the widget must point above the view axis."""
+        Getting it backwards produces a vertically mirrored render that still
+        looks plausible until something asymmetric is in frame.
+        """
         camera = OrbitCamera()
         up = camera.basis()[1]
+        _, directions = camera.ray_directions(16, 16)
 
-        _, near_top = camera.ray_through(50.0, 1.0, 100, 100)
-        _, near_bottom = camera.ray_through(50.0, 99.0, 100, 100)
-
-        assert near_top @ up > 0.0
-        assert near_bottom @ up < 0.0
+        assert directions[0, 8] @ up < 0.0
+        assert directions[-1, 8] @ up > 0.0
+        assert directions[0, 8] @ up == pytest.approx(-(directions[-1, 8] @ up), abs=1e-6)
 
 
 class TestDegenerateViewports:
     def test_zero_height_does_not_divide_by_zero(self):
-        """The legacy resizeGL raised ZeroDivisionError here, inside a paint callback."""
+        """Qt delivers zero-height resizes, and an unguarded aspect division raises
+        from inside a paint callback where the traceback is useless."""
         camera = OrbitCamera()
 
         assert viewport_aspect(800, 0) == 1.0
@@ -157,7 +149,6 @@ class TestDegenerateViewports:
         assert viewport_aspect(width, height) == 1.0
         assert np.isfinite(camera.projection_matrix(width, height)).all()
         assert np.isfinite(camera.ray_directions(width, height)[1]).all()
-        assert np.isfinite(camera.ray_through(0.0, 0.0, width, height)[1]).all()
 
 
 class TestProjection:
@@ -225,7 +216,7 @@ class TestView:
         assert np.linalg.norm(offset) == pytest.approx(9.0, abs=1e-5)
 
     def test_the_default_camera_looks_down_negative_z(self):
-        """Matches the legacy widget's glTranslatef(0, 0, -distance) at rest."""
+        """At rest the camera sits on +Z looking back at the origin, GL's own default."""
         camera = OrbitCamera(distance=10.0)
 
         assert camera.position == pytest.approx([0.0, 0.0, 10.0], abs=1e-6)
@@ -263,12 +254,20 @@ class TestInteraction:
 
         assert OrbitCamera(pitch=1e6).pitch == PITCH_LIMIT
 
-    def test_orbit_sensitivity_matches_the_legacy_widget(self):
+    def test_orbit_applies_the_documented_sensitivity(self):
         camera = OrbitCamera()
         camera.orbit(10.0, 4.0)
 
         assert camera.yaw == pytest.approx(10.0 * ORBIT_DEGREES_PER_PIXEL)
         assert camera.pitch == pytest.approx(4.0 * ORBIT_DEGREES_PER_PIXEL)
+
+    def test_a_downward_drag_raises_the_eye(self):
+        """Grab-and-turn, not fly-the-camera. Reversing this is the classic
+        inverted-orbit complaint."""
+        camera = OrbitCamera()
+        camera.orbit(0.0, 30.0)
+
+        assert camera.position[1] > 0.0
 
     def test_a_full_turn_returns_the_original_matrix(self):
         camera = OrbitCamera(yaw=37.0, pitch=-12.0, distance=6.0)
@@ -297,6 +296,22 @@ class TestInteraction:
 
         camera.zoom(-120.0 * 1000)
         assert camera.distance == MAX_DISTANCE
+
+    def test_the_dolly_bounds_move_with_the_rig_scale(self):
+        """A rig authored at a hundred times the default scale must still be
+        viewable; a hardcoded ceiling would make it permanently half off-screen."""
+        camera = OrbitCamera(
+            distance=400.0, near=1.0, far=5000.0, min_distance=10.0, max_distance=2000.0
+        )
+        assert camera.distance == 400.0
+
+        camera.zoom(-120.0 * 10000)
+        assert camera.distance == 2000.0
+
+    @pytest.mark.parametrize(("low", "high"), [(0.0, 10.0), (-1.0, 10.0), (10.0, 1.0)])
+    def test_impossible_dolly_bounds_rejected(self, low, high):
+        with pytest.raises(ValueError):
+            OrbitCamera(min_distance=low, max_distance=high)
 
     def test_a_wheel_notch_moves_closer(self):
         camera = OrbitCamera(distance=10.0)

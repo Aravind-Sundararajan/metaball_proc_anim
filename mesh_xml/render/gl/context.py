@@ -20,18 +20,15 @@
    lost to that error message. :func:`ensure_application` exists so the
    ordering cannot be got wrong by accident.
 
-Why this widget exists at all: the legacy ``opengl_widget.py`` is
-``glBegin``/``glEnd``/``gluSphere``. A fixed-function pipeline has no
-programmable fragment stage, so no amount of work on it leads to an SDF
-raymarcher. This is the replacement floor — a core-profile surface, a vertex
-array object, and one triangle covering the viewport — and the shader that
-lands on top of it is the actual renderer.
+This widget is the floor the renderer stands on and nothing more: a core-profile
+surface, a vertex array object, one triangle covering the viewport, and a camera
+wired to the mouse. The fragment shader supplied by the caller is the actual
+renderer.
 
-What it deliberately does not carry over from the legacy widget: picking, hover
-highlighting, sphere creation on right-click, selection state, and the armature
-signals. Those are editor concerns that belong to a document layer, and they
-were the reason the old widget both drew the scene and mutated the model. This
-one only draws.
+It draws and it does not mutate. No picking, no selection, no hover, no scene
+editing — those need a document and a command stack, and a viewport that reaches
+into the model directly is how a repaint ends up being the thing that changes it.
+Phase 5 embeds this; it does not extend it.
 """
 
 from __future__ import annotations
@@ -176,9 +173,9 @@ class FullscreenTriangle:
 
     Holds no buffer. The vertices come from ``gl_VertexID`` in
     ``shaders/fullscreen.vert``; the VAO exists purely because core profile
-    removed the default one and refuses to draw without a bound object. That
-    single line is the most common reason a widget ported off fixed-function
-    renders a blank frame in silence.
+    removed the default one and refuses to draw without a bound object. A
+    missing bind is an ``INVALID_OPERATION`` that draws nothing and, unless the
+    error queue is polled, says nothing — a blank viewport with no diagnostic.
     """
 
     def __init__(self) -> None:
