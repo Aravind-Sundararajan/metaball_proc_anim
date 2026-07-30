@@ -1,6 +1,6 @@
 # Refactor Plan: from XML sphere editor to procedural animation + metaballs
 
-**Status:** approved, in progress
+**Status:** Phases 0–2 landed, Phase 3 in progress — see §7
 **Date:** 2026-07-30
 **North star:** Rain World's creature simulation model (`PhysicalObject` / `BodyChunk` /
 `BodyChunkConnection` / `GraphicsModule` / `Limb`).
@@ -235,3 +235,62 @@ Phases 1 and 2 are valid under either choice. Only Phase 4's foothold logic is a
 
 Phases 0 and 1 carry the leverage — nothing else is buildable until the core model is a
 constraint graph. Phase 3 is what makes the project the thing it was described as.
+
+---
+
+## 7. Progress
+
+Branch `refactor/core-rewrite`. The legacy app (`main.py`, `opengl_widget.py`,
+`armature_manager.py`) is deliberately untouched and still runs; the new stack is being
+built alongside it rather than in place of it, so there is never a point with nothing
+working.
+
+| Phase | State | Notes |
+| --- | --- | --- |
+| 0 — stop the bleeding | done | Baseline commit first; the tree was entirely untracked. |
+| 1 — core rewrite | done | `core/{body,solver,curve}.py`, `io/{xml_v2,xml_legacy}.py`. |
+| 2 — sim loop | done | `anim/clock.py`, `render/draw_points.py`. |
+| 3 — metaballs | in progress | Packing contract landed; field and GL scaffolding underway. |
+| 4 — controllers | not started | |
+| 5 — editor rework | not started | |
+
+### Defects closed
+
+* §2.1 reversed duplicate links — links are undirected and deduplicated; the graph can no
+  longer be silently emptied.
+* §2.2 rejected cycles — cycles are legal, and `spanning_forest()` reports non-tree edges
+  rather than dropping chunks.
+* §2.3 silent format break — v2 carries a version, and the legacy reader detects which era
+  a v1 file came from. The absolute-era fixture reads 4.444 where it had read 20.0.
+* §2.4 lossy import — mesh type, height and material survive as opaque chunk metadata; a
+  missing `<mesh>` is reported rather than silently defaulted.
+* §2.5 curve defects — one accessor supplies the control points for both sampling and
+  drawing, the Bézier parameter is solved for rather than approximated, handles translate
+  with their key.
+* §2.6 name-as-identity — identity is a stable integer id; duplicate names are legal.
+* §2.7 dead code — deleted.
+* §2.8 no commits — baseline plus per-phase history.
+
+### Decisions taken during implementation
+
+* **Constraint corrections are averaged over each chunk's acting links, not summed.**
+  Summing diverges to NaN within ~400 ticks at valence 4 and above, which any cyclic body
+  reaches immediately. Measured, not assumed.
+* **Legacy mesh fields stay opaque metadata rather than becoming `Body` fields.** A v1
+  capsule's `height` describes a segment, which in this model is a link's rest length, not
+  a property of either chunk it joins. Promoting it would reintroduce the per-bone mesh
+  concept the rewrite exists to remove.
+* **Every SDF primitive is a round cone; links carry the geometry.** A chunk emits a
+  primitive only when nothing links it, because a cone already contains its end spheres and
+  smooth-min over the redundancy would inflate the surface by `k/4`.
+* **Solver iteration count is a per-creature softness knob, not a global constant.** At the
+  default 4 iterations a hanging chain gives ~8% under load, halving with each doubling of
+  iterations. For a Rain World body that give is desirable, not a defect.
+
+### Deferred
+
+The plan's Phase 2 item to replace the unconditional 16 ms `QTimer` in `main.py:134` has
+been moved to Phase 3. That timer drives the *legacy* widget against the *legacy*
+`ArmatureManager`; the clock that replaces it belongs to the new viewport, which Phase 3
+builds. Fixing it in place would mean wiring the new simulation into the old widget only to
+delete that wiring immediately afterward.
