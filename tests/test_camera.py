@@ -358,3 +358,51 @@ class TestInteraction:
 
     def test_repr_is_readable(self):
         assert "OrbitCamera" in repr(OrbitCamera())
+
+
+class TestOrthographic:
+    """The projection moves the per-pixel variation from directions to origins."""
+
+    def test_all_directions_are_parallel(self):
+        camera = OrbitCamera(distance=6.0, yaw=30.0, pitch=20.0, orthographic=True)
+        _, directions = camera.ray_directions(16, 12)
+
+        assert np.allclose(directions, directions[0, 0], atol=1e-6)
+
+    def test_origins_tile_a_plane(self):
+        camera = OrbitCamera(distance=6.0, orthographic=True, ortho_height=4.0)
+        origins, _ = camera.ray_directions(16, 12)
+
+        assert origins.shape == (12, 16, 3)
+        # Pixel centres, so the sampled span is one pixel short of the full height.
+        span = float(np.linalg.norm(origins[-1, 0] - origins[0, 0]))
+        assert span == pytest.approx(4.0 * (1 - 1 / 12), rel=1e-4)
+
+    def test_perspective_still_shares_one_origin(self):
+        camera = OrbitCamera(distance=6.0)
+        origin, directions = camera.ray_directions(16, 12)
+
+        assert origin.shape == (3,)
+        assert directions.shape == (12, 16, 3)
+
+    def test_ortho_height_defaults_to_the_perspective_framing(self):
+        """Toggling projection should compare, not re-frame."""
+        camera = OrbitCamera(distance=10.0, fov_y=45.0, orthographic=True)
+        assert camera.ortho_height == pytest.approx(2.0 * 10.0 * camera.tan_half_fov)
+
+    def test_ortho_height_can_be_overridden_and_cleared(self):
+        camera = OrbitCamera(distance=10.0, orthographic=True)
+        camera.ortho_height = 3.0
+        assert camera.ortho_height == pytest.approx(3.0)
+        camera.ortho_height = None
+        assert camera.ortho_height == pytest.approx(2.0 * 10.0 * camera.tan_half_fov)
+
+    @pytest.mark.parametrize("bad", [0.0, -2.0])
+    def test_non_positive_ortho_height_rejected(self, bad):
+        with pytest.raises(ValueError):
+            OrbitCamera(orthographic=True, ortho_height=bad)
+
+    def test_a_degenerate_viewport_is_still_safe(self):
+        camera = OrbitCamera(orthographic=True)
+        origin, directions = camera.ray_directions(0, 0)
+        assert directions.size == 0

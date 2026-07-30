@@ -67,7 +67,8 @@ vec3 pack_depth(float t) {
 
 void main() {
     vec3 direction = camera_ray(v_uv);
-    Hit result = trace(u_camera_position, direction);
+    vec3 origin = camera_origin(v_uv);
+    Hit result = trace(origin, direction);
 
     if (u_debug_mode == 2) {
         frag_colour = vec4(result.hit ? pack_depth(result.t) : vec3(1.0), 1.0);
@@ -83,7 +84,7 @@ void main() {
         return;
     }
 
-    vec3 position = u_camera_position + direction * result.t;
+    vec3 position = origin + direction * result.t;
     vec3 normal = sd_normal(position, u_normal_epsilon);
 
     if (u_debug_mode == 1) {

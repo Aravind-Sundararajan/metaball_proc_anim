@@ -99,6 +99,8 @@ class OrbitCamera:
         far: float = 100.0,
         min_distance: float = MIN_DISTANCE,
         max_distance: float = MAX_DISTANCE,
+        orthographic: bool = False,
+        ortho_height: float | None = None,
     ) -> None:
         if not 0.0 < fov_y < 180.0:
             raise ValueError(f"fov_y must be in (0, 180), got {fov_y}")
@@ -111,6 +113,9 @@ class OrbitCamera:
             )
 
         self.fov_y = float(fov_y)
+        self.orthographic = bool(orthographic)
+        self._ortho_height: float | None = None
+        self.ortho_height = ortho_height
         self.near = float(near)
         self.far = float(far)
         self.min_distance = float(min_distance)
@@ -186,6 +191,25 @@ class OrbitCamera:
         """Half-height of the near plane over its distance. What rays scale by."""
         return math.tan(math.radians(self.fov_y) * 0.5)
 
+    @property
+    def ortho_height(self) -> float:
+        """World units visible vertically under orthographic projection.
+
+        Derived from the perspective framing unless overridden, so toggling
+        projection keeps the subject roughly the same size on screen instead of
+        jumping. That is what makes the toggle usable as a comparison rather than
+        as a re-framing exercise.
+        """
+        if self._ortho_height is not None:
+            return self._ortho_height
+        return 2.0 * self._distance * self.tan_half_fov
+
+    @ortho_height.setter
+    def ortho_height(self, value: float | None) -> None:
+        if value is not None and value <= 0.0:
+            raise ValueError(f"ortho_height must be positive, got {value}")
+        self._ortho_height = None if value is None else float(value)
+
     def view_matrix(self) -> np.ndarray:
         """World to view, ``(4, 4) float32``."""
         rotation = self._rotation()
@@ -218,35 +242,49 @@ class OrbitCamera:
     def ray_directions(self, width: int, height: int) -> tuple[np.ndarray, np.ndarray]:
         """Primary rays for a whole framebuffer.
 
-        Returns ``(origin, directions)`` where ``origin`` is ``(3,)`` — one eye
-        serves every pixel under perspective, and materialising ``H*W`` copies
-        of it would be pure waste — and ``directions`` is ``(H, W, 3)`` of unit
-        vectors, **row 0 at the bottom** to match ``gl_FragCoord`` and
-        ``glReadPixels``.
+        Returns ``(origin, directions)``, both **row 0 at the bottom** to match
+        ``gl_FragCoord`` and ``glReadPixels``.
+
+        The two projections put the per-pixel variation in different places, and
+        the shapes say which: under perspective one eye serves every pixel and
+        the directions fan out, so ``origin`` is ``(3,)`` and materialising
+        ``H*W`` copies of it would be waste. Under orthographic every ray shares
+        one direction and the origins tile a plane, so ``origin`` is
+        ``(H, W, 3)``. :func:`mesh_xml.render.field.raymarch` broadcasts the two
+        against each other, so both shapes feed it unchanged.
 
         Samples pixel centres, which is what the rasteriser interpolates to, so
         a CPU render lines up with the shader's instead of sitting half a pixel
         off.
         """
-        origin = self.position
         if width <= 0 or height <= 0:
             empty = np.zeros((max(height, 0), max(width, 0), 3), dtype=np.float32)
-            return origin, empty
+            return self.position, empty
 
         right, up, forward = self.basis()
-        scale = self.tan_half_fov
         aspect = viewport_aspect(width, height)
 
         ndc_x = 2.0 * (np.arange(width, dtype=np.float64) + 0.5) / width - 1.0
         ndc_y = 2.0 * (np.arange(height, dtype=np.float64) + 0.5) / height - 1.0
 
+        if self.orthographic:
+            half = self.ortho_height * 0.5
+            origins = (
+                self.position[None, None, :].astype(np.float64)
+                + right[None, None, :] * (ndc_x * aspect * half)[None, :, None]
+                + up[None, None, :] * (ndc_y * half)[:, None, None]
+            )
+            directions = np.broadcast_to(forward, (height, width, 3)).copy()
+            return origins.astype(np.float32), directions.astype(np.float32)
+
+        scale = self.tan_half_fov
         directions = (
             forward[None, None, :]
             + right[None, None, :] * (ndc_x * aspect * scale)[None, :, None]
             + up[None, None, :] * (ndc_y * scale)[:, None, None]
         )
         directions /= np.linalg.norm(directions, axis=2, keepdims=True)
-        return origin, directions.astype(np.float32)
+        return self.position, directions.astype(np.float32)
 
     def orbit(self, dx: float, dy: float) -> None:
         """Apply a mouse drag in pixels.

@@ -21,10 +21,27 @@ uniform vec3  u_camera_forward;
 uniform float u_tan_half_fov;
 uniform float u_aspect;
 uniform float u_time;
+uniform int   u_orthographic;
+uniform float u_ortho_height;
+
+// The two projections put the per-pixel variation in different places:
+// perspective fans the directions from one eye, orthographic tiles the origins
+// across a plane and shares one direction. A shader therefore has to ask for
+// both parts of the ray rather than assuming the eye is fixed.
 
 vec3 camera_ray(vec2 uv) {
+    if (u_orthographic != 0) return normalize(u_camera_forward);
     vec2 ndc = uv * 2.0 - 1.0;
     return normalize(u_camera_forward
                      + u_camera_right * (ndc.x * u_aspect * u_tan_half_fov)
                      + u_camera_up * (ndc.y * u_tan_half_fov));
+}
+
+vec3 camera_origin(vec2 uv) {
+    if (u_orthographic == 0) return u_camera_position;
+    vec2 ndc = uv * 2.0 - 1.0;
+    float half_height = u_ortho_height * 0.5;
+    return u_camera_position
+           + u_camera_right * (ndc.x * u_aspect * half_height)
+           + u_camera_up * (ndc.y * half_height);
 }

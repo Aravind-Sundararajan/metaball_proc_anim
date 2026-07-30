@@ -22,6 +22,8 @@ mesh-xml = "mesh_xml.editor.app:main"
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.12.4"
 pytest = "^8.4.1"
+imageio = "^2.37.4"
+imageio-ffmpeg = "^0.6.0"
 
 [tool.pytest.ini_options]
 # Scoped to tests/ so pytest does not collect the legacy root-level test_*.py

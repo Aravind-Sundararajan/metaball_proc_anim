@@ -354,6 +354,8 @@ class RaymarchView(QOpenGLWidget):
         self._program.set_uniform("u_camera_forward", forward)
         self._program.set_uniform("u_tan_half_fov", self.camera.tan_half_fov)
         self._program.set_uniform("u_aspect", viewport_aspect(width, height))
+        self._program.set_uniform("u_orthographic", 1 if self.camera.orthographic else 0)
+        self._program.set_uniform("u_ortho_height", self.camera.ortho_height)
         self._program.set_uniform("u_time", self._clock.elapsed() / 1000.0)
 
     def _rebuild(self) -> None:
