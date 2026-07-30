@@ -10,10 +10,16 @@ Mid-refactor. The original application — an XML sphere-placement editor built 
 fixed-function OpenGL — has been retired; see [docs/REFACTOR_PLAN.md](docs/REFACTOR_PLAN.md)
 for the diagnosis, the phase plan, and a progress log.
 
-**There is currently no runnable editor.** The simulation core, the serialization layer and
-the rendering scaffolding are in place and tested; the editor that drives them is Phase 5.
-The original app is recoverable at the baseline commit if you need it:
-`git show ec05cdf:main.py`.
+```bash
+poetry run mesh-xml
+```
+
+Opens the editor on `examples/chubby_worm.xml`, or on a path given as the first argument.
+Space plays and pauses, `F` frames the rig, `R` toggles the rig overlay, click selects and
+drag moves. The original app is recoverable at the baseline commit: `git show ec05cdf:main.py`.
+
+Procedural controllers are the remaining gap — a rig currently moves because gravity and
+the constraint solver move it, not because anything drives it.
 
 | Layer | State |
 | --- | --- |
@@ -22,8 +28,8 @@ The original app is recoverable at the baseline commit if you need it:
 | `anim/` — fixed-rate clock | done |
 | `render/` — smoothing, SDF packing, CPU field, GL scaffolding | done |
 | `render/gl/shaders/` — metaball raymarcher | done |
+| `editor/` — document, commands, viewport, panels | done |
 | `anim/controllers/` — spine, limb IK, footholds | not started |
-| `editor/` — document, commands, panels | not started |
 
 ![A procedurally animated worm rendered as metaballs](docs/metaballs.png)
 

@@ -1,6 +1,6 @@
 # Refactor Plan: from XML sphere editor to procedural animation + metaballs
 
-**Status:** Phases 0–3 landed, Phase 4 next — see §7
+**Status:** Phases 0–3 and 5 landed, Phase 4 next — see §7
 **Date:** 2026-07-30
 **North star:** Rain World's creature simulation model (`PhysicalObject` / `BodyChunk` /
 `BodyChunkConnection` / `GraphicsModule` / `Limb`).
@@ -278,7 +278,7 @@ working.
 | 2 — sim loop | done | `anim/clock.py`, `render/draw_points.py`. |
 | 3 — metaballs | done | `render/{sdf,field}.py`, `render/gl/`. Validated against the CPU oracle. |
 | 4 — controllers | not started | |
-| 5 — editor rework | not started | |
+| 5 — editor rework | done | `editor/`. Runnable via `poetry run mesh-xml`. |
 
 ### Defects closed
 
