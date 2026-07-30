@@ -20,6 +20,11 @@ dependencies = [
 ruff = "^0.12.4"
 pytest = "^8.4.1"
 
+[tool.pytest.ini_options]
+# Scoped to tests/ so pytest does not collect the legacy root-level test_*.py
+# scripts, two of which open Qt windows on import.
+testpaths = ["tests"]
+
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
