@@ -14,6 +14,9 @@ dependencies = [
     "pyqtgraph (>=0.13.7,<0.14.0)"
 ]
 
+[project.scripts]
+mesh-xml = "mesh_xml.editor.app:main"
+
 [tool.poetry]
 
 [tool.poetry.group.dev.dependencies]

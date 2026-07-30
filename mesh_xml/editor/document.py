@@ -258,7 +258,10 @@ class Document(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.body = Body()
-        self.solver_config = SolverConfig()
+        # The library defaults to no floor, which for an editor means pressing
+        # play drops the rig out of frame and never brings it back. An app is
+        # the right layer to decide there is a world.
+        self.solver_config = SolverConfig(ground_y=0.0)
         self.metaball = MetaballSettings()
         self.clock = Clock()
         self.draw = DrawPoints(self.body)
@@ -304,6 +307,27 @@ class Document(QObject):
         self.clock.reset()
         self.topology_changed.emit()
 
+    def tick(self) -> None:
+        """One fixed simulation tick.
+
+        The single place that knows what a tick consists of. Both :meth:`advance`
+        and :meth:`step_once` route through it, so a controller added here in
+        Phase 4 runs on both paths. Two call sites each remembering the recipe is
+        the exact shape this module exists to delete, and the failure mode is
+        quiet: single-stepping would simply stop running the controllers.
+        """
+        step(self.body, self.clock.dt, self.solver_config)
+        self.draw.update(self.body)
+
+    def step_once(self) -> None:
+        """Advance one tick whatever the play state, without disturbing the pose.
+
+        Toggling ``running`` on and off to steal a tick would look equivalent and
+        is not: pausing captures a new rest pose, so it would quietly overwrite
+        the pose Reset restores to.
+        """
+        self.tick()
+
     def advance(self, elapsed: float) -> float:
         """Run the simulation for one frame. Returns the render blend factor.
 
@@ -312,8 +336,7 @@ class Document(QObject):
         """
         if self._running:
             for _ in self.clock.advance(elapsed):
-                step(self.body, self.clock.dt, self.solver_config)
-                self.draw.update(self.body)
+                self.tick()
             return self.clock.alpha
 
         self.draw.update(self.body)

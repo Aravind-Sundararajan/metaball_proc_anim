@@ -65,12 +65,24 @@ class SolverConfig:
     tuning knob. A rig authored with a degenerate rest length, or one teleported
     across the world, otherwise gains enough speed in a single tick to land
     outside the range where float32 positions resolve at all.
+
+    ``ground_y`` is the one piece of world a body can collide with. It is
+    ``None`` by default because a solver that silently introduces a floor is
+    worse than one with no world at all — a rig authored below the origin would
+    be shoved somewhere its author never put it. An application that wants a
+    floor asks for one. Without it, and with nothing pinned, a body under
+    gravity simply falls forever, which is correct and also useless to look at.
+
+    ``ground_friction`` is how much tangential motion a chunk loses per tick of
+    contact. At ``0`` a body lands and skates.
     """
 
     gravity: tuple[float, ...] = (0.0, -9.81, 0.0)
     damping: float = 0.98
     iterations: int = 4
     max_velocity: float = 100.0
+    ground_y: float | None = None
+    ground_friction: float = 0.35
 
 
 def step(body: Body, dt: float, config: SolverConfig) -> None:
@@ -84,6 +96,41 @@ def step(body: Body, dt: float, config: SolverConfig) -> None:
         return
     _integrate(body, dt, config)
     _project(body, config)
+    _collide_ground(body, config)
+
+
+def _collide_ground(body: Body, config: SolverConfig) -> None:
+    """Lift penetrating chunks onto the floor and shed tangential speed.
+
+    Resolved by moving position alone. Under Verlet the implicit velocity is
+    ``pos - prev_pos``, so lifting a chunk while leaving ``prev_pos`` where it
+    was cancels exactly the downward motion that drove it through, with no
+    separate velocity term to keep in sync. Friction then pulls ``prev_pos``
+    toward the contact point horizontally, which bleeds off sliding.
+
+    Runs after projection rather than before, so a chunk cannot be pushed back
+    underground by the constraint that put it there.
+    """
+    if config.ground_y is None or body.dim < 2:
+        return
+
+    pos = body.pos
+    prev = body.prev_pos
+    floor = config.ground_y + body.radius
+    penetrating = (pos[:, 1] < floor) & (body.inv_mass > 0.0)
+    if not penetrating.any():
+        return
+
+    pos[penetrating, 1] = floor[penetrating]
+
+    friction = min(max(config.ground_friction, 0.0), 1.0)
+    if friction > 0.0:
+        tangential = np.ones(body.dim, dtype=bool)
+        tangential[1] = False
+        contact = np.where(penetrating)[0]
+        prev[np.ix_(contact, tangential)] += friction * (
+            pos[np.ix_(contact, tangential)] - prev[np.ix_(contact, tangential)]
+        )
 
 
 def fixed_step(

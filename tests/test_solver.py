@@ -542,3 +542,86 @@ def test_render_pos_does_not_alias_the_body() -> None:
     drawn[0] = (99.0, 99.0, 99.0)
 
     assert tuple(body.pos[0]) == (0.0, 0.0, 0.0)
+
+
+class TestGroundCollision:
+    """A floor is opt-in: the library default is no world at all.
+
+    Without it a body under gravity with nothing pinned falls forever, which is
+    correct and also the reason an editor has to ask for a floor explicitly.
+    """
+
+    @staticmethod
+    def _chain(n: int = 8, ground: float | None = None, height: float = 4.0) -> tuple[Body, SolverConfig]:
+        body = Body()
+        ids = [body.add_chunk(f"c{i}", [i * 0.5, height, 0.0], radius=0.2) for i in range(n)]
+        for a, b in zip(ids, ids[1:]):
+            body.add_link(a, b)
+        return body, SolverConfig(ground_y=ground, iterations=8)
+
+    def test_without_a_floor_a_body_falls_without_bound(self):
+        body, config = self._chain(ground=None)
+        for _ in range(600):
+            step(body, TICK_DT, config)
+        assert body.pos[:, 1].min() < -50.0
+
+    def test_a_floor_stops_it(self):
+        body, config = self._chain(ground=0.0)
+        for _ in range(600):
+            step(body, TICK_DT, config)
+
+        assert (body.pos[:, 1] >= 0.2 - 1e-3).all()
+        assert np.isfinite(body.pos).all()
+
+    def test_it_rests_at_exactly_one_radius_above_the_floor(self):
+        body, config = self._chain(ground=0.0)
+        for _ in range(600):
+            step(body, TICK_DT, config)
+        assert body.pos[:, 1] == pytest.approx(0.2, abs=1e-3)
+
+    def test_a_non_zero_floor_is_respected(self):
+        body, config = self._chain(ground=-3.0)
+        for _ in range(600):
+            step(body, TICK_DT, config)
+        assert body.pos[:, 1] == pytest.approx(-2.8, abs=1e-3)
+
+    def test_a_pinned_chunk_ignores_the_floor(self):
+        """Pinned means the authored position wins, floor included."""
+        body = Body()
+        pinned = body.add_chunk("pin", [0.0, -5.0, 0.0], radius=0.2, pinned=True)
+        config = SolverConfig(ground_y=0.0)
+        for _ in range(50):
+            step(body, TICK_DT, config)
+        assert body.chunk(pinned).pos[1] == pytest.approx(-5.0)
+
+    def test_friction_shortens_a_slide(self):
+        def slide(friction: float) -> float:
+            body = Body()
+            body.add_chunk("c", [0.0, 0.2, 0.0], radius=0.2)
+            body.pos[0] = [0.3, 0.2, 0.0]
+            config = SolverConfig(ground_y=0.0, ground_friction=friction)
+            for _ in range(80):
+                step(body, TICK_DT, config)
+            return float(body.pos[0, 0])
+
+        assert slide(0.35) < slide(0.0)
+
+    def test_collision_runs_after_projection(self):
+        """Otherwise a constraint can shove a chunk back through the floor."""
+        body = Body()
+        anchor = body.add_chunk("anchor", [0.0, -2.0, 0.0], radius=0.1, pinned=True)
+        hanging = body.add_chunk("hanging", [0.0, 1.0, 0.0], radius=0.1)
+        body.add_link(anchor, hanging, rest=3.0)
+        config = SolverConfig(ground_y=0.0, iterations=8)
+        for _ in range(200):
+            step(body, TICK_DT, config)
+
+        assert body.chunk(hanging).pos[1] >= 0.1 - 1e-3
+
+    def test_a_two_dimensional_body_collides_on_y(self):
+        body = Body(dim=2)
+        body.add_chunk("c", [0.0, 3.0], radius=0.25)
+        config = SolverConfig(ground_y=0.0, gravity=(0.0, -9.81))
+        for _ in range(300):
+            step(body, TICK_DT, config)
+        assert body.pos[0, 1] == pytest.approx(0.25, abs=1e-3)
