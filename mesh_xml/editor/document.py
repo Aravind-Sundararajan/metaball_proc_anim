@@ -459,6 +459,19 @@ class Document(QObject):
         self._replace(body, path)
         self.status.emit(note)
 
+    def adopt(self, body: Body, controllers: ControllerStack | None = None, path=None) -> None:
+        """Take over a rig built in code, optionally with its controllers.
+
+        The serialization format describes a body and says nothing about what
+        drives it, so a controller-driven creature cannot round-trip through a
+        file. Until it can, programmatic construction is the only way to open one
+        in the editor, and this is the supported door — rather than callers
+        reaching into the private replace path and guessing which signals to emit.
+        """
+        self._replace(body, Path(path) if path else None)
+        if controllers is not None:
+            self.controllers = controllers
+
     def save(self, path) -> None:
         path = Path(path)
         xml_v2.save(self.body, path)
