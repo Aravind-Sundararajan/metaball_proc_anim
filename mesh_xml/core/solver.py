@@ -268,14 +268,33 @@ def _project(body: Body, config: SolverConfig) -> None:
         share = np.where(active, elasticity * error / inv_sum, np.float32(0.0))
         offset = axis * share[:, None]
 
+        # Overlapping corrections are damped by a per-LINK weight, the same on
+        # both ends: one over the larger of the two endpoints' active counts.
+        #
+        # Two constraints meet here and each once broke the other. Summing raw
+        # corrections diverges to NaN at valence four and above, which every
+        # cyclic body reaches. But the first cure — dividing each chunk's summed
+        # correction by its own count — broke Newton's third law: a link joining
+        # a degree-one chunk to a degree-three chunk applied full correction on
+        # one side and a third on the other, so every unevenly-connected pair
+        # pumped net momentum into the body. A free chain drifted with no force
+        # on it, and a fifth of a walking creature's thrust was this artifact.
+        #
+        # The symmetric weight satisfies both. Per link the two corrections stay
+        # equal and opposite in mass-weighted terms (m * inv_m = 1 on each
+        # side), so momentum is conserved for any masses; and a chunk of degree
+        # d has every incident weight <= 1/d, so its total correction keeps the
+        # same bound the per-chunk average had, hub stability included.
         correction[:] = 0.0
         hits[:] = 0.0
-        np.add.at(correction, a, -inv_a[:, None] * offset)
-        np.add.at(correction, b, inv_b[:, None] * offset)
         np.add.at(hits, a, active)
         np.add.at(hits, b, active)
-
-        correction /= np.maximum(hits, np.float32(1.0))[:, None]
+        weight = np.float32(1.0) / np.maximum(
+            np.maximum(hits[a], hits[b]), np.float32(1.0)
+        )
+        weighted = offset * weight[:, None]
+        np.add.at(correction, a, -inv_a[:, None] * weighted)
+        np.add.at(correction, b, inv_b[:, None] * weighted)
         pos[free] += correction[free]
 
 

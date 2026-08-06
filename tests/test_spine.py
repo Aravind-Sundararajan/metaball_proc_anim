@@ -247,7 +247,15 @@ def test_the_limit_tracks_its_configured_angle(max_bend: float) -> None:
 
     run(stack, body, 4000, still())
 
-    assert joint_degrees(body, ids).min() > spine.min_joint_degrees - 3.0
+    # 8 degrees, not 3. The 3-degree figure was calibrated against the solver
+    # whose chain-end holds were artificially stiff — that stiffness *was* the
+    # momentum leak, a degree-1 end taking its full correction while its
+    # degree-2 neighbour took half. The conserving solver holds ends at the
+    # per-link symmetric weight, the limit is soft by design, and raising the
+    # gain does not tighten it — it rings (measured: residual is not monotone
+    # in bend_strength). Eight degrees still separates "limited" from the
+    # no-limit control above by a factor of four.
+    assert joint_degrees(body, ids).min() > spine.min_joint_degrees - 8.0
 
 
 def test_a_straight_chain_is_left_alone_by_the_bend_limit() -> None:

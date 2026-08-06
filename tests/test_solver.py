@@ -625,3 +625,67 @@ class TestGroundCollision:
         for _ in range(300):
             step(body, TICK_DT, config)
         assert body.pos[0, 1] == pytest.approx(0.25, abs=1e-3)
+
+
+class TestMomentumConservation:
+    """Projection must not be a force. A free body's centre of mass stays put.
+
+    The first overlap cure — dividing each chunk's summed correction by its own
+    link count — quietly broke this: a link joining chunks of unequal degree
+    applied full correction on one side and a fraction on the other, so every
+    unevenly-connected pair pumped momentum into the body. A fifth of the first
+    self-propelled walker's thrust turned out to be this artifact.
+    """
+
+    @staticmethod
+    def _drift(build) -> float:
+        body = build()
+        com0 = body.pos.mean(axis=0).copy()
+        config = SolverConfig(gravity=(0.0, 0.0, 0.0), damping=1.0)
+        for _ in range(300):
+            step(body, TICK_DT, config)
+        assert np.isfinite(body.pos).all()
+        return float(np.linalg.norm(body.pos.mean(axis=0) - com0))
+
+    def test_an_uneven_chain_does_not_drift(self):
+        """Degree 1 against degree 2 — the smallest case that leaked."""
+
+        def build() -> Body:
+            body = Body()
+            ids = [body.add_chunk(f"c{i}", [x, 0.0, 0.0]) for i, x in enumerate((0.0, 1.0, 2.2))]
+            body.add_link(ids[0], ids[1], rest=1.0)
+            body.add_link(ids[1], ids[2], rest=1.0)
+            return body
+
+        assert self._drift(build) < 1e-3
+
+    def test_a_stretched_star_does_not_drift(self):
+        """A hub is the maximally uneven topology."""
+
+        def build() -> Body:
+            body = Body()
+            hub = body.add_chunk("hub", [0.3, 0.1, 0.0])
+            for k in range(5):
+                angle = 2.0 * np.pi * k / 5
+                tip = body.add_chunk(f"t{k}", [1.6 * np.cos(angle), 1.6 * np.sin(angle), 0.0])
+                body.add_link(hub, tip, rest=1.0)
+            return body
+
+        assert self._drift(build) < 1e-3
+
+    def test_unequal_masses_conserve_momentum_not_position(self):
+        """The heavy chunk moves less; the mass-weighted sum still cancels."""
+        body = Body()
+        light = body.add_chunk("light", [0.0, 0.0, 0.0], mass=1.0)
+        heavy = body.add_chunk("heavy", [2.0, 0.0, 0.0], mass=9.0)
+        body.add_link(light, heavy, rest=1.0)
+
+        masses = np.array([1.0, 9.0])[:, None]
+        com0 = (body.pos * masses).sum(axis=0) / masses.sum()
+        config = SolverConfig(gravity=(0.0, 0.0, 0.0), damping=1.0)
+        for _ in range(300):
+            step(body, TICK_DT, config)
+
+        com1 = (body.pos * masses).sum(axis=0) / masses.sum()
+        assert np.linalg.norm(com1 - com0) < 1e-3
+        assert np.linalg.norm(body.pos[1] - body.pos[0]) == pytest.approx(1.0, abs=1e-3)
