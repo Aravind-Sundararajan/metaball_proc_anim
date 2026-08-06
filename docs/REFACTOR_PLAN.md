@@ -334,7 +334,7 @@ Landed after Phase 5, in one fan-out:
   unevenly-connected pairs — a fifth of the first walker's thrust. Replaced by
   per-link symmetric weights: conserving for any masses, same hub bound.
 
-**Terrain is unblocked.** The two contact-model limits that gated it are
+**Terrain is landed** (`docs/TERRAIN.md`). The two contact-model limits that gated it are
 closed — position-level Coulomb friction (grip scales with load, zero creep
 below the threshold) and angle limits compiled to PUSH/PULL brace links (a
 braced pair of legs holds a load with no postural spring). Design, corrections

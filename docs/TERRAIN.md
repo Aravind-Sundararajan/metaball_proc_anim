@@ -1,6 +1,6 @@
 # Terrain: a world that is also a field
 
-**Status:** approved, in progress
+**Status:** landed — integration measurements in §5
 **Unblocked by:** `docs/CONTACT_MODEL.md` — grip that scales with load, joints that stop
 
 ---
@@ -81,7 +81,33 @@ the cross-cutting acceptance is integration, after they land:
   roughly the angle whose tangent is μ. If that comes out wildly off, the
   contact model is lying somewhere.
 
-## 4. Not in scope
+## 4. What landed, measured
+
+Every package delivered on its acceptance. The slope law resolves to a tenth
+of a degree on a resting chunk; ``Terrain.flat`` reproduces the plane world
+bit-for-bit; an overhang stops an upward push. Footholds project to the
+surface at 2e-9 residual, a retreat on a 20° incline slides ``drive·cos²θ``
+because re-projection annihilates the normal component, and Dangling now means
+a hole in the world. GPU and CPU agree on every pixel of a floor-and-mound
+scene, and the fold order is pinned from both sides. ``<terrain>`` is additive
+in v3 and the document keeps one world, never two copies.
+
+The composed result (``tests/test_terrain_gait.py``): the walker crosses the
+floor and climbs the ramp with every foothold on the terrain surface, climbs
+at 5–10°, stalls at 12–14°, and slides outright at 25° — all below the static
+ceiling of ``atan(μ) = 19.3°``, as it must be, since propulsion spends the
+same friction budget standing still keeps. A guard test fails if any future
+change lets walking beat the static limit: that would be the contact model
+inventing grip.
+
+Two field notes for authors. High friction is not free: at μ = 0.5 the walker
+*wedges* on the steep fillet at the ramp's base where μ = 0.35 skates over it —
+sticky feet trip on terrain features that looser feet slide past. And
+``upload_terrain`` is the terrain upload, not the inherited raw ``upload``;
+the raw path leaves the plane/cone split at zero and the world silently does
+not draw.
+
+## 5. Not in scope
 
 Moving platforms. Terrain editing UI (the format and rendering land first;
 authoring stays in Python this round). Creature-vs-creature collision. Boxes.
