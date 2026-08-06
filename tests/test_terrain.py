@@ -9,11 +9,13 @@ the CPU oracle and the shader stop being checked against the same numbers.
 import numpy as np
 import pytest
 
-pytestmark = pytest.mark.filterwarnings("error::RuntimeWarning", "error::DeprecationWarning")
-
 from mesh_xml.core import distance
 from mesh_xml.core.terrain import Terrain
 from mesh_xml.render import field
+
+pytestmark = pytest.mark.filterwarnings(
+    "error::RuntimeWarning", "error::DeprecationWarning"
+)
 
 
 class TestTheMove:
