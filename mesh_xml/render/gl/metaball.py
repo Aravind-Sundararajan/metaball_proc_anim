@@ -14,6 +14,17 @@ array would cap out in the low hundreds; rather than a texture buffer because
 The texture is reallocated only when the primitive count changes. Rig topology
 changes when a chunk is added or removed, which is an editing action; positions
 change every frame, and those reuse the allocation.
+
+Terrain rides the same machinery. :func:`pack_terrain` lays a
+:class:`~mesh_xml.core.terrain.Terrain` out as stride-8 rows — planes first,
+padded to the cone record's width, then the cones verbatim — so
+:class:`TerrainTexture` is a :class:`PrimitiveTexture` on its own unit with its
+own uniform names and inherits the allocate/subimage path unchanged. The
+padding costs 16 bytes per plane; a second texel-wide texture format would
+save them in exchange for a second upload path to keep correct, on data
+measured in tens of rows. Row order in the texture is the fold order
+``Terrain.distance`` documents, which is what lets ``sd_terrain`` in
+``shaders/sdf.glsl`` fold rows top to bottom and match the CPU exactly.
 """
 
 from __future__ import annotations
@@ -43,9 +54,17 @@ from OpenGL.GL import (
     glTexSubImage2D,
 )
 
+from mesh_xml.core.terrain import Terrain
 from mesh_xml.render.sdf import PRIMITIVE_STRIDE
 
-__all__ = ["MetaballSettings", "PrimitiveTexture", "fragment_source", "SHADER_NAME"]
+__all__ = [
+    "MetaballSettings",
+    "PrimitiveTexture",
+    "TerrainTexture",
+    "fragment_source",
+    "pack_terrain",
+    "SHADER_NAME",
+]
 
 SHADER_NAME = "metaball.frag"
 
@@ -56,6 +75,10 @@ TEXELS_PER_PRIMITIVE = PRIMITIVE_STRIDE // 4
 
 #: Texture unit the primitive texture is bound to.
 PRIMITIVE_TEXTURE_UNIT = 0
+
+#: Texture unit the terrain texture is bound to. Its own unit so creature and
+#: world can both stay bound across a frame.
+TERRAIN_TEXTURE_UNIT = 1
 
 
 @dataclass
@@ -80,6 +103,11 @@ class MetaballSettings:
     debug_mode: int = 0
     light_direction: tuple[float, float, float] = (0.4, 0.8, 0.45)
     surface_colour: tuple[float, float, float] = (0.82, 0.55, 0.42)
+    #: What a hit on the world wears instead of ``surface_colour``. A render
+    #: preference like the other colours, which is why it lives here and not on
+    #: :class:`~mesh_xml.core.terrain.Terrain` — the terrain's *blend* is world
+    #: data and travels with the upload instead (:class:`TerrainTexture`).
+    terrain_colour: tuple[float, float, float] = (0.36, 0.44, 0.31)
     background_colour: tuple[float, float, float] = (0.11, 0.12, 0.14)
 
     def uniforms(self) -> dict[str, object]:
@@ -94,6 +122,7 @@ class MetaballSettings:
             "u_debug_mode": int(self.debug_mode),
             "u_light_direction": tuple(float(v) for v in self.light_direction),
             "u_surface_colour": tuple(float(v) for v in self.surface_colour),
+            "u_terrain_colour": tuple(float(v) for v in self.terrain_colour),
             "u_background_colour": tuple(float(v) for v in self.background_colour),
             "u_primitives": PRIMITIVE_TEXTURE_UNIT,
         }
@@ -183,6 +212,81 @@ class PrimitiveTexture:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+
+
+def pack_terrain(terrain: Terrain | None) -> np.ndarray:
+    """Lay a :class:`Terrain` out as the ``(P + C, 8) float32`` texture rows.
+
+    Planes first, one row each, ``[nx, ny, nz, offset]`` padded with four
+    zeros the shader never fetches; then the cone records verbatim. Row order
+    is authoring order twice over — planes, then cones — because the row index
+    is the fold index in ``sd_terrain`` and :meth:`Terrain.distance` documents
+    exactly that order. Sorting or interleaving here would silently change the
+    surface, not just the layout.
+
+    ``None`` and an empty terrain both pack to zero rows, which is what keeps
+    the shader's terrain path inert (count 0) when there is no world.
+    """
+    if terrain is None:
+        return np.zeros((0, PRIMITIVE_STRIDE), dtype=np.float32)
+
+    planes = np.asarray(terrain.planes, dtype=np.float32)
+    cones = np.asarray(terrain.cones, dtype=np.float32)
+    rows = np.zeros((len(planes) + len(cones), PRIMITIVE_STRIDE), dtype=np.float32)
+    rows[: len(planes), :4] = planes
+    rows[len(planes) :] = cones
+    return rows
+
+
+@dataclass
+class TerrainTexture(PrimitiveTexture):
+    """The world's half of the primitive upload, on its own texture unit.
+
+    A :class:`PrimitiveTexture` because :func:`pack_terrain` deliberately emits
+    the same stride-8 rows, so the whole allocate/subimage path is inherited
+    rather than duplicated. What differs is bookkeeping: the shader needs the
+    plane/cone split to know which rows are half-spaces, and the blend is the
+    terrain's own (world data authored on the :class:`Terrain`, unlike the
+    creature's blend which arrives via :class:`MetaballSettings`).
+    """
+
+    plane_count: int = 0
+    cone_count: int = 0
+    blend: float = 0.0
+    _unit: int = dataclass_field(default=TERRAIN_TEXTURE_UNIT, repr=False)
+
+    def upload_terrain(self, terrain: Terrain | None) -> None:
+        """Send a world to the GPU, or clear it. Requires a current context.
+
+        ``None`` uploads zero rows and zero counts, which renders identically
+        to never having uploaded at all — the shader's count check never
+        reaches the texture.
+        """
+        if terrain is None:
+            self.plane_count = 0
+            self.cone_count = 0
+            self.blend = 0.0
+        else:
+            self.plane_count = len(terrain.planes)
+            self.cone_count = len(terrain.cones)
+            self.blend = float(terrain.blend)
+        self.upload(pack_terrain(terrain))
+
+    def uniforms(self) -> dict[str, object]:
+        return {
+            "u_terrain": self._unit,
+            "u_terrain_plane_count": int(self.plane_count),
+            "u_terrain_cone_count": int(self.cone_count),
+            "u_terrain_blend": float(self.blend),
+        }
+
+    def dispose(self) -> None:
+        super().dispose()
+        # The counts are what the shader trusts; a disposed texture that still
+        # reports rows would have sd_terrain fetch from an unbound unit.
+        self.plane_count = 0
+        self.cone_count = 0
+        self.blend = 0.0
 
 
 def fragment_source() -> str:

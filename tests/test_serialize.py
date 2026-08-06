@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from mesh_xml.core.body import Body, LinkType
+from mesh_xml.core.terrain import Terrain
 from mesh_xml.io import xml_legacy, xml_v2
 
 DATA = Path(__file__).parent / "data"
@@ -226,6 +228,226 @@ def test_v2_refuses_a_link_to_a_missing_chunk(tmp_path: Path) -> None:
 
     with pytest.raises(xml_v2.SchemaError, match="unknown chunk id 9"):
         xml_v2.load(path)
+
+
+# ----------------------------------------------------------------------
+# the <terrain> section: additive in v3, absent means none
+# ----------------------------------------------------------------------
+
+
+def stub_body() -> Body:
+    body = Body(dim=3, name="stub")
+    body.add_chunk("a", (0.0, 1.0, 0.0))
+    return body
+
+
+def hilly_terrain() -> Terrain:
+    # Values chosen to be moved by a float32 round trip, so full-precision
+    # persistence is what these tests actually exercise.
+    return (
+        Terrain(blend=0.1 + 0.2)
+        .add_plane((0.0, 2.0, 0.0), -0.75)
+        .add_plane((1.0, 1.0, 0.0), 1.0 / 3.0)
+        .add_cone((2.0, -0.4, 0.0), 0.9, (4.0, 0.6, 0.0), 1.0 / 7.0)
+    )
+
+
+def test_terrain_roundtrips_blend_planes_and_cones(tmp_path: Path) -> None:
+    terrain = hilly_terrain()
+    path = tmp_path / "hilly.xml"
+    xml_v2.save(stub_body(), path, terrain=terrain)
+
+    loaded = xml_v2.read(path).terrain
+
+    assert loaded is not None
+    # Exact, not approximate: terrain is float64 world data written at full
+    # precision, so a format that quietly rounds it should fail here.
+    assert loaded.blend == terrain.blend
+    assert np.array_equal(loaded.cones, terrain.cones)
+    # Normals pass through add_plane's normalisation again on load, which may
+    # move the last ulp; unit length and direction are the contract.
+    assert loaded.planes == pytest.approx(terrain.planes, abs=1e-12)
+    assert np.linalg.norm(loaded.planes[:, :3], axis=1) == pytest.approx(
+        1.0, abs=1e-12
+    )
+
+
+def test_terrain_keeps_its_fold_order_on_disk(tmp_path: Path) -> None:
+    """Document order is fold order, and the fold is not associative: shuffled
+    primitives are a different ground, so order must survive the trip."""
+    terrain = hilly_terrain()
+    path = tmp_path / "ordered.xml"
+    xml_v2.save(stub_body(), path, terrain=terrain)
+
+    loaded = xml_v2.read(path).terrain
+
+    # Row-for-row, not as sets: the two planes have different normals, so a
+    # reader that reordered them could not pass both lines.
+    assert loaded.planes[0] == pytest.approx(terrain.planes[0], abs=1e-12)
+    assert loaded.planes[1] == pytest.approx(terrain.planes[1], abs=1e-12)
+
+
+def test_a_document_saved_without_terrain_has_no_section_and_loads_none(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "flatland.xml"
+    xml_v2.save(stub_body(), path)
+
+    assert "<terrain" not in path.read_text(encoding="utf-8")
+    assert xml_v2.read(path).terrain is None
+
+
+def test_a_v3_document_without_a_terrain_section_still_loads(tmp_path: Path) -> None:
+    """Absent means none — no version bump, on the `render` attribute's terms."""
+    path = tmp_path / "pre_terrain.xml"
+    path.write_text(
+        '<body version="3" dim="3"><chunks/><links/></body>', encoding="utf-8"
+    )
+
+    rig = xml_v2.read(path)
+
+    assert rig.terrain is None
+    assert rig.body.n_chunks == 0
+
+
+def test_a_v2_document_has_no_terrain_either(tmp_path: Path) -> None:
+    path = tmp_path / "old.xml"
+    path.write_text(
+        '<body version="2" dim="3"><chunks/><links/></body>', encoding="utf-8"
+    )
+
+    assert xml_v2.read(path).terrain is None
+
+
+def test_an_empty_terrain_is_a_world_with_nothing_in_it_not_none(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "void.xml"
+    xml_v2.save(stub_body(), path, terrain=Terrain(blend=0.5))
+
+    loaded = xml_v2.read(path).terrain
+
+    assert loaded is not None
+    assert loaded.is_empty
+    assert loaded.blend == 0.5
+
+
+def test_a_zero_normal_plane_is_refused_on_load(tmp_path: Path) -> None:
+    path = tmp_path / "degenerate.xml"
+    path.write_text(
+        '<body version="3" dim="3"><chunks/><links/>'
+        '<terrain blend="0.3"><plane normal="0 0 0" offset="1.0"/></terrain>'
+        "</body>",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(xml_v2.SchemaError, match="plane"):
+        xml_v2.read(path)
+
+
+def test_a_negative_cone_radius_is_refused_on_load(tmp_path: Path) -> None:
+    path = tmp_path / "negative.xml"
+    path.write_text(
+        '<body version="3" dim="3"><chunks/><links/>'
+        '<terrain blend="0.3"><cone a="0 0 0" ra="-0.1" b="1 0 0" rb="0.2"/></terrain>'
+        "</body>",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(xml_v2.SchemaError, match="cone"):
+        xml_v2.read(path)
+
+
+def test_an_unknown_element_inside_terrain_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "boxy.xml"
+    path.write_text(
+        '<body version="3" dim="3"><chunks/><links/>'
+        '<terrain blend="0.3"><box size="1 1 1"/></terrain>'
+        "</body>",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(xml_v2.SchemaError, match="box"):
+        xml_v2.read(path)
+
+
+def test_a_plane_missing_its_offset_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "adrift.xml"
+    path.write_text(
+        '<body version="3" dim="3"><chunks/><links/>'
+        '<terrain blend="0.3"><plane normal="0 1 0"/></terrain>'
+        "</body>",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(xml_v2.SchemaError, match="offset"):
+        xml_v2.read(path)
+
+
+# ----------------------------------------------------------------------
+# the document carries the world: adopt -> save -> open
+# ----------------------------------------------------------------------
+
+
+def test_document_carries_terrain_through_adopt_save_open(tmp_path: Path) -> None:
+    from mesh_xml.editor.document import Document
+
+    terrain = hilly_terrain()
+    document = Document()
+    document.adopt(stub_body(), terrain=terrain)
+
+    # One world, not two copies: the property IS the solver's field.
+    assert document.terrain is terrain
+    assert document.solver_config.terrain is terrain
+
+    path = tmp_path / "world.xml"
+    document.save(path)
+
+    fresh = Document()
+    fresh.open(path)
+    loaded = fresh.terrain
+
+    assert loaded is not None
+    assert fresh.solver_config.terrain is loaded, (
+        "the loaded world must be the one the solver collides with"
+    )
+    assert loaded.blend == terrain.blend
+    assert np.array_equal(loaded.cones, terrain.cones)
+    assert loaded.planes == pytest.approx(terrain.planes, abs=1e-12)
+
+
+def test_opening_a_terrainless_file_clears_the_previous_world(tmp_path: Path) -> None:
+    from mesh_xml.editor.document import Document
+
+    path = tmp_path / "bare.xml"
+    xml_v2.save(stub_body(), path)
+
+    document = Document()
+    document.adopt(stub_body(), terrain=Terrain.flat(0.0))
+    assert document.terrain is not None
+
+    document.open(path)
+
+    assert document.terrain is None
+    assert document.solver_config.terrain is None
+
+
+def test_setting_terrain_announces_and_stays_in_sync(tmp_path: Path) -> None:
+    from mesh_xml.editor.document import Document
+
+    document = Document()
+    seen: list[bool] = []
+    document.terrain_changed.connect(lambda: seen.append(True))
+
+    world = Terrain.flat(0.5)
+    document.set_terrain(world)
+
+    assert seen == [True]
+    assert document.solver_config.terrain is world
+
+    # Same object again is not a change.
+    document.set_terrain(world)
+    assert seen == [True]
 
 
 # ----------------------------------------------------------------------

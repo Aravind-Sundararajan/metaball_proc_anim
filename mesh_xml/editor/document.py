@@ -30,6 +30,7 @@ from PySide6.QtCore import QObject, Signal
 from mesh_xml.anim import Clock, ControllerStack
 from mesh_xml.core import Body, LinkType
 from mesh_xml.core.solver import SolverConfig
+from mesh_xml.core.terrain import Terrain
 from mesh_xml.io import xml_legacy, xml_v2
 from mesh_xml.render import DrawPoints, sdf
 from mesh_xml.render.gl.metaball import MetaballSettings
@@ -250,6 +251,7 @@ class Document(QObject):
     chunk_changed = Signal(int)
     selection_changed = Signal()
     settings_changed = Signal()
+    terrain_changed = Signal()
     running_changed = Signal(bool)
     dirty_changed = Signal(bool)
     history_changed = Signal()
@@ -354,6 +356,40 @@ class Document(QObject):
         )
 
     # ------------------------------------------------------------------
+    # the world
+    # ------------------------------------------------------------------
+
+    @property
+    def terrain(self) -> Terrain | None:
+        """The world the creature stands in, or ``None`` for the flat default.
+
+        Read from :attr:`solver_config` rather than stored again: the solver
+        collides with the terrain and the viewport draws it, and two copies of
+        a world is exactly how the picture and the physics would drift apart.
+        One world (TERRAIN.md §2) — this property is a view of it, not a
+        second home for it.
+        """
+        return self.solver_config.terrain
+
+    def set_terrain(self, terrain: Terrain | None) -> None:
+        """Install a world, replacing the object wholesale.
+
+        Identity is the change signal: terrain does not move per tick, so
+        consumers (the viewport's upload) may treat a new object as "the world
+        changed" and an unchanged one as nothing to do. Mutating a ``Terrain``
+        in place therefore goes unnoticed on purpose — build a new one.
+
+        Not a :class:`Command` and not a dirty-flag edit: terrain authoring
+        stays in Python this round (TERRAIN.md §4), and :meth:`adopt` routes
+        through here after :meth:`_replace` has already declared the document
+        clean — a loaded world must not reopen as an unsaved change.
+        """
+        if terrain is self.solver_config.terrain:
+            return
+        self.solver_config.terrain = terrain
+        self.terrain_changed.emit()
+
+    # ------------------------------------------------------------------
     # editing
     # ------------------------------------------------------------------
 
@@ -442,15 +478,18 @@ class Document(QObject):
 
     def new(self) -> None:
         self._replace(Body(), None)
+        self.set_terrain(None)
         self.status.emit("New rig")
 
     def open(self, path) -> None:
         """Load a rig and its gait, falling back to the legacy reader for v1 files."""
         path = Path(path)
         controllers: ControllerStack | None = None
+        terrain: Terrain | None = None
         try:
             rig = xml_v2.read(path)
             controllers = rig.controllers
+            terrain = rig.terrain
             body = rig.body
             driven = len(controllers.controllers)
             note = f"Opened {path.name}"
@@ -462,30 +501,43 @@ class Document(QObject):
             note = f"Opened {path.name} (legacy, {result.coords} coordinates)"
             if result.missing_mesh:
                 note += f"; {len(result.missing_mesh)} bone(s) had no mesh"
-        self.adopt(body, controllers=controllers, path=path)
+        self.adopt(body, controllers=controllers, path=path, terrain=terrain)
         self.status.emit(note)
 
-    def adopt(self, body: Body, controllers: ControllerStack | None = None, path=None) -> None:
-        """Take over a rig, optionally with the gait driving it.
+    def adopt(
+        self,
+        body: Body,
+        controllers: ControllerStack | None = None,
+        path=None,
+        terrain: Terrain | None = None,
+    ) -> None:
+        """Take over a rig, optionally with the gait driving it and its world.
 
         The supported door for installing a body the document did not load
         itself, rather than callers reaching into the private replace path and
         guessing which signals to emit. Used both by :meth:`open` and by code
         that builds a creature directly.
+
+        ``terrain=None`` *clears* any previous world rather than keeping it,
+        for the same reason :meth:`_replace` drops the old controllers: what a
+        previous document stood on means nothing to this one, and a stale
+        floor under a fresh rig would be drawn and collided with silently.
         """
         self._replace(body, Path(path) if path else None)
         if controllers is not None:
             self.controllers = controllers
+        self.set_terrain(terrain)
 
     def save(self, path) -> None:
-        """Write the body *and* its gait.
+        """Write the body, its gait, *and* its world.
 
         Passing the controllers is the whole point of the v3 format: without it
         a save keeps the skeleton and silently discards everything that made it
-        move.
+        move. The terrain rides along on the same reasoning — a creature saved
+        without its world reloads standing on nothing.
         """
         path = Path(path)
-        xml_v2.save(self.body, path, self.controllers)
+        xml_v2.save(self.body, path, self.controllers, terrain=self.terrain)
         self.path = path
         self.set_dirty(False)
         self.status.emit(f"Saved {path.name}")

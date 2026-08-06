@@ -83,6 +83,24 @@ a creature reloads at the start of its first step rather than half way through
 whichever one was in flight when the file was written. ``seed`` *is* written,
 because the per-rig randomness is a property of the individual and replaying a
 gait requires it.
+
+``<terrain>``: additive in v3, absent means none
+------------------------------------------------
+The world the creature stands in (``docs/TERRAIN.md``) is a ``<terrain>``
+section beside ``<controllers>``: a ``blend`` attribute and ``<plane>`` /
+``<cone>`` children in authoring order — which is fold order, and therefore
+part of the world, exactly as controller order is part of the gait. A document
+without the section has no terrain, which is the truth about every document
+written before terrain existed, so this is an addition on the ``render``
+attribute's terms and not a version bump: absent preserves the old meaning.
+An empty ``<terrain/>`` is not the same statement as no section — it is a
+world with nothing in it, and it reloads as one.
+
+Terrain floats are written at full ``float64`` precision, like controller
+parameters and unlike chunk positions: :class:`~mesh_xml.core.terrain.Terrain`
+stores ``float64`` (it is the solver's collision oracle, not just the
+renderer's), so :func:`_fmt`'s float32 shortening would quietly move the world
+by an ulp on every save.
 """
 
 from __future__ import annotations
@@ -96,6 +114,7 @@ import numpy as np
 from mesh_xml.anim.controller import Controller, ControllerStack
 from mesh_xml.anim.serialize import decode_controller, encode_controller
 from mesh_xml.core.body import Body, LinkType
+from mesh_xml.core.terrain import Terrain
 
 __all__ = [
     "FORMAT_VERSION",
@@ -126,24 +145,31 @@ class SchemaError(ValueError):
 
 @dataclass(frozen=True)
 class Rig:
-    """A document's body and the gait that drives it.
+    """A document's body, the gait that drives it, and the world it stands in.
 
     :func:`load` returns only the body, the way it always has, so a caller that
     has no use for controllers is not made to know they exist. This is the
     richer record, mirroring :class:`~mesh_xml.io.xml_legacy.LegacyImport`.
+    ``terrain`` is ``None`` for every document without a ``<terrain>`` section,
+    which is all of them written before it existed.
     """
 
     body: Body
     controllers: ControllerStack
+    terrain: Terrain | None = None
 
 
 def save(
-    body: Body, path: str | Path, controllers: ControllerStack | None = None
+    body: Body,
+    path: str | Path,
+    controllers: ControllerStack | None = None,
+    terrain: Terrain | None = None,
 ) -> None:
-    """Write ``body``, and any gait driving it, to ``path`` as a v3 document.
+    """Write ``body``, any gait driving it, and any world it stands in.
 
     Every field :func:`read` needs is written explicitly; nothing is inferred from
-    element nesting, and nothing but the controller order from document order.
+    element nesting, and nothing but the controller and terrain-primitive order
+    from document order.
 
     Raises :class:`~mesh_xml.anim.serialize.ControllerFormatError` naming the
     controller if any of them cannot be written, rather than saving the body and
@@ -188,6 +214,32 @@ def save(
     if controllers is not None:
         for controller in controllers.controllers:
             stack_el.append(encode_controller(controller))
+
+    # Full float64 precision (repr, not _fmt): Terrain stores float64 and the
+    # solver collides against it, so a float32 shortening would move the world
+    # a little on every save. See the module docstring.
+    if terrain is not None:
+        terrain_el = ET.SubElement(root, "terrain", {"blend": repr(terrain.blend)})
+        for plane in terrain.planes:
+            ET.SubElement(
+                terrain_el,
+                "plane",
+                {
+                    "normal": " ".join(repr(float(v)) for v in plane[:3]),
+                    "offset": repr(float(plane[3])),
+                },
+            )
+        for cone in terrain.cones:
+            ET.SubElement(
+                terrain_el,
+                "cone",
+                {
+                    "a": " ".join(repr(float(v)) for v in cone[0:3]),
+                    "ra": repr(float(cone[3])),
+                    "b": " ".join(repr(float(v)) for v in cone[4:7]),
+                    "rb": repr(float(cone[7])),
+                },
+            )
 
     tree = ET.ElementTree(root)
     ET.indent(tree, space="    ")
@@ -283,7 +335,11 @@ def read(path: str | Path) -> Rig:
         if not added:
             raise SchemaError(f"duplicate link between chunks {a} and {b}")
 
-    return Rig(body=body, controllers=_read_controllers(root, body))
+    return Rig(
+        body=body,
+        controllers=_read_controllers(root, body),
+        terrain=_read_terrain(root),
+    )
 
 
 def _read_controllers(root: ET.Element, body: Body) -> ControllerStack:
@@ -310,6 +366,47 @@ def _read_controllers(root: ET.Element, body: Body) -> ControllerStack:
             )
         stack.add(decoded)
     return stack
+
+
+def _read_terrain(root: ET.Element) -> Terrain | None:
+    """Rebuild the world, in document order — which is fold order.
+
+    Absent means none, exactly like a missing ``render`` attribute means
+    rendered: the default is what every older document already meant, so no
+    version bump. Children rebuild through :meth:`Terrain.add_plane` and
+    :meth:`Terrain.add_cone` so a hand-edited zero normal or negative radius is
+    refused here, by the same validation authoring gets, rather than becoming a
+    NaN in the solver three layers later.
+    """
+    element = root.find("terrain")
+    if element is None:
+        return None
+
+    try:
+        terrain = Terrain(blend=_float_attr(element, "blend", default=0.3))
+    except ValueError as exc:
+        raise SchemaError(f"terrain: {exc}") from None
+
+    for child in element:
+        if child.tag not in ("plane", "cone"):
+            raise SchemaError(f"unexpected <{child.tag}> inside <terrain>")
+        try:
+            if child.tag == "plane":
+                terrain.add_plane(
+                    _float_list(child, "normal"), _required_float(child, "offset")
+                )
+            else:
+                terrain.add_cone(
+                    _float_list(child, "a"),
+                    _required_float(child, "ra"),
+                    _float_list(child, "b"),
+                    _required_float(child, "rb"),
+                )
+        except SchemaError:
+            raise
+        except ValueError as exc:
+            raise SchemaError(f"terrain <{child.tag}>: {exc}") from None
+    return terrain
 
 
 def _fmt(value: float) -> str:
@@ -341,6 +438,19 @@ def _float_attr(el: ET.Element, name: str, default: float | None) -> float | Non
         raise SchemaError(
             f"<{el.tag}> attribute {name}={raw!r} is not a number"
         ) from None
+
+
+def _required_float(el: ET.Element, name: str) -> float:
+    """Like :func:`_float_attr`, for attributes with no sensible default.
+
+    A separate helper because ``_float_attr``'s ``default=None`` is a *value* —
+    an absent link ``rest`` means "measure it" — so it cannot also mean
+    "required" the way :func:`_int_attr`'s does.
+    """
+    value = _float_attr(el, name, default=None)
+    if value is None:
+        raise SchemaError(f"<{el.tag}> is missing required attribute {name!r}")
+    return value
 
 
 def _float_list(el: ET.Element, name: str) -> list[float]:

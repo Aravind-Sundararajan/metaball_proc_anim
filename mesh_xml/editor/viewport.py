@@ -76,7 +76,8 @@ from mesh_xml.render.gl.camera import OrbitCamera, viewport_aspect
 from mesh_xml.render.gl.context import RaymarchView
 
 if TYPE_CHECKING:
-    from mesh_xml.render.gl.metaball import PrimitiveTexture
+    from mesh_xml.core.terrain import Terrain
+    from mesh_xml.render.gl.metaball import PrimitiveTexture, TerrainTexture
 
 __all__ = [
     "FRAME_INTERVAL_MS",
@@ -256,6 +257,7 @@ class MetaballViewport(RaymarchView):
         from mesh_xml.render.gl.metaball import (
             SHADER_NAME,
             PrimitiveTexture,
+            TerrainTexture,
             fragment_source,
         )
 
@@ -264,6 +266,11 @@ class MetaballViewport(RaymarchView):
 
         self._document = document
         self._texture: PrimitiveTexture = PrimitiveTexture()
+        self._terrain: TerrainTexture = TerrainTexture()
+        # The Terrain object last sent to the GPU. Identity, not equality:
+        # a world does not move per tick, so the only re-upload trigger is the
+        # document swapping the object itself (Document.set_terrain says so).
+        self._terrain_source: Terrain | None = None
         self._uploaded: np.ndarray | None = None
         self._pending: np.ndarray | None = None
         self._upload_count = 0
@@ -285,6 +292,9 @@ class MetaballViewport(RaymarchView):
         document.topology_changed.connect(self._invalidate_geometry)
         document.chunk_changed.connect(self._on_chunk_changed)
         document.settings_changed.connect(self._invalidate_frame)
+        # A terrain-only change must buy a frame or the new world never shows;
+        # the paint itself notices the object swap and re-uploads.
+        document.terrain_changed.connect(self._invalidate_frame)
         document.selection_changed.connect(self._invalidate_frame)
         document.running_changed.connect(self._on_running_changed)
         self.camera_changed.connect(self._invalidate_frame)
@@ -301,6 +311,11 @@ class MetaballViewport(RaymarchView):
     def texture(self) -> PrimitiveTexture:
         """The primitive texture. Exposed so a test can watch it reallocate."""
         return self._texture
+
+    @property
+    def terrain_texture(self) -> TerrainTexture:
+        """The world's texture. Exposed so a test can watch what was uploaded."""
+        return self._terrain
 
     @property
     def idle(self) -> bool:
@@ -445,9 +460,12 @@ class MetaballViewport(RaymarchView):
 
     def paintGL(self) -> None:
         self._flush_upload()
+        self._flush_terrain()
         self.uniforms.update(self._document.metaball.uniforms())
         self.uniforms.update(self._texture.uniforms())
+        self.uniforms.update(self._terrain.uniforms())
         self._texture.bind()
+        self._terrain.bind()
         super().paintGL()
         if self._show_rig:
             self._paint_rig()
@@ -469,6 +487,21 @@ class MetaballViewport(RaymarchView):
         self._uploaded = self._pending
         self._pending = None
         self._upload_count += 1
+
+    def _flush_terrain(self) -> None:
+        """Upload the world once per object, not per frame. Context must be current.
+
+        The creature re-packs every frame because it moves every tick; the
+        terrain does neither, so the per-frame cost here is one identity
+        check. Anything that replaces the document's terrain — open, adopt,
+        :meth:`Document.set_terrain` — installs a new object, and that is the
+        entire re-upload protocol.
+        """
+        terrain = self._document.terrain
+        if terrain is self._terrain_source:
+            return
+        self._terrain.upload_terrain(terrain)
+        self._terrain_source = terrain
 
     def _paint_rig(self) -> None:
         """Draw links and chunks over the surface, then put GL back as it was.
@@ -554,9 +587,12 @@ class MetaballViewport(RaymarchView):
     def _release_texture(self) -> None:
         self.makeCurrent()
         self._texture.dispose()
+        self._terrain.dispose()
         self.doneCurrent()
         self._uploaded = None
         self._pending = None
+        # Forget what was uploaded so a fresh context gets a fresh upload.
+        self._terrain_source = None
 
     # ------------------------------------------------------------------
     # camera
@@ -569,6 +605,11 @@ class MetaballViewport(RaymarchView):
         :class:`OrbitCamera` documents as the intended response to a rig
         authored at a different scale — the defaults assume a body a few units
         across and silently clamp anything larger.
+
+        Deliberately frames the CREATURE, not the world: a terrain plane is an
+        infinite half-space, so bounds that included it would put the camera
+        at infinity looking at everything and showing nothing. Framing is for
+        the thing being edited, and the ground will be wherever the rig is.
         """
         lo, hi = field.bounds(self._document.primitives(), self._document.metaball.blend)
         radius = float(np.linalg.norm(hi - lo)) * 0.5
