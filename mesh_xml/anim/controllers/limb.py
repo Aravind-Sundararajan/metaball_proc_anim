@@ -528,9 +528,17 @@ class FootholdPicker:
         return self._on_ground(limb.root + _fit(self.stance, limb.root.shape[0]))
 
     def _candidate(self, ctx: ControlContext, limb: LimbFrame) -> np.ndarray:
-        travel = limb.velocity
+        # The command replaces the measurement; it must not add to it. Leading
+        # by velocity + drive feeds achieved speed back into stride length,
+        # which is positive feedback: on a slipping floor the leak damped it,
+        # and on a gripping floor the walker overshot its command by sixty
+        # percent (measured open-loop gain 1.6 to 1.8). A driven limb strides
+        # for the speed it was asked for; an undriven one still leads the
+        # motion it can only observe.
         if self.drive is not None:
-            travel = travel + _fit(self.drive, limb.root.shape[0])
+            travel = _fit(self.drive, limb.root.shape[0])
+        else:
+            travel = limb.velocity
         point = self._neutral(limb) + travel * np.float32(self.lead_time)
         if self.scatter > 0.0:
             point = point + ctx.rng.normal(0.0, self.scatter, size=point.shape).astype(
