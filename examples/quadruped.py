@@ -41,6 +41,7 @@ import sys
 import numpy as np
 
 from mesh_xml.anim import ControlContext, ControllerStack
+from mesh_xml.anim.serialize import register
 from mesh_xml.anim.controllers.limb import FootholdPicker, LimbIK
 from mesh_xml.anim.controllers.spine import Breathe, SpineFollow
 from mesh_xml.core import Body
@@ -99,6 +100,12 @@ class KinematicPath:
                 continue
             sway = 0.03 * np.sin(ctx.time * 4.0 + index * 0.5)
             ctx.body.set_pos(chunk, (x + offset[0], offset[1] + sway, offset[2]))
+
+
+# One call, and the gait becomes savable. Without it xml_v2.save refuses the
+# whole document by name rather than writing a body with a hole where its
+# locomotion used to be.
+register("kinematic_path", KinematicPath)
 
 
 def build() -> tuple[Body, ControllerStack]:

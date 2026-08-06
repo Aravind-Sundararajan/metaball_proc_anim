@@ -188,7 +188,10 @@ def test_v2_stamps_the_version_on_the_root(tmp_path: Path) -> None:
 
     root = ET.parse(path).getroot()
     assert root.tag == "body"
-    assert root.get("version") == "2"
+    # Against the constant, not a literal: the point of the stamp is that the
+    # current version can move, and a test that hardcodes it has to be edited
+    # every time it does.
+    assert root.get("version") == xml_v2.FORMAT_VERSION
     assert root.get("dim") == "3"
 
 
@@ -198,9 +201,13 @@ def test_v2_refuses_a_legacy_document() -> None:
 
 
 def test_v2_refuses_an_unknown_version(tmp_path: Path) -> None:
-    path = tmp_path / "v3.xml"
+    # One past whatever this reader knows, so the fixture stays genuinely
+    # unknown instead of becoming a supported version on the next bump.
+    unknown = str(int(max(xml_v2.READABLE_VERSIONS, key=int)) + 1)
+    path = tmp_path / "future.xml"
     path.write_text(
-        '<body version="3" dim="3"><chunks/><links/></body>', encoding="utf-8"
+        f'<body version="{unknown}" dim="3"><chunks/><links/></body>',
+        encoding="utf-8",
     )
 
     with pytest.raises(xml_v2.SchemaError, match="version"):

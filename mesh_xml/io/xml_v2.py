@@ -1,14 +1,47 @@
-"""Version 2 of the on-disk body format: flat, world-space and explicitly versioned.
+"""The on-disk body format: flat, world-space, explicitly versioned, v3 current.
+
+The module keeps the name of the era it introduced; the version that matters is
+the one stamped on the root, not the one in the filename. :func:`save` writes v3.
+:func:`load` reads v3 and v2, and refuses everything else by name.
 
 Why the version stamp
 ---------------------
 The v1 ``<armature>`` format changed the meaning of ``position`` from world space
 to parent-relative without leaving a single byte in the file to say so (refactor
 plan §2.3). Both eras are still on disk here, and nothing but a heuristic can now
-tell them apart — see :mod:`mesh_xml.io.xml_legacy`. ``version="2"`` on the root
+tell them apart — see :mod:`mesh_xml.io.xml_legacy`. The version on the root
 exists so that failure can never repeat: a reader that does not recognise the
 version refuses the document instead of quietly misinterpreting it. Any future
 semantic change to an attribute bumps the version rather than reusing a name.
+
+Which is what v3 is. v2 described a body and said nothing about what drove it, so
+saving a creature kept its chunks and lost its entire gait — silently, because
+there was nowhere in the document for a gait to have been. Every creature with
+one therefore had to stay a Python script. v3 adds ``<controllers>`` and nothing
+else; a v2 document is still read exactly as it always was and simply has no
+gait, which is the truth about it rather than a default being invented for it.
+Reading both eras is not politeness, it is the whole reason the stamp is there.
+
+Why ``<controllers>`` is a section beside ``<chunks>``, not part of a chunk
+--------------------------------------------------------------------------
+A controller spans chunks — a spine chain, a three-chunk limb — so there is no
+one chunk that owns it, and hanging it off any of them would make the body's
+structure and the gait's structure disagree about which is which. It also has to
+be able to name a chunk that is not there: the editor deletes chunks while the
+simulation runs, and :meth:`~mesh_xml.anim.controller.ControlContext.add_force`
+ignores a dead id on purpose rather than taking the simulation down over a
+keypress. So a dangling controller id is **not** refused the way a dangling link
+id is. A link to a missing chunk is a document that cannot be built; a controller
+holding one is a document whose runtime already has a defined answer, and a
+loader stricter than the runtime would make a rig unopenable for a reason
+nothing else in the system considers an error.
+
+Order matters here and nowhere else in the document. Chunks and links are records
+that can be shuffled freely and the reader treats them that way. Controllers are
+a pipeline: force accumulates commutatively, but a controller that carries pinned
+chunks along a path has to run before the limbs that solve against where those
+chunks now are. So ``<controllers>`` is read and written in document order, and
+that order is part of the gait rather than an artefact of how it was written.
 
 Why a flat ``<chunks>`` + ``<links>`` layout, not a nested tree
 --------------------------------------------------------------
@@ -41,33 +74,80 @@ Deliberately not persisted
 starts every chunk at rest, which is what :meth:`Body.add_chunk` already does.
 Persisting velocity would make a file's meaning depend on the tick it was written
 on.
+
+The gait is written on exactly the same terms, and
+:mod:`mesh_xml.anim.serialize` says how it finds the line: the clock on
+:class:`~mesh_xml.anim.controller.ControllerStack`, the foothold a leg happens to
+be standing on and the mode it happens to be in are all products of ticking, and
+a creature reloads at the start of its first step rather than half way through
+whichever one was in flight when the file was written. ``seed`` *is* written,
+because the per-rig randomness is a property of the individual and replaying a
+gait requires it.
 """
 
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
+from mesh_xml.anim.controller import Controller, ControllerStack
+from mesh_xml.anim.serialize import decode_controller, encode_controller
 from mesh_xml.core.body import Body, LinkType
 
-__all__ = ["FORMAT_VERSION", "SchemaError", "save", "load"]
+__all__ = [
+    "FORMAT_VERSION",
+    "READABLE_VERSIONS",
+    "Rig",
+    "SchemaError",
+    "read",
+    "save",
+    "load",
+]
 
-FORMAT_VERSION = "2"
+FORMAT_VERSION = "3"
+
+READABLE_VERSIONS = ("2", "3")
+"""Every era :func:`load` understands, newest last.
+
+v2 is here in full rather than through a converter: the only difference is a
+section it does not have, so a v2 document needs nothing done to it beyond being
+allowed through.
+"""
 
 _MAX_ID = int(np.iinfo(np.int32).max)
 
 
 class SchemaError(ValueError):
-    """A document is not a well-formed v2 body."""
+    """A document is not a well-formed body."""
 
 
-def save(body: Body, path: str | Path) -> None:
-    """Write ``body`` to ``path`` as a v2 document.
+@dataclass(frozen=True)
+class Rig:
+    """A document's body and the gait that drives it.
 
-    Every field :func:`load` needs is written explicitly; nothing is inferred from
-    element nesting or document order.
+    :func:`load` returns only the body, the way it always has, so a caller that
+    has no use for controllers is not made to know they exist. This is the
+    richer record, mirroring :class:`~mesh_xml.io.xml_legacy.LegacyImport`.
+    """
+
+    body: Body
+    controllers: ControllerStack
+
+
+def save(
+    body: Body, path: str | Path, controllers: ControllerStack | None = None
+) -> None:
+    """Write ``body``, and any gait driving it, to ``path`` as a v3 document.
+
+    Every field :func:`read` needs is written explicitly; nothing is inferred from
+    element nesting, and nothing but the controller order from document order.
+
+    Raises :class:`~mesh_xml.anim.serialize.ControllerFormatError` naming the
+    controller if any of them cannot be written, rather than saving the body and
+    the part of the gait that happened to encode.
     """
     root = ET.Element(
         "body",
@@ -102,16 +182,31 @@ def save(body: Body, path: str | Path) -> None:
             },
         )
 
+    seed = 0 if controllers is None else controllers.seed
+    stack_el = ET.SubElement(root, "controllers", {"seed": str(seed)})
+    if controllers is not None:
+        for controller in controllers.controllers:
+            stack_el.append(encode_controller(controller))
+
     tree = ET.ElementTree(root)
     ET.indent(tree, space="    ")
     tree.write(Path(path), encoding="utf-8", xml_declaration=True)
 
 
 def load(path: str | Path) -> Body:
-    """Read a v2 document into a :class:`Body`.
+    """Read a document into a :class:`Body`, discarding any gait it carries.
 
     Raises :class:`SchemaError` rather than guessing whenever the document is not
-    recognisably v2, including when it is a v1 ``<armature>`` file.
+    a version this module knows, including when it is a v1 ``<armature>`` file.
+    """
+    return read(path).body
+
+
+def read(path: str | Path) -> Rig:
+    """Read a document into a :class:`Body` and the :class:`ControllerStack` on it.
+
+    A v2 document has no gait and yields an empty stack — the honest reading,
+    since v2 could not describe one.
     """
     root = ET.parse(Path(path)).getroot()
 
@@ -124,9 +219,10 @@ def load(path: str | Path) -> Body:
         raise SchemaError(f"expected root element <body>, got <{root.tag}>")
 
     version = root.get("version")
-    if version != FORMAT_VERSION:
+    if version not in READABLE_VERSIONS:
         raise SchemaError(
-            f"unsupported body format version {version!r}, expected {FORMAT_VERSION!r}"
+            f"unsupported body format version {version!r}, "
+            f"expected one of {', '.join(repr(v) for v in READABLE_VERSIONS)}"
         )
 
     dim = _int_attr(root, "dim", default=3)
@@ -185,7 +281,33 @@ def load(path: str | Path) -> Body:
         if not added:
             raise SchemaError(f"duplicate link between chunks {a} and {b}")
 
-    return body
+    return Rig(body=body, controllers=_read_controllers(root, body))
+
+
+def _read_controllers(root: ET.Element, body: Body) -> ControllerStack:
+    """Rebuild the stack in document order.
+
+    Controller ids are not checked against the body; see the module docstring for
+    why a stale one is a runtime condition rather than a malformed document.
+    """
+    element = root.find("controllers")
+    if element is None:
+        return ControllerStack(body)
+
+    stack = ControllerStack(body, seed=_int_attr(element, "seed", default=0))
+    for child in element:
+        if child.tag != "controller":
+            raise SchemaError(f"unexpected <{child.tag}> inside <controllers>")
+        decoded = decode_controller(child)
+        # A FootholdPicker is registered and nests inside a limb, but has no
+        # update(): on the stack it would raise once per tick rather than here.
+        if not isinstance(decoded, Controller):
+            raise SchemaError(
+                f"{child.get('type')!r} is not something that can drive a body; "
+                "it has no update() and belongs inside a controller, not beside one"
+            )
+        stack.add(decoded)
+    return stack
 
 
 def _fmt(value: float) -> str:

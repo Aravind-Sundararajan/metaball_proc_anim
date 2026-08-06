@@ -445,36 +445,47 @@ class Document(QObject):
         self.status.emit("New rig")
 
     def open(self, path) -> None:
-        """Load a rig, falling back to the legacy reader for pre-v2 files."""
+        """Load a rig and its gait, falling back to the legacy reader for v1 files."""
         path = Path(path)
+        controllers: ControllerStack | None = None
         try:
-            body = xml_v2.load(path)
+            rig = xml_v2.read(path)
+            controllers = rig.controllers
+            body = rig.body
+            driven = len(controllers.controllers)
             note = f"Opened {path.name}"
+            if driven:
+                note += f" ({driven} controller(s))"
         except Exception:
             result = xml_legacy.read_legacy(path)
             body = result.body
             note = f"Opened {path.name} (legacy, {result.coords} coordinates)"
             if result.missing_mesh:
                 note += f"; {len(result.missing_mesh)} bone(s) had no mesh"
-        self._replace(body, path)
+        self.adopt(body, controllers=controllers, path=path)
         self.status.emit(note)
 
     def adopt(self, body: Body, controllers: ControllerStack | None = None, path=None) -> None:
-        """Take over a rig built in code, optionally with its controllers.
+        """Take over a rig, optionally with the gait driving it.
 
-        The serialization format describes a body and says nothing about what
-        drives it, so a controller-driven creature cannot round-trip through a
-        file. Until it can, programmatic construction is the only way to open one
-        in the editor, and this is the supported door — rather than callers
-        reaching into the private replace path and guessing which signals to emit.
+        The supported door for installing a body the document did not load
+        itself, rather than callers reaching into the private replace path and
+        guessing which signals to emit. Used both by :meth:`open` and by code
+        that builds a creature directly.
         """
         self._replace(body, Path(path) if path else None)
         if controllers is not None:
             self.controllers = controllers
 
     def save(self, path) -> None:
+        """Write the body *and* its gait.
+
+        Passing the controllers is the whole point of the v3 format: without it
+        a save keeps the skeleton and silently discards everything that made it
+        move.
+        """
         path = Path(path)
-        xml_v2.save(self.body, path)
+        xml_v2.save(self.body, path, self.controllers)
         self.path = path
         self.set_dirty(False)
         self.status.emit(f"Saved {path.name}")
