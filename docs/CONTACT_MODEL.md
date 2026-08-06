@@ -1,6 +1,6 @@
 # Contact model: the two blockers gating terrain
 
-**Status:** approved, in progress
+**Status:** landed — with the corrections in §6
 **Found by:** the self-propulsion work, which audited its own thrust
 **Gates:** terrain, and any creature that stands rather than hangs
 
@@ -111,3 +111,34 @@ sphere.
 
 Terrain itself (this is its prerequisite, not it). Orientation constraints on
 single chunks. Twist along chains. Contact manifolds beyond the ground plane.
+
+## 6. What implementation taught the design
+
+Everything in §2–3 landed and every acceptance criterion is a passing test,
+but four things in the plan as written were wrong or incomplete, found by
+building it:
+
+* **min and max limits do not compose on one joint.** Both compile to the
+  single ``a–c`` link a ``Body`` can hold, so a joint takes a floor or a
+  ceiling below 180°, not both. The helper raises rather than silently keeping
+  one. Composing them needs a second-link mechanism nothing else yet justifies.
+* **A single free-standing leg cannot demonstrate the payoff.** A point
+  contact under a top-heavy load is an inverted pendulum; it topples in
+  ~0.35 s whatever the knee does. A stop rigidifies a leg — it cannot balance
+  one. The payoff test is therefore two mirrored legs under one load, the
+  smallest structure whose standing is decided by knees alone.
+* **Near-straight stops are soft.** Chord sensitivity goes as sin θ, so a 90°
+  floor holds to half a degree while a ~155° floor gives ~11° under full load.
+  Inherent to the compilation; stated in the module docstring.
+* **The walker overshot its command once the floor could grip.** Footholds led
+  by velocity *plus* drive — positive feedback the slipping floor had been
+  damping (measured open-loop gain 1.6–1.8). A command now replaces the
+  measurement; gain brackets unity.
+
+And the integration measurement that sets expectations for rig authors:
+**stops are safety rails below the gait's working range, not springs inside
+it.** A knee floor at 100° — under the swing's flexion — keeps full walking
+speed; at 150° it halves travel for about one percent of standing height. And
+stops do not replace the postural controller on a *walking* creature: with
+posture off, the collapse simply moves to the hip, the joint without a stop.
+Static structure belongs to stops; dynamic balance stays a controller job.

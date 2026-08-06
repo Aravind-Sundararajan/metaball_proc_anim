@@ -598,6 +598,7 @@ class SolverPanel(_Panel):
         self._iterations.setRange(1, 64)
         self._damping = _spin(0.0, 1.0, 0.01)
         self._max_velocity = _spin(0.1, 10_000.0, 1.0, decimals=1, suffix=" u/s")
+        self._friction = _spin(0.0, 5.0, 0.05, decimals=2)
         self._gravity = tuple(_spin(-1000.0, 1000.0, 0.1, decimals=2) for _ in _AXES)
         self._zero_g = QCheckBox("Zero gravity")
 
@@ -612,6 +613,7 @@ class SolverPanel(_Panel):
         self._iterations.valueChanged.connect(self._on_iterations_changed)
         self._damping.valueChanged.connect(self._on_damping_changed)
         self._max_velocity.valueChanged.connect(self._on_max_velocity_changed)
+        self._friction.valueChanged.connect(self._on_friction_changed)
         for spin in self._gravity:
             spin.valueChanged.connect(self._on_gravity_changed)
         self._zero_g.toggled.connect(self._on_zero_g_toggled)
@@ -626,6 +628,7 @@ class SolverPanel(_Panel):
         layout.addRow("Iterations", self._iterations)
         layout.addRow("Damping", self._damping)
         layout.addRow("Max velocity", self._max_velocity)
+        layout.addRow("Friction (mu)", self._friction)
 
         self._iterations.setToolTip(
             "Relaxation passes per tick. This is a per-creature softness knob, "
@@ -642,6 +645,12 @@ class SolverPanel(_Panel):
             "A backstop in world units per second, not a tuning knob. It exists "
             "so a degenerate rest length cannot fling a chunk out past where "
             "float32 positions resolve."
+        )
+        self._friction.setToolTip(
+            "Coulomb coefficient for the ground plane. Grip scales with the "
+            "load a foot carries: held outright below mu times the normal "
+            "load, sliding above it. Zero is a perfectly slick floor. Values "
+            "above 1 are legal and simply very grippy."
         )
         return box
 
@@ -676,6 +685,11 @@ class SolverPanel(_Panel):
         self._document.settings_changed.emit()
 
     @_user_edit
+    def _on_friction_changed(self, value: float) -> None:
+        self._document.solver_config.ground_friction = float(value)
+        self._document.settings_changed.emit()
+
+    @_user_edit
     def _on_gravity_changed(self, _value: float) -> None:
         gravity = tuple(spin.value() for spin in self._gravity)
         if any(gravity):
@@ -706,6 +720,7 @@ class SolverPanel(_Panel):
         self._iterations.setValue(int(config.iterations))
         self._damping.setValue(float(config.damping))
         self._max_velocity.setValue(float(config.max_velocity))
+        self._friction.setValue(float(config.ground_friction))
         for spin, value in zip(self._gravity, gravity):
             spin.setValue(value)
             spin.setEnabled(not zero)
