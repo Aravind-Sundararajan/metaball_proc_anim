@@ -95,13 +95,21 @@ class Chunk:
 
 @dataclass(frozen=True)
 class Link:
-    """A read-only snapshot of one distance constraint, keyed by chunk id."""
+    """A read-only snapshot of one distance constraint, keyed by chunk id.
+
+    ``render`` says whether the link carries flesh as well as force. The SDF
+    surface is built from links — one round cone each — so a mechanism link (a
+    knee stop, a brace) has to be able to opt out or it grows a membrane across
+    the joint it limits. The solver ignores this field entirely; it is a
+    statement about the surface, not the physics.
+    """
 
     a: int
     b: int
     rest: float
     type: LinkType
     elasticity: float
+    render: bool = True
 
 
 class Body:
@@ -135,6 +143,7 @@ class Body:
         self._link_rest = np.zeros(self._link_cap, dtype=np.float32)
         self._link_type = np.zeros(self._link_cap, dtype=np.uint8)
         self._link_elasticity = np.ones(self._link_cap, dtype=np.float32)
+        self._link_render = np.ones(self._link_cap, dtype=bool)
 
         self._slot_of: dict[int, int] = {}
         # Canonical id pair -> index into the link arrays. A dict rather than a
@@ -200,6 +209,11 @@ class Body:
     def link_elasticity(self) -> np.ndarray:
         """``(M,) float32`` correction scale in ``[0, 1]`` per solver iteration."""
         return self._link_elasticity[: self._n_links]
+
+    @property
+    def link_render(self) -> np.ndarray:
+        """``(M,) bool`` whether each link contributes surface geometry."""
+        return self._link_render[: self._n_links]
 
     # ------------------------------------------------------------------
     # chunks
@@ -367,6 +381,7 @@ class Body:
         rest: float | None = None,
         type: LinkType = LinkType.NORMAL,
         elasticity: float = 1.0,
+        render: bool = True,
     ) -> bool:
         """Connect two chunks. Returns ``False`` if the link already exists.
 
@@ -377,6 +392,11 @@ class Body:
 
         ``rest`` defaults to the chunks' current separation, so authoring a rig
         in the viewport captures its own rest pose.
+
+        ``render=False`` marks a mechanism link — an angle stop, a brace — that
+        must constrain without growing flesh: the surface is built from links,
+        and a brace across a knee would otherwise render as a membrane over the
+        joint it exists to limit.
         """
         slot_a = self._require_slot(id_a)
         slot_b = self._require_slot(id_b)
@@ -403,6 +423,7 @@ class Body:
         self._link_rest[i] = rest
         self._link_type[i] = int(type)
         self._link_elasticity[i] = elasticity
+        self._link_render[i] = render
         self._link_at[key] = i
         self._n_links += 1
         return True
@@ -420,6 +441,7 @@ class Body:
             self._link_rest[index] = self._link_rest[last]
             self._link_type[index] = self._link_type[last]
             self._link_elasticity[index] = self._link_elasticity[last]
+            self._link_render[index] = self._link_render[last]
             # The link relocated out of the tail now lives at `index`, so its
             # entry has to follow it or the next lookup returns a stale slot.
             moved = (
@@ -442,6 +464,7 @@ class Body:
         rest: float | None = None,
         type: LinkType | None = None,
         elasticity: float | None = None,
+        render: bool | None = None,
     ) -> None:
         """Edit an existing link's fields, validating as :meth:`add_link` does.
 
@@ -463,6 +486,8 @@ class Body:
             if not 0.0 <= elasticity <= 1.0:
                 raise ValueError(f"elasticity must be in [0, 1], got {elasticity}")
             self._link_elasticity[index] = elasticity
+        if render is not None:
+            self._link_render[index] = render
 
     def link(self, id_a: int, id_b: int) -> Link:
         index = self._link_index(id_a, id_b)
@@ -474,6 +499,7 @@ class Body:
             rest=float(self._link_rest[index]),
             type=LinkType(int(self._link_type[index])),
             elasticity=float(self._link_elasticity[index]),
+            render=bool(self._link_render[index]),
         )
 
     def _link_index(self, id_a: int, id_b: int) -> int | None:
@@ -487,6 +513,7 @@ class Body:
                 rest=float(self._link_rest[i]),
                 type=LinkType(int(self._link_type[i])),
                 elasticity=float(self._link_elasticity[i]),
+                render=bool(self._link_render[i]),
             )
 
     def neighbors(self, chunk_id: int) -> list[int]:
@@ -578,6 +605,7 @@ class Body:
         self._link_rest = np.resize(self._link_rest, self._link_cap)
         self._link_type = np.resize(self._link_type, self._link_cap)
         self._link_elasticity = np.resize(self._link_elasticity, self._link_cap)
+        self._link_render = np.resize(self._link_render, self._link_cap)
 
     def __repr__(self) -> str:
         return (

@@ -154,3 +154,37 @@ class TestRealRig:
         for slot in range(body.n_chunks):
             centre = body.pos[slot]
             assert np.isclose(ends, centre).all(axis=1).any()
+
+
+class TestMechanismLinks:
+    """render=False carries force without flesh — the contract angle limits need."""
+
+    def test_a_mechanism_link_emits_no_cone(self):
+        body = chain(3)
+        ids = body.chunk_ids()
+        body.add_link(ids[0], ids[2], render=False)
+
+        assert body.n_links == 3
+        assert sdf.primitive_count(body) == 2
+
+    def test_a_chunk_held_only_by_mechanism_links_keeps_its_sphere(self):
+        """Held by braces, not fused into them."""
+        body = Body()
+        a = body.add_chunk("a", [0.0, 0.0, 0.0], radius=0.3)
+        b = body.add_chunk("b", [1.0, 0.0, 0.0], radius=0.4)
+        body.add_link(a, b, render=False)
+
+        packed = sdf.pack(body)
+        assert len(packed) == 2
+        for row in packed:
+            assert row[0:3] == pytest.approx(row[4:7])
+
+    def test_rendered_geometry_is_unchanged_by_adding_a_brace(self):
+        body = chain(4)
+        ids = body.chunk_ids()
+        before = sdf.pack(body).copy()
+        body.add_link(ids[0], ids[2], render=False)
+        body.add_link(ids[1], ids[3], render=False)
+
+        after = sdf.pack(body)
+        assert np.array_equal(np.sort(before, axis=0), np.sort(after, axis=0))

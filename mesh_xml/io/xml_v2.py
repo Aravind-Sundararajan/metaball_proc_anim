@@ -170,17 +170,18 @@ def save(
 
     links_el = ET.SubElement(root, "links")
     for link in body.links():
-        ET.SubElement(
-            links_el,
-            "link",
-            {
-                "a": str(link.a),
-                "b": str(link.b),
-                "rest": _fmt(link.rest),
-                "type": link.type.name,
-                "elasticity": _fmt(link.elasticity),
-            },
-        )
+        attrs = {
+            "a": str(link.a),
+            "b": str(link.b),
+            "rest": _fmt(link.rest),
+            "type": link.type.name,
+            "elasticity": _fmt(link.elasticity),
+        }
+        # Written only when false: an absent attribute means what every document
+        # written before the flag existed already meant, so no version bump.
+        if not link.render:
+            attrs["render"] = "false"
+        ET.SubElement(links_el, "link", attrs)
 
     seed = 0 if controllers is None else controllers.seed
     stack_el = ET.SubElement(root, "controllers", {"seed": str(seed)})
@@ -275,6 +276,7 @@ def read(path: str | Path) -> Rig:
                 rest=_float_attr(el, "rest", default=None),
                 type=_link_type(el.get("type", "NORMAL")),
                 elasticity=_float_attr(el, "elasticity", default=1.0),
+                render=_bool_attr(el, "render", default=True),
             )
         except ValueError as exc:
             raise SchemaError(f"link {a}-{b}: {exc}") from None

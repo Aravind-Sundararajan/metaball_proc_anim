@@ -73,12 +73,22 @@ DEGENERATE_EPSILON = 1e-6
 
 
 def primitive_count(body: Body) -> int:
-    """How many primitives :func:`pack` will emit for ``body``."""
+    """How many primitives :func:`pack` will emit for ``body``.
+
+    Only rendered links count. A mechanism link — an angle stop compiled to a
+    PUSH brace across a joint — constrains without carrying flesh, and a chunk
+    whose every link is mechanism still emits its own sphere: it is held by
+    braces, not fused into them.
+    """
     linked = set()
+    rendered = 0
     for link in body.links():
+        if not link.render:
+            continue
+        rendered += 1
         linked.add(link.a)
         linked.add(link.b)
-    return body.n_links + (body.n_chunks - len(linked))
+    return rendered + (body.n_chunks - len(linked))
 
 
 def pack(
@@ -111,21 +121,26 @@ def pack(
     if count == 0:
         return out
 
-    n_links = body.n_links
-    if n_links:
-        a = body.link_a
-        b = body.link_b
-        out[:n_links, 0:3] = _to_vec3(pos[a], body.dim)
-        out[:n_links, 3] = rad[a]
-        out[:n_links, 4:7] = _to_vec3(pos[b], body.dim)
-        out[:n_links, 7] = rad[b]
+    rendered = body.link_render
+    n_rendered = int(rendered.sum())
+    if n_rendered:
+        a = body.link_a[rendered]
+        b = body.link_b[rendered]
+        out[:n_rendered, 0:3] = _to_vec3(pos[a], body.dim)
+        out[:n_rendered, 3] = rad[a]
+        out[:n_rendered, 4:7] = _to_vec3(pos[b], body.dim)
+        out[:n_rendered, 7] = rad[b]
 
+    # Membership in the surface is decided by rendered links alone: a chunk
+    # held only by mechanism links is not fused into them and keeps its sphere.
     linked = set()
     for link in body.links():
+        if not link.render:
+            continue
         linked.add(body.slot(link.a))
         linked.add(body.slot(link.b))
 
-    row = n_links
+    row = n_rendered
     for slot in range(body.n_chunks):
         if slot in linked:
             continue

@@ -444,3 +444,21 @@ def test_a_legacy_import_survives_a_v2_roundtrip(tmp_path: Path) -> None:
         assert loaded.chunk(cid).pos == pytest.approx(original.chunk(cid).pos, rel=1e-6)
         assert loaded.name_of(cid) == original.name_of(cid)
     assert loaded.chunk(loaded.chunk_ids()[-1]).pos[0] == pytest.approx(4.444, abs=1e-3)
+
+
+def test_mechanism_links_round_trip(tmp_path: Path) -> None:
+    """render=False survives save/load; an absent attribute stays true."""
+    body = Body()
+    ids = [body.add_chunk(f"c{i}", (float(i), 0.0, 0.0)) for i in range(3)]
+    body.add_link(ids[0], ids[1])
+    body.add_link(ids[0], ids[2], render=False)
+
+    path = tmp_path / "brace.xml"
+    xml_v2.save(body, path)
+
+    text = path.read_text(encoding="utf-8")
+    assert text.count('render="false"') == 1
+
+    reloaded = xml_v2.load(path)
+    assert reloaded.link(ids[0], ids[1]).render is True
+    assert reloaded.link(ids[0], ids[2]).render is False
