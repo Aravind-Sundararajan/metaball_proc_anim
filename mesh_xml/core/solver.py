@@ -74,10 +74,12 @@ class SolverConfig:
     floor asks for one. Without it, and with nothing pinned, a body under
     gravity simply falls forever, which is correct and also useless to look at.
 
-    ``terrain`` is the general world: an SDF the body collides with, taking
-    precedence over ``ground_y`` when set (docs/TERRAIN.md). The field exists
-    from the contract commit so pickers and documents can carry a world; the
-    collision that consumes it lands in ``_collide_terrain``.
+    ``terrain`` is the general world: an SDF the body collides with
+    (docs/TERRAIN.md). When set and non-empty it takes precedence over
+    ``ground_y`` — having both is not a conflict worth raising over, because
+    ``Terrain.flat`` *is* the old floor spelled in the new vocabulary, so the
+    terrain simply wins. An empty terrain defers to ``ground_y`` instead: "no
+    primitives yet" is an authoring state, not a request to repeal the floor.
 
     ``ground_friction`` is the Coulomb coefficient ``mu``. Each contact tick
     the floor may undo up to ``mu`` times the chunk's penetration depth of its
@@ -118,7 +120,15 @@ def step(
         return
     _integrate(body, dt, config, forces)
     _project(body, config)
-    _collide_ground(body, config)
+    # One world per tick: ``Terrain.flat`` and ``ground_y`` describe the same
+    # floor, so letting both act would resolve the same contact twice. A set,
+    # non-empty terrain is the world and ``ground_y`` stands down; an empty
+    # terrain stands down itself, because "no primitives yet" is an authoring
+    # state, not a request to repeal a floor the config still asks for.
+    if config.terrain is not None and not config.terrain.is_empty:
+        _collide_terrain(body, config)
+    else:
+        _collide_ground(body, config)
 
 
 def _collide_ground(body: Body, config: SolverConfig) -> None:
@@ -180,6 +190,74 @@ def _collide_ground(body: Body, config: SolverConfig) -> None:
     np.divide(grip, slid, out=scale, where=slid > 0.0)
     np.minimum(scale, np.float32(1.0), out=scale)
     pos[at] -= slide * scale[:, None]
+
+
+def _collide_terrain(body: Body, config: SolverConfig) -> None:
+    """Push penetrating chunks out of the terrain field, Coulomb grip included.
+
+    This is :func:`_collide_ground` with the floor's fixed up-axis replaced by
+    the field's gradient. The reasoning there — the lift as the tick's normal
+    impulse measured in displacement, friction as an undo on ``pos`` with
+    ``prev_pos`` never touched, full undo as static grip degrading continuously
+    into kinetic sliding with no branch between them, the small per-tick grip
+    budget as the honest price of expressing normal force as displacement —
+    carries over wholesale and is not repeated here. What the general normal
+    changes:
+
+    * Depth is ``radius - distance(pos)`` at the *pre-lift* position, and the
+      normal is sampled there too: after the lift the chunk sits on the
+      surface, where the gradient no longer remembers which way it sank in.
+    * "Tangential" stops meaning "every lane but y" and becomes the tick's
+      displacement minus its component along the normal. Measuring it after
+      the lift is still exact, not an approximation — the lift is parallel to
+      the normal, so the projection removes it along with the approach
+      velocity, leaving precisely the slide that happened along the surface.
+
+    That substitution is what makes the slope law hold without tuning: a chunk
+    resting on a plane of angle ``theta`` reburies by ``g * dt**2`` vertically
+    each tick, which the field reads as ``cos(theta)`` of depth and
+    ``sin(theta)`` of slide, so full grip — ``mu * depth >= slide`` — is
+    literally ``tan(theta) <= mu``, Coulomb's inequality recovered from
+    displacements alone. A zero normal (deep in a blend pocket, where the
+    gradient vanishes) pushes nowhere and treats the whole displacement as
+    slide, which stalls the chunk rather than handing a NaN downstream.
+
+    The field is evaluated once per call for every chunk and once more for the
+    contact set's normals; contacts are masked, never looped over in Python.
+    """
+    terrain = config.terrain
+    if terrain is None or terrain.is_empty:
+        return
+
+    pos = body.pos
+    prev = body.prev_pos
+    d = terrain.distance(pos) - body.radius
+    penetrating = (d < 0.0) & (body.inv_mass > 0.0)
+    if not penetrating.any():
+        return
+
+    contact = np.where(penetrating)[0]
+    depth = -d[contact]
+    # ``normal`` widens 2-D points to the z = 0 plane and slices its answer
+    # back, so the result already matches ``body.dim``.
+    n = terrain.normal(pos[contact])
+    pos[contact] += depth[:, None] * n
+
+    mu = max(config.ground_friction, 0.0)
+    if mu == 0.0:
+        return
+
+    disp = pos[contact] - prev[contact]
+    slide = disp - (disp * n).sum(axis=1)[:, None] * n
+    slid = np.linalg.norm(slide, axis=1)
+    grip = mu * depth
+
+    # A zero slide needs no undoing and must stay out of the division; its
+    # untouched lane scales a zero vector by one, which is still zero.
+    scale = np.ones_like(slid)
+    np.divide(grip, slid, out=scale, where=slid > 0.0)
+    np.minimum(scale, 1.0, out=scale)
+    pos[contact] -= slide * scale[:, None]
 
 
 def fixed_step(

@@ -19,6 +19,7 @@ from mesh_xml.core.solver import (
     render_pos,
     step,
 )
+from mesh_xml.core.terrain import Terrain
 
 NO_GRAVITY = (0.0, 0.0, 0.0)
 
@@ -648,19 +649,35 @@ class TestCoulombFriction:
         body.add_chunk("c", [0.0, 0.2, 0.0], radius=0.2, mass=mass)
         return body
 
+    @staticmethod
+    def _world(world: str, mu: float) -> SolverConfig:
+        """The same floor twice: the fast path, and the SDF that must equal it.
+
+        The guarantees in this class are what the terrain path is not allowed
+        to lose (docs/TERRAIN.md), so the key cases run against both worlds.
+        """
+        if world == "ground_y":
+            return SolverConfig(ground_y=0.0, ground_friction=mu)
+        return SolverConfig(terrain=Terrain.flat(0.0), ground_friction=mu)
+
     @classmethod
     def _drift(
-        cls, lateral: float, mass: float = 1.0, ticks: int = 400
+        cls,
+        lateral: float,
+        mass: float = 1.0,
+        ticks: int = 400,
+        world: str = "ground_y",
     ) -> float:
         body = cls._resting(mass)
-        config = SolverConfig(ground_y=0.0, ground_friction=cls.MU)
+        config = cls._world(world, cls.MU)
         push = np.zeros((1, 3), dtype=np.float32)
         push[0, 0] = lateral
         for _ in range(ticks):
             step(body, TICK_DT, config, forces=push)
         return float(body.pos[0, 0])
 
-    def test_a_lateral_force_below_the_threshold_causes_no_creep(self):
+    @pytest.mark.parametrize("world", ["ground_y", "terrain"])
+    def test_a_lateral_force_below_the_threshold_causes_no_creep(self, world):
         """Zero drift, not slow drift — the claim the bleed model could not make.
 
         A bleed removes velocity after the tick's displacement has already
@@ -669,14 +686,15 @@ class TestCoulombFriction:
         position-level cap undoes the slide itself, and the bound here is three
         orders of magnitude below what any bleed leaks.
         """
-        assert abs(self._drift(3.0, ticks=1000)) < 1e-3
+        assert abs(self._drift(3.0, ticks=1000, world=world)) < 1e-3
 
-    def test_the_holdable_force_scales_with_the_load(self):
+    @pytest.mark.parametrize("world", ["ground_y", "terrain"])
+    def test_the_holdable_force_scales_with_the_load(self, world):
         """Double the mass is double the weight is double the grip."""
         between = self.THRESHOLD * 1.4
-        assert self._drift(between, mass=1.0) > 1.0
-        assert abs(self._drift(between, mass=2.0)) < 1e-3
-        assert self._drift(between * 2.0, mass=2.0) > 1.0
+        assert self._drift(between, mass=1.0, world=world) > 1.0
+        assert abs(self._drift(between, mass=2.0, world=world)) < 1e-3
+        assert self._drift(between * 2.0, mass=2.0, world=world) > 1.0
 
     def test_load_transmitted_through_a_link_adds_grip(self):
         """Depth carries constraint load, not just gravity.
@@ -726,16 +744,19 @@ class TestCoulombFriction:
         assert float(body.pos[0, 0]) == pytest.approx(settled, abs=1e-4)
         assert float(np.abs(body.pos - body.prev_pos).max()) < 1e-5
 
-    def test_zero_mu_is_exactly_frictionless(self):
+    @pytest.mark.parametrize("world", ["ground_y", "terrain"])
+    def test_zero_mu_is_exactly_frictionless(self, world):
         """Bit-for-bit, not approximately: the propulsion suite's control
         assumes the floor at ``mu = 0`` exerts no horizontal force at all, so a
-        chunk skating on it must match one coasting in empty space."""
+        chunk skating on it must match one coasting in empty space. The terrain
+        path keeps the guarantee because a flat field's normal has exactly zero
+        horizontal components, so the lift writes ``x += depth * 0.0``."""
         skating = self._resting()
         skating.pos[0, 0] = 0.3
         coasting = self._resting()
         coasting.pos[0, 0] = 0.3
 
-        floor = SolverConfig(ground_y=0.0, ground_friction=0.0)
+        floor = self._world(world, mu=0.0)
         space = SolverConfig(gravity=NO_GRAVITY)
         for _ in range(200):
             step(skating, TICK_DT, floor)
@@ -760,6 +781,195 @@ class TestCoulombFriction:
         assert 0.0 < near < double < far
         assert double / near == pytest.approx(2.0, rel=0.05)
         assert far / near == pytest.approx(4.0, rel=0.05)
+
+
+class TestTerrainCollision:
+    """The SDF world: everything the flat floor promised, plus directions.
+
+    ``Terrain.flat`` must reproduce ``ground_y`` because the flat path stays
+    as the fast path and the two must never disagree about the same floor.
+    The ramp, overhang and 2-D cases are the ground the generalisation buys:
+    surfaces whose normals a heightfield could never express.
+    """
+
+    @staticmethod
+    def _drop_chain(config: SolverConfig, ticks: int = 600) -> Body:
+        body = Body()
+        ids = [
+            body.add_chunk(f"c{i}", [i * 0.5, 4.0, 0.0], radius=0.2)
+            for i in range(8)
+        ]
+        for a, b in zip(ids, ids[1:]):
+            body.add_link(a, b)
+        for _ in range(ticks):
+            step(body, TICK_DT, config)
+        return body
+
+    def test_flat_terrain_reproduces_the_ground_plane(self):
+        """Same fall, same landing, same rest — through either code path.
+
+        Not asserted bit-for-bit because the flat path computes in float32
+        lanes while the field answers in float64, but the tolerance here is
+        below a float32 ulp of the coordinates involved: during static grip
+        both paths round to identical positions, so the only divergence is a
+        few kinetic settling ticks.
+        """
+        on_plane = self._drop_chain(SolverConfig(ground_y=0.0, iterations=8))
+        on_field = self._drop_chain(
+            SolverConfig(terrain=Terrain.flat(0.0), iterations=8)
+        )
+
+        assert on_field.pos == pytest.approx(on_plane.pos, abs=1e-5)
+
+    def test_terrain_wins_when_both_worlds_are_set(self):
+        """Both set is not an error — the terrain is simply the world."""
+        body = Body()
+        body.add_chunk("c", [0.0, 3.0, 0.0], radius=0.2)
+        config = SolverConfig(terrain=Terrain.flat(1.0), ground_y=-5.0)
+        for _ in range(400):
+            step(body, TICK_DT, config)
+
+        assert float(body.pos[0, 1]) == pytest.approx(1.2, abs=1e-3)
+
+    def test_an_empty_terrain_defers_to_ground_y(self):
+        """An empty world means "nothing authored yet", not "no floor"."""
+        body = Body()
+        body.add_chunk("c", [0.0, 3.0, 0.0], radius=0.2)
+        config = SolverConfig(terrain=Terrain(), ground_y=0.0)
+        for _ in range(400):
+            step(body, TICK_DT, config)
+
+        assert float(body.pos[0, 1]) == pytest.approx(0.2, abs=1e-3)
+
+    def test_a_pinned_chunk_ignores_the_terrain(self):
+        """Pinned means the authored position wins, worlds included."""
+        body = Body()
+        body.add_chunk("pin", [0.0, -5.0, 0.0], radius=0.2, pinned=True)
+        config = SolverConfig(terrain=Terrain.flat(0.0))
+        for _ in range(50):
+            step(body, TICK_DT, config)
+
+        assert float(body.pos[0, 1]) == pytest.approx(-5.0)
+
+    def test_a_ball_rests_on_a_buried_capsule_ramp(self):
+        """Rest is ``distance == radius`` on the incline, not a global height.
+
+        The ramp is TERRAIN.md's vocabulary sentence: a plane with a tilted
+        buried capsule on top. The ball must come to rest a radius off the
+        capsule's surface, well above where the buried plane would hold it —
+        the assertion is against the field itself, so it cannot be satisfied
+        by any flat-floor behaviour.
+        """
+        terrain = Terrain.flat(-2.0).add_cone(
+            (0.0, -1.0, 0.0), 1.0, (4.0, 1.0, 0.0), 1.0
+        )
+        body = Body()
+        body.add_chunk("ball", [1.0, 2.0, 0.0], radius=0.25)
+        config = SolverConfig(terrain=terrain, ground_friction=0.7)
+        for _ in range(400):
+            step(body, TICK_DT, config)
+
+        assert float(terrain.distance(body.pos)[0]) == pytest.approx(
+            0.25, abs=1e-3
+        )
+        assert float(body.pos[0, 1]) > 0.4
+        assert float(np.abs(body.pos - body.prev_pos).max()) < 1e-4
+
+    def test_an_overhang_stops_a_chunk_pushed_up_into_it(self):
+        """The anti-heightfield case: this world can say "ceiling".
+
+        A chunk driven upward by more than its weight must be held under the
+        overhang, resting a radius below it, and must never pass through on
+        the way — the push-out along a downward normal is the same code that
+        lifts a chunk off a floor.
+        """
+        terrain = Terrain.flat(0.0).add_plane((0.0, -1.0, 0.0), -2.0)
+        body = Body()
+        body.add_chunk("c", [0.0, 1.0, 0.0], radius=0.2)
+        config = SolverConfig(terrain=terrain)
+        push = np.zeros((1, 3), dtype=np.float32)
+        push[0, 1] = 30.0
+
+        highest = -np.inf
+        for _ in range(300):
+            step(body, TICK_DT, config, forces=push)
+            highest = max(highest, float(body.pos[0, 1]))
+
+        assert float(body.pos[0, 1]) == pytest.approx(1.8, abs=1e-3)
+        assert highest <= 1.8 + 1e-3
+
+    def test_a_two_dimensional_body_rests_on_symmetric_terrain(self):
+        """The field widens 2-D points and slices its answers back to 2-D.
+
+        A slope with no z component is symmetric about the ``z = 0`` plane a
+        2-D body lives on, so dropping onto it must land, grip (30 degrees is
+        inside ``mu = 0.7``), and rest a radius off the surface — the whole
+        contact pipeline in two dimensions.
+        """
+        theta = np.radians(30.0)
+        terrain = Terrain().add_plane((-np.sin(theta), np.cos(theta), 0.0), 0.0)
+        body = Body(dim=2)
+        body.add_chunk("c", [0.0, 1.0], radius=0.25)
+        config = SolverConfig(
+            terrain=terrain, ground_friction=0.7, gravity=(0.0, -9.81)
+        )
+        for _ in range(300):
+            step(body, TICK_DT, config)
+
+        assert float(terrain.distance(body.pos)[0]) == pytest.approx(
+            0.25, abs=1e-3
+        )
+        assert abs(float(body.pos[0, 0])) < 0.1
+        assert float(np.abs(body.pos - body.prev_pos).max()) < 1e-4
+
+
+class TestSlopeLaw:
+    """A chunk on an incline holds while ``tan(theta) < mu`` and slides above.
+
+    docs/TERRAIN.md names this the acceptance test, and it needs no tuning
+    because the identity is exact: a resting chunk reburies by ``g * dt**2``
+    vertically each tick, which the field reads as ``cos(theta)`` of depth
+    and ``sin(theta)`` of tangential slide, so the full-grip condition
+    ``mu * depth >= slide`` is literally ``mu >= tan(theta)``. The brackets
+    below sit two to five degrees around each threshold (``atan 0.7`` is
+    34.99 degrees, ``atan 0.4`` is 21.80); if they ever need widening, the
+    contact model is lying somewhere.
+    """
+
+    @staticmethod
+    def _slide(mu: float, theta_deg: float, ticks: int = 400) -> float:
+        """Signed downhill travel of a chunk that starts at rest on the slope."""
+        theta = np.radians(theta_deg)
+        normal = np.array([-np.sin(theta), np.cos(theta), 0.0])
+        downhill = np.array([-np.cos(theta), -np.sin(theta), 0.0])
+
+        body = Body()
+        body.add_chunk("c", normal * 0.2, radius=0.2)
+        start = body.pos[0].copy()
+        config = SolverConfig(
+            terrain=Terrain().add_plane(normal, 0.0), ground_friction=mu
+        )
+        for _ in range(ticks):
+            step(body, TICK_DT, config)
+
+        assert np.isfinite(body.pos).all()
+        return float((body.pos[0] - start) @ downhill)
+
+    @pytest.mark.parametrize(
+        "mu, theta_deg",
+        [(0.7, 30.0), (0.7, 34.0), (0.4, 15.0), (0.4, 21.0)],
+    )
+    def test_holds_below_the_coulomb_angle(self, mu, theta_deg):
+        """Held outright — no creep — right up against the threshold."""
+        assert abs(self._slide(mu, theta_deg)) < 1e-3
+
+    @pytest.mark.parametrize(
+        "mu, theta_deg",
+        [(0.7, 36.0), (0.7, 40.0), (0.4, 23.0), (0.4, 30.0)],
+    )
+    def test_slides_above_the_coulomb_angle(self, mu, theta_deg):
+        """Past the threshold the chunk slides, and it slides *downhill*."""
+        assert self._slide(mu, theta_deg) > 0.05
 
 
 class TestMomentumConservation:
