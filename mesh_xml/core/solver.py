@@ -73,8 +73,15 @@ class SolverConfig:
     floor asks for one. Without it, and with nothing pinned, a body under
     gravity simply falls forever, which is correct and also useless to look at.
 
-    ``ground_friction`` is how much tangential motion a chunk loses per tick of
-    contact. At ``0`` a body lands and skates.
+    ``ground_friction`` is the Coulomb coefficient ``mu``. Each contact tick
+    the floor may undo up to ``mu`` times the chunk's penetration depth of its
+    tangential travel; depth is how a position solver expresses normal force,
+    so grip scales with the load a foot carries — held outright below the
+    Coulomb threshold, sliding above it. At ``0`` a body lands and skates.
+    This field used to be a per-tick velocity-bleed fraction, and a bleed
+    cannot hold: the slide the constraints cause each tick has already
+    happened by the time velocity is bled, so a planted foot crept at every
+    setting. Values swept as a bleed (0.15-0.6) remain sensible as ``mu``.
     """
 
     gravity: tuple[float, ...] = (0.0, -9.81, 0.0)
@@ -108,13 +115,29 @@ def step(
 
 
 def _collide_ground(body: Body, config: SolverConfig) -> None:
-    """Lift penetrating chunks onto the floor and shed tangential speed.
+    """Lift penetrating chunks onto the floor, with Coulomb friction on the way.
 
     Resolved by moving position alone. Under Verlet the implicit velocity is
     ``pos - prev_pos``, so lifting a chunk while leaving ``prev_pos`` where it
     was cancels exactly the downward motion that drove it through, with no
-    separate velocity term to keep in sync. Friction then pulls ``prev_pos``
-    toward the contact point horizontally, which bleeds off sliding.
+    separate velocity term to keep in sync.
+
+    The lift is also the normal impulse, measured in displacement: collision
+    runs after projection, so the depth a chunk must be raised this tick
+    already carries gravity plus every constraint load transmitted into it —
+    a foot bearing a torso is pushed deeper than one bearing only itself.
+    Coulomb grip is proportional to exactly that. The floor undoes up to
+    ``mu * depth`` of the tangential slide the tick produced, and it acts on
+    ``pos``, never on ``prev_pos``: undoing the position erases both the slide
+    and the implicit velocity that would replay it, so a full undo is static
+    grip — the chunk ends the tick where it began it — and a partial undo
+    degrades continuously into kinetic sliding, with no branch between the
+    regimes. The previous model bled a fraction of tangential *velocity*
+    instead, which arrives too late; the constraints have already displaced
+    the chunk by the time friction runs, so a planted foot crept at every
+    bleed setting. A chunk at rest regrounds by ``g * dt**2`` each tick, so
+    its static grip budget is small and per-tick — that is the honest price
+    of expressing normal force as a displacement.
 
     Runs after projection rather than before, so a chunk cannot be pushed back
     underground by the constraint that put it there.
@@ -125,20 +148,31 @@ def _collide_ground(body: Body, config: SolverConfig) -> None:
     pos = body.pos
     prev = body.prev_pos
     floor = config.ground_y + body.radius
-    penetrating = (pos[:, 1] < floor) & (body.inv_mass > 0.0)
+    depth = floor - pos[:, 1]
+    penetrating = (depth > 0.0) & (body.inv_mass > 0.0)
     if not penetrating.any():
         return
 
-    pos[penetrating, 1] = floor[penetrating]
+    contact = np.where(penetrating)[0]
+    pos[contact, 1] = floor[contact]
 
-    friction = min(max(config.ground_friction, 0.0), 1.0)
-    if friction > 0.0:
-        tangential = np.ones(body.dim, dtype=bool)
-        tangential[1] = False
-        contact = np.where(penetrating)[0]
-        prev[np.ix_(contact, tangential)] += friction * (
-            pos[np.ix_(contact, tangential)] - prev[np.ix_(contact, tangential)]
-        )
+    mu = max(config.ground_friction, 0.0)
+    if mu == 0.0:
+        return
+
+    tangential = np.ones(body.dim, dtype=bool)
+    tangential[1] = False
+    at = np.ix_(contact, tangential)
+    slide = pos[at] - prev[at]
+    slid = np.linalg.norm(slide, axis=1)
+    grip = np.float32(mu) * depth[contact]
+
+    # A zero slide needs no undoing and must stay out of the division; its
+    # untouched lane scales a zero vector by one, which is still zero.
+    scale = np.ones_like(slid)
+    np.divide(grip, slid, out=scale, where=slid > 0.0)
+    np.minimum(scale, np.float32(1.0), out=scale)
+    pos[at] -= slide * scale[:, None]
 
 
 def fixed_step(

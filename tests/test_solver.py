@@ -627,6 +627,141 @@ class TestGroundCollision:
         assert body.pos[0, 1] == pytest.approx(0.25, abs=1e-3)
 
 
+class TestCoulombFriction:
+    """The lift is the normal impulse, so grip is ``mu`` times the lift.
+
+    A chunk resting under gravity regrounds by ``g * dt**2`` each tick, so its
+    per-tick grip budget is ``mu * g * dt**2`` of tangential displacement —
+    which is precisely a lateral-force threshold of ``mu * m * g``, Coulomb's
+    law recovered from displacements alone. Every case here leans on that
+    identity: hold below the threshold, slide above it, threshold proportional
+    to load, and nothing discontinuous at the boundary.
+    """
+
+    MU = 0.5
+    THRESHOLD = MU * 9.81
+    """Lateral force a resting unit mass can just barely be held against."""
+
+    @staticmethod
+    def _resting(mass: float = 1.0) -> Body:
+        body = Body()
+        body.add_chunk("c", [0.0, 0.2, 0.0], radius=0.2, mass=mass)
+        return body
+
+    @classmethod
+    def _drift(
+        cls, lateral: float, mass: float = 1.0, ticks: int = 400
+    ) -> float:
+        body = cls._resting(mass)
+        config = SolverConfig(ground_y=0.0, ground_friction=cls.MU)
+        push = np.zeros((1, 3), dtype=np.float32)
+        push[0, 0] = lateral
+        for _ in range(ticks):
+            step(body, TICK_DT, config, forces=push)
+        return float(body.pos[0, 0])
+
+    def test_a_lateral_force_below_the_threshold_causes_no_creep(self):
+        """Zero drift, not slow drift — the claim the bleed model could not make.
+
+        A bleed removes velocity after the tick's displacement has already
+        happened, so even at full bleed this chunk kept its ``F * dt**2`` of
+        slide every tick: 1.9 units over this run, at any bleed setting. The
+        position-level cap undoes the slide itself, and the bound here is three
+        orders of magnitude below what any bleed leaks.
+        """
+        assert abs(self._drift(3.0, ticks=1000)) < 1e-3
+
+    def test_the_holdable_force_scales_with_the_load(self):
+        """Double the mass is double the weight is double the grip."""
+        between = self.THRESHOLD * 1.4
+        assert self._drift(between, mass=1.0) > 1.0
+        assert abs(self._drift(between, mass=2.0)) < 1e-3
+        assert self._drift(between * 2.0, mass=2.0) > 1.0
+
+    def test_load_transmitted_through_a_link_adds_grip(self):
+        """Depth carries constraint load, not just gravity.
+
+        Collision runs after projection, so a pinned chunk pressing down
+        through a compressed link deepens the penetration the floor must undo
+        each tick, and the grip budget grows with it. The same lateral force
+        that flings an unloaded chunk cannot move a loaded one.
+        """
+        shove = self.THRESHOLD * 10.0
+
+        body = self._resting()
+        press = body.add_chunk("press", [0.0, 1.2, 0.0], radius=0.1, pinned=True)
+        body.add_link(press, body.id_at(0), rest=1.5)
+        config = SolverConfig(ground_y=0.0, ground_friction=self.MU)
+        push = np.zeros((2, 3), dtype=np.float32)
+        push[0, 0] = shove
+        for _ in range(400):
+            step(body, TICK_DT, config, forces=push)
+
+        assert abs(float(body.pos[0, 0])) < 1e-3
+        assert self._drift(shove) > 1.0
+
+    def test_sliding_grows_with_the_force_that_drives_it(self):
+        drifts = [self._drift(f) for f in (6.0, 8.0, 10.0)]
+
+        assert all(d > 0.05 for d in drifts)
+        assert drifts[0] < drifts[1] < drifts[2]
+
+    def test_a_slider_stops_once_the_force_is_removed(self):
+        """Kinetic friction sheds energy; it does not just cap a slide."""
+        body = self._resting()
+        config = SolverConfig(ground_y=0.0, ground_friction=self.MU)
+        push = np.zeros((1, 3), dtype=np.float32)
+        push[0, 0] = 10.0
+        for _ in range(200):
+            step(body, TICK_DT, config, forces=push)
+        launched = float(body.pos[0, 0])
+
+        for _ in range(300):
+            step(body, TICK_DT, config)
+        settled = float(body.pos[0, 0])
+        for _ in range(100):
+            step(body, TICK_DT, config)
+
+        assert launched > 0.5
+        assert float(body.pos[0, 0]) == pytest.approx(settled, abs=1e-4)
+        assert float(np.abs(body.pos - body.prev_pos).max()) < 1e-5
+
+    def test_zero_mu_is_exactly_frictionless(self):
+        """Bit-for-bit, not approximately: the propulsion suite's control
+        assumes the floor at ``mu = 0`` exerts no horizontal force at all, so a
+        chunk skating on it must match one coasting in empty space."""
+        skating = self._resting()
+        skating.pos[0, 0] = 0.3
+        coasting = self._resting()
+        coasting.pos[0, 0] = 0.3
+
+        floor = SolverConfig(ground_y=0.0, ground_friction=0.0)
+        space = SolverConfig(gravity=NO_GRAVITY)
+        for _ in range(200):
+            step(skating, TICK_DT, floor)
+            step(coasting, TICK_DT, space)
+
+        assert float(skating.pos[0, 0]) == float(coasting.pos[0, 0])
+
+    def test_displacement_is_continuous_through_the_threshold(self):
+        """A hinge, not a step: zero up to the threshold, linear past it.
+
+        While sliding, each tick adds ``(F/m) * dt**2`` and the floor undoes
+        ``mu * g * dt**2``, so drift is proportional to the excess force alone
+        and vanishes as the threshold is approached from above. A pop at the
+        static-kinetic boundary would show up here as a nonzero intercept.
+        """
+        below = self._drift(self.THRESHOLD - 0.5)
+        near = self._drift(self.THRESHOLD + 0.5)
+        double = self._drift(self.THRESHOLD + 1.0)
+        far = self._drift(self.THRESHOLD + 2.0)
+
+        assert abs(below) < 1e-3
+        assert 0.0 < near < double < far
+        assert double / near == pytest.approx(2.0, rel=0.05)
+        assert far / near == pytest.approx(4.0, rel=0.05)
+
+
 class TestMomentumConservation:
     """Projection must not be a force. A free body's centre of mass stays put.
 

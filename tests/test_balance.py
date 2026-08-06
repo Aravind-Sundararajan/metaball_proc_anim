@@ -458,10 +458,19 @@ def walk(
 
 
 def test_the_creature_travels_forward_on_its_own_footfalls() -> None:
+    """The travel floor is calibrated to Coulomb grip, and that is the point.
+
+    Under the old velocity-bleed friction this walker managed 6.2 units here —
+    0.25 u/s against a commanded 0.5, half the drive lost to planted feet
+    creeping. Position-level Coulomb grip holds the plants and measures 19.8
+    units (0.79 u/s), so the floor sits above anything a slipping contact
+    model can reach: a regression toward creep fails this line rather than
+    passing it quietly.
+    """
     run = walk()
 
     assert run.finite
-    assert run.travelled > 3.5
+    assert run.travelled > 12.0
     assert run.back_height > 0.75
     assert min(run.plants) > 15
 
@@ -480,7 +489,7 @@ def test_reversing_the_drive_reverses_the_travel() -> None:
     forward = walk(drive=0.5)
     backward = walk(drive=-0.5)
 
-    assert forward.travelled > 3.5
+    assert forward.travelled > 12.0
     assert backward.travelled == pytest.approx(-forward.travelled, rel=0.05)
 
 
@@ -495,7 +504,7 @@ def test_without_ground_friction_there_is_nothing_to_push_against() -> None:
 
     assert abs(gripped.travelled) < 0.6
     assert slipping.travelled < 0.6
-    assert walk().travelled > 3.5
+    assert walk().travelled > 12.0
 
 
 @pytest.mark.parametrize("iterations", [4, 16])
@@ -522,7 +531,7 @@ def test_three_thousand_ticks_of_walking_stay_finite_and_upright() -> None:
     run = walk(ticks=3000)
 
     assert run.finite
-    assert run.travelled > 3.5 * (3000 / WALK_TICKS)
+    assert run.travelled > 12.0 * (3000 / WALK_TICKS)
     assert run.highest < 3.0
     assert run.lowest > -1.0
     assert run.widest < 2.0
