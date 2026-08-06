@@ -313,6 +313,33 @@ working.
   default 4 iterations a hanging chain gives ~8% under load, halving with each doubling of
   iterations. For a Rain World body that give is desirable, not a defect.
 
+### Beyond the original phases
+
+Landed after Phase 5, in one fan-out:
+
+* **Gait serialization (v3).** A creature saves whole — controllers beside
+  chunks and links, registry keyed on constructor signatures, editor wired.
+  The quadruped reopens to a bit-identical walk.
+* **Mesh export.** Surface nets over the CPU field; closed, consistently wound
+  meshes to OBJ/STL. The worm meshes at 96^3 in 0.13 s.
+* **Self-propulsion.** Opt-in reaction force on the limb root plus a postural
+  controller: an unpinned quadruped walks +13.4 units in 50 s from footfalls
+  alone, with sign-reversal and frictionless-floor controls proving the
+  mechanism. The reaction pairs unconditionally — gating it on the plant
+  travels five times further on un-paired swing forces, which is a momentum
+  source, not locomotion.
+* **Editor authoring.** Radius-curve editor (Curve1D as the model, one apply =
+  one undo), orthographic toggle, per-point smoothing on the selection.
+* **Solver momentum conservation.** The overlap averaging pumped momentum into
+  unevenly-connected pairs — a fifth of the first walker's thrust. Replaced by
+  per-link symmetric weights: conserving for any masses, same hub bound.
+
+**Terrain is gated, deliberately.** Two contact-model limits found by the
+propulsion work have to land first: ground friction is a velocity bleed rather
+than Coulomb, so a planted foot cannot truly hold; and there are no angular
+constraints, so legs cannot support a torso without the postural controller
+asserting height. Footholds on real geometry inherit both problems.
+
 ### Deferred
 
 The plan's Phase 2 item to replace the unconditional 16 ms `QTimer` in `main.py:134` has

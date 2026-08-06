@@ -33,7 +33,9 @@ and reports what it did.
 | `render/` — smoothing, SDF packing, CPU field, GL scaffolding | done |
 | `render/gl/shaders/` — metaball raymarcher | done |
 | `editor/` — document, commands, viewport, panels | done |
-| `anim/controllers/` — spine, limb IK, footholds | done |
+| `anim/controllers/` — spine, limb IK, footholds, propulsion, balance | done |
+| `render/meshing.py` + `io/mesh_export.py` — OBJ/STL export | done |
+| `io/` v3 — gaits save with the body | done |
 
 ![A procedurally animated worm rendered as metaballs](docs/metaballs.png)
 
