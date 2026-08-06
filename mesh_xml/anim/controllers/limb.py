@@ -40,7 +40,9 @@ fallen that far behind.
 
 *Reaching* is the swing. On entry a new foothold is chosen ahead of the body:
 the neutral stance offset from the root, displaced along the root's velocity by
-``lead_time``, and dropped onto the ground plane. The emitted target sweeps from
+``lead_time``, and dropped onto the ground — flattened to the ``ground_y``
+plane, or projected onto the terrain's surface when the picker has a world to
+stand on. The emitted target sweeps from
 the old foothold to the new one over ``step_duration`` seconds, lifted by
 ``step_height`` on a half-sine so the foot arcs over the ground rather than
 dragging through it. When the sweep completes the new point becomes the plant.
@@ -48,8 +50,12 @@ dragging through it. When the sweep completes the new point becomes the plant.
 *Dangling* is the honest failure. If the candidate foothold is itself out of
 reach — no ground under the limb, or the body too high above it — the picker
 emits ``None``, :class:`LimbIK` contributes no force at all, and gravity gets
-the limb. It re-tests every tick and swings back up from wherever the foot is
-hanging as soon as something is reachable.
+the limb. On a terrain this is a statement about the world rather than about
+the rig: the candidate arrives already projected onto the nearest surface, so
+a candidate still out of reach means the world offers nothing in range — a gap
+under the limb, a ledge beyond it — and the leg hangs into it honestly. It
+re-tests every tick and swings back up from wherever the foot is hanging as
+soon as something is reachable.
 
 **Coordination.** ``period`` and ``phase`` gate when a step may *start*. Each
 picker owns the slice ``[phase, phase + duty)`` of the gait cycle and may only
@@ -101,6 +107,7 @@ import numpy as np
 
 from mesh_xml.anim.controller import ControlContext
 from mesh_xml.core.body import Body
+from mesh_xml.core.terrain import Terrain
 
 __all__ = [
     "FootholdPicker",
@@ -132,6 +139,13 @@ class LimbFrame:
     the IK from chunk ids it owns, consumed by a :class:`TipTarget` that has
     never heard of chunks.
 
+    ``tip_radius`` crosses the seam because a foothold is aimed, not touched:
+    contact holds a chunk one radius off the surface, so a picker projecting a
+    candidate onto a terrain must aim that far off it, and the frame is the
+    only channel body facts are allowed to reach the picker through. It
+    defaults to zero — a point foot — so a frame built by hand keeps working
+    and keeps meaning what it always meant.
+
     Frozen because it is a snapshot; ``eq=False`` because a generated ``__eq__``
     over numpy fields returns an array and raises the moment anything treats it
     as a truth value.
@@ -141,6 +155,7 @@ class LimbFrame:
     tip: np.ndarray
     velocity: np.ndarray
     reach: float
+    tip_radius: float = 0.0
 
 
 @runtime_checkable
@@ -328,6 +343,7 @@ class LimbIK:
             tip=ctx.position(self.tip),
             velocity=ctx.velocity(self.root),
             reach=sum(self.bone_lengths(body)),
+            tip_radius=float(body.radius[body.slot(self.tip)]),
         )
 
     def resolve(self, ctx: ControlContext, frame: LimbFrame) -> np.ndarray | None:
@@ -383,6 +399,25 @@ class FootholdPicker:
     floor at all: the foothold is planted at whatever height the stance offset
     puts it, which is what a climbing or swimming limb wants.
 
+    ``terrain`` is the world as a surface rather than as a height. When one is
+    in effect, candidates are *projected* onto it — the nearest point sitting
+    one tip radius off the surface, reached from either side — instead of being
+    flattened to ``ground_y``, and a foothold on a slope or a mound falls out
+    of the same machinery that planted one on the plane. The radius rides in on
+    :attr:`LimbFrame.tip_radius`, and the offset exists for the same reason
+    :meth:`ControlContext.ground_level` adds one: contact holds a chunk a
+    radius off the surface, so aiming at the surface itself is aiming
+    underground. A set ``terrain`` supersedes ``ground_y``, mirroring the
+    precedence :class:`~mesh_xml.core.solver.SolverConfig` documents — the
+    picker must aim at the same floor collision will actually hold the foot on.
+    Left ``None``, the picker follows :attr:`ControlContext.terrain`, the world
+    the solver collides against, which is what lets one creature be dropped
+    into any world and stand on it; the field exists to *win* over the context
+    when a limb must work a surface the solver does not own. A picker carrying
+    its own terrain refuses to serialize, deliberately: a world belongs to the
+    document, not to one foot of one creature, and a saved rig reaches its
+    world through the context.
+
     ``max_reach`` defaults to :data:`_REACH_MARGIN` of the limb's own span, so a
     rig author does not have to keep two numbers in sync. ``scatter`` jitters
     each new foothold through :attr:`ControlContext.rng`, which is what stops
@@ -412,6 +447,7 @@ class FootholdPicker:
     phase: float = 0.0
     duty: float = 0.5
     drive: Sequence[float] | None = None
+    terrain: Terrain | None = None
 
     mode: LimbMode = field(init=False, default=LimbMode.DANGLING)
     foothold: np.ndarray | None = field(init=False, default=None)
@@ -453,16 +489,24 @@ class FootholdPicker:
         if self.mode is LimbMode.REACHING:
             return self._swing(ctx.time)
 
-        self._retreat(ctx)
+        surface = self._surface(ctx)
+        self._retreat(ctx, limb, surface)
 
         reach = self._reach(limb)
-        if self.mode is LimbMode.PLANTED and not self._out_of_position(limb, reach):
+        if self.mode is LimbMode.PLANTED and not self._out_of_position(
+            limb, reach, surface
+        ):
             return self.foothold
 
         if not self._window_open(ctx.time):
             return self.foothold
 
-        candidate = self._candidate(ctx, limb)
+        # The candidate arrives already dropped onto the ground, so this
+        # distance is measured to a point that really is standable. Failing it
+        # therefore means the world offers nothing in range — over a terrain,
+        # a gap or a ledge — not merely that an unprojected guess happened to
+        # float too far away.
+        candidate = self._candidate(ctx, limb, surface)
         if float(np.linalg.norm(candidate - limb.root)) > reach:
             self.mode = LimbMode.DANGLING
             self.foothold = None
@@ -484,13 +528,32 @@ class FootholdPicker:
         self._swing_to = np.zeros(0, dtype=np.float32)
         self._step_start = 0.0
 
-    def _retreat(self, ctx: ControlContext) -> None:
+    def _surface(self, ctx: ControlContext) -> Terrain | None:
+        """The ground in effect this tick: the picker's own, else the world's.
+
+        The constructor field wins so a rig author can aim a limb at a surface
+        the solver does not collide with; left ``None``, the picker follows
+        :attr:`ControlContext.terrain` and the creature stands on whatever
+        world it was dropped into, with nothing re-wired per limb.
+        """
+        return self.terrain if self.terrain is not None else ctx.terrain
+
+    def _retreat(
+        self, ctx: ControlContext, limb: LimbFrame, surface: Terrain | None
+    ) -> None:
         """Slide a held plant backward at ``-drive``. This is the stance phase.
 
         Reading ``ctx.dt`` rather than the gait clock means the plant travels the
         commanded distance per *second* whatever the tick rate, and means a
         picker whose limb was skipped this tick does not retreat without having
         pushed on anything.
+
+        The slid plant goes back through :meth:`_on_ground` because the retreat
+        is straight and a slope is not: each unprojected step would leave the
+        held foothold a little further off an incline, and the foot would spend
+        its stance being pulled into the hill or off it. Re-projecting keeps
+        the plant one tip radius off whatever it stands on — which on the plane
+        is the flatten it always was.
         """
         plant = self.foothold
         if self.drive is None or plant is None:
@@ -498,7 +561,7 @@ class FootholdPicker:
         if self.mode is not LimbMode.PLANTED:
             return
         travel = _fit(self.drive, plant.shape[0]) * np.float32(ctx.dt)
-        self.foothold = self._on_ground(plant - travel)
+        self.foothold = self._on_ground(plant - travel, surface, limb.tip_radius)
 
     def _swing(self, time: float) -> np.ndarray:
         progress = (time - self._step_start) / self.step_duration
@@ -515,19 +578,27 @@ class FootholdPicker:
             point[_UP] += np.float32(self.step_height * np.sin(np.pi * progress))
         return point
 
-    def _out_of_position(self, limb: LimbFrame, reach: float) -> bool:
+    def _out_of_position(
+        self, limb: LimbFrame, reach: float, surface: Terrain | None
+    ) -> bool:
         if self.foothold is None:
             return True
         if float(np.linalg.norm(self.foothold - limb.root)) > reach:
             return True
-        drift = float(np.linalg.norm(self.foothold - self._neutral(limb)))
+        drift = float(np.linalg.norm(self.foothold - self._neutral(limb, surface)))
         return drift > self.step_threshold
 
-    def _neutral(self, limb: LimbFrame) -> np.ndarray:
+    def _neutral(self, limb: LimbFrame, surface: Terrain | None) -> np.ndarray:
         """Where the foot ought to be standing right now, ignoring travel."""
-        return self._on_ground(limb.root + _fit(self.stance, limb.root.shape[0]))
+        return self._on_ground(
+            limb.root + _fit(self.stance, limb.root.shape[0]),
+            surface,
+            limb.tip_radius,
+        )
 
-    def _candidate(self, ctx: ControlContext, limb: LimbFrame) -> np.ndarray:
+    def _candidate(
+        self, ctx: ControlContext, limb: LimbFrame, surface: Terrain | None
+    ) -> np.ndarray:
         # The command replaces the measurement; it must not add to it. Leading
         # by velocity + drive feeds achieved speed back into stride length,
         # which is positive feedback: on a slipping floor the leak damped it,
@@ -539,15 +610,31 @@ class FootholdPicker:
             travel = _fit(self.drive, limb.root.shape[0])
         else:
             travel = limb.velocity
-        point = self._neutral(limb) + travel * np.float32(self.lead_time)
+        point = self._neutral(limb, surface) + travel * np.float32(self.lead_time)
         if self.scatter > 0.0:
             point = point + ctx.rng.normal(0.0, self.scatter, size=point.shape).astype(
                 np.float32
             )
-        return self._on_ground(point)
+        return self._on_ground(point, surface, limb.tip_radius)
 
-    def _on_ground(self, point: np.ndarray) -> np.ndarray:
+    def _on_ground(
+        self, point: np.ndarray, surface: Terrain | None, clearance: float
+    ) -> np.ndarray:
+        """Drop a desired foothold onto whatever there is to stand on.
+
+        A terrain projects the point to sit ``clearance`` — the tip's radius —
+        off the surface, working from either side, and supersedes ``ground_y``
+        entirely: the solver gives terrain the same precedence, and aiming at
+        any other floor than the one collision enforces is seeking into it, or
+        hovering over it, forever. An *empty* terrain projects to nowhere and
+        the point keeps its stance height, exactly as
+        :meth:`~mesh_xml.core.terrain.Terrain.project` documents — no world
+        means no floor, which is ``ground_y=None`` spelled in the new
+        vocabulary.
+        """
         out = np.array(point, dtype=np.float32)
+        if surface is not None and out.size > _UP:
+            return surface.project(out, clearance).astype(np.float32)
         if self.ground_y is not None and out.size > _UP:
             out[_UP] = np.float32(self.ground_y)
         return out

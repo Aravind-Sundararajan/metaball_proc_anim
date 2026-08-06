@@ -21,6 +21,12 @@ The reaction and drive cases are the same shape. A reaction is a claim about a
 the force accumulator rather than on where anything ended up, which is the only
 place the claim is exactly true. What the pair is *for* needs a whole creature
 and lives in ``test_balance.py``.
+
+The terrain cases assert in the field's own terms — ``terrain.distance()`` of a
+foothold against the tip radius — because "on the slope" is a claim the SDF can
+check exactly at any incline, where a hand-computed height would re-derive the
+projection and prove nothing. The ramp walk itself is integration and lands
+after all the terrain packages do, not here.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from mesh_xml.anim import serialize
 from mesh_xml.anim.controller import ControlContext, ControllerStack
 from mesh_xml.anim.controllers.limb import (
     FootholdPicker,
@@ -38,6 +45,7 @@ from mesh_xml.anim.controllers.limb import (
 )
 from mesh_xml.core.body import Body
 from mesh_xml.core.solver import TICK_DT, SolverConfig
+from mesh_xml.core.terrain import Terrain
 
 POLE = (0.0, 0.0, 1.0)
 
@@ -58,7 +66,11 @@ def leg(root_y: float = 1.2, upper: float = 0.8, lower: float = 0.8) -> tuple:
 
 
 def context(
-    body: Body, time: float = 0.0, dt: float = TICK_DT, seed: int = 0
+    body: Body,
+    time: float = 0.0,
+    dt: float = TICK_DT,
+    seed: int = 0,
+    config: SolverConfig | None = None,
 ) -> ControlContext:
     return ControlContext(
         body=body,
@@ -66,16 +78,20 @@ def context(
         dt=dt,
         time=time,
         rng=np.random.default_rng(seed),
+        config=config,
     )
 
 
-def frame_at(x: float, speed: float = 0.0, root_y: float = 1.0) -> LimbFrame:
+def frame_at(
+    x: float, speed: float = 0.0, root_y: float = 1.0, tip_radius: float = 0.0
+) -> LimbFrame:
     """A limb whose shoulder is at ``x`` travelling along +x, foot on the ground."""
     return LimbFrame(
         root=np.array([x, root_y, 0.0], dtype=np.float32),
         tip=np.array([x, 0.0, 0.0], dtype=np.float32),
         velocity=np.array([speed, 0.0, 0.0], dtype=np.float32),
         reach=1.4,
+        tip_radius=tip_radius,
     )
 
 
@@ -88,7 +104,13 @@ def longest_run(flags: list[bool]) -> int:
     return best
 
 
-def drive(picker: FootholdPicker, ticks: int, speed: float, seed: int = 0) -> list:
+def drive(
+    picker: FootholdPicker,
+    ticks: int,
+    speed: float,
+    seed: int = 0,
+    tip_radius: float = 0.0,
+) -> list:
     """Walk a picker along +x with synthetic frames, collecting its targets."""
     body = Body(dim=3)
     body.add_chunk("c", (0.0, 0.0, 0.0))
@@ -103,7 +125,9 @@ def drive(picker: FootholdPicker, ticks: int, speed: float, seed: int = 0) -> li
             time=time,
             rng=rng,
         )
-        out.append(picker.tip_target(ctx, frame_at(speed * time, speed)))
+        out.append(
+            picker.tip_target(ctx, frame_at(speed * time, speed, tip_radius=tip_radius))
+        )
     return out
 
 
@@ -704,6 +728,282 @@ def test_the_planted_flag_tracks_the_mode() -> None:
 
     picker.reset()
     assert not picker.planted
+
+
+# ----------------------------------------------------------------------
+# terrain — footholds on real geometry
+# ----------------------------------------------------------------------
+
+TIP_R = 0.08
+"""Tip radius carried by the terrain-case frames, matching ``leg()``'s foot."""
+
+
+def ramp(degrees: float = 20.0) -> Terrain:
+    """A bare incline through the origin, rising along +x."""
+    theta = np.radians(degrees)
+    return Terrain().add_plane((-np.sin(theta), np.cos(theta), 0.0), 0.0)
+
+
+def frame_on(
+    terrain: Terrain, x: float, drop: float = 1.0, speed: float = 0.0
+) -> LimbFrame:
+    """A stance ``drop`` above the local surface at ``x``, foot resting on it."""
+    foot = terrain.project(np.array([x, 0.0, 0.0]), TIP_R)
+    return LimbFrame(
+        root=(foot + np.array([0.0, drop, 0.0])).astype(np.float32),
+        tip=foot.astype(np.float32),
+        velocity=np.array([speed, 0.0, 0.0], dtype=np.float32),
+        reach=1.4,
+        tip_radius=TIP_R,
+    )
+
+
+def settle(
+    picker: FootholdPicker,
+    frame: LimbFrame,
+    ticks: int = 20,
+    config: SolverConfig | None = None,
+) -> None:
+    """Hold one stance for ``ticks``, long enough for any swing to complete."""
+    body = Body(dim=3)
+    body.add_chunk("c", (0.0, 0.0, 0.0))
+    for i in range(ticks):
+        picker.tip_target(context(body, time=i * TICK_DT, config=config), frame)
+
+
+@pytest.mark.parametrize("x", [-1.0, 0.0, 0.75, 2.5])
+def test_a_foothold_on_a_tilted_plane_lies_on_the_plane(x: float) -> None:
+    """``|distance - tip_radius| ~ 0`` is "on the slope" in the field's own terms."""
+    terrain = ramp(20.0)
+    picker = FootholdPicker(stance=(0.0, -1.0, 0.0), terrain=terrain)
+
+    settle(picker, frame_on(terrain, x))
+
+    assert picker.mode is LimbMode.PLANTED
+    assert abs(float(terrain.distance(picker.foothold)) - TIP_R) < 1e-3
+
+
+def test_the_terrain_supersedes_ground_y_when_both_are_set() -> None:
+    """The solver's precedence, mirrored: two floors would mean aiming at a lie."""
+    terrain = ramp(20.0)
+    picker = FootholdPicker(stance=(0.0, -1.0, 0.0), ground_y=-5.0, terrain=terrain)
+
+    settle(picker, frame_on(terrain, 1.5))
+
+    assert picker.mode is LimbMode.PLANTED
+    assert float(picker.foothold[1]) > 0.0, "the plant took the dead ground_y"
+    assert abs(float(terrain.distance(picker.foothold)) - TIP_R) < 1e-3
+
+
+def test_a_foothold_on_a_mound_lands_on_its_local_surface() -> None:
+    """The plane alone is out of reach from this stance, so planting at all
+    proves the candidate stood on the mound rather than at any global height."""
+    terrain = (
+        Terrain(blend=0.1)
+        .add_plane((0.0, 1.0, 0.0), 0.0)
+        .add_cone((0.0, -0.5, 0.0), 0.9, (0.0, -0.4, 0.0), 0.9)
+    )
+    frame = LimbFrame(
+        root=np.array([0.0, 1.5, 0.0], dtype=np.float32),
+        tip=np.array([0.0, 0.58, 0.0], dtype=np.float32),
+        velocity=np.zeros(3, dtype=np.float32),
+        reach=1.4,
+        tip_radius=TIP_R,
+    )
+
+    bare = FootholdPicker(stance=(0.0, -1.0, 0.0), terrain=Terrain.flat(0.0))
+    settle(bare, frame)
+    assert bare.mode is LimbMode.DANGLING, "the fixture must put the plane too far"
+
+    picker = FootholdPicker(stance=(0.0, -1.0, 0.0), terrain=terrain)
+    settle(picker, frame)
+
+    assert picker.mode is LimbMode.PLANTED
+    assert float(picker.foothold[1]) > 0.4
+    assert abs(float(terrain.distance(picker.foothold)) - TIP_R) < 1e-3
+
+
+def platforms() -> Terrain:
+    """Two fat capsules whose tops sit at y = 0, a chasm between their ends."""
+    return (
+        Terrain(blend=0.1)
+        .add_cone((-4.0, -0.8, 0.0), 0.8, (-1.5, -0.8, 0.0), 0.8)
+        .add_cone((1.5, -0.8, 0.0), 0.8, (4.0, -0.8, 0.0), 0.8)
+    )
+
+
+def stance_over(x: float) -> LimbFrame:
+    return LimbFrame(
+        root=np.array([x, 1.0, 0.0], dtype=np.float32),
+        tip=np.array([x, 0.08, 0.0], dtype=np.float32),
+        velocity=np.zeros(3, dtype=np.float32),
+        reach=1.4,
+        tip_radius=TIP_R,
+    )
+
+
+def test_a_stance_over_a_gap_dangles_where_one_over_a_platform_plants() -> None:
+    """Dangling as a statement about the world: projection drags the candidate
+    to the nearest edge, and an edge beyond reach is a hole, not a bad rig."""
+    terrain = platforms()
+    body = Body(dim=3)
+    body.add_chunk("c", (0.0, 0.0, 0.0))
+    over_gap = FootholdPicker(stance=(0.0, -1.0, 0.0), terrain=terrain)
+    over_slab = FootholdPicker(stance=(0.0, -1.0, 0.0), terrain=terrain)
+
+    for i in range(15):
+        ctx = context(body, time=i * TICK_DT)
+        assert over_gap.tip_target(ctx, stance_over(0.1)) is None
+        over_slab.tip_target(ctx, stance_over(-2.75))
+
+    assert over_gap.mode is LimbMode.DANGLING
+    assert over_gap.foothold is None
+    assert over_slab.mode is LimbMode.PLANTED
+    assert abs(float(terrain.distance(over_slab.foothold)) - TIP_R) < 1e-3
+
+
+def test_a_driven_plant_on_a_slope_retreats_along_the_slope() -> None:
+    """Re-projection is what keeps a sliding plant on the incline: the commanded
+    travel is horizontal, so its normal component is annihilated every tick and
+    the foothold slides back at ``drive * cos^2(theta)`` horizontally, one tip
+    radius off the surface the whole way down."""
+    terrain = ramp(20.0)
+    picker = FootholdPicker(
+        stance=(0.0, -1.0, 0.0),
+        terrain=terrain,
+        max_reach=5.0,
+        step_threshold=10.0,
+        drive=(0.6, 0.0, 0.0),
+    )
+    body = Body(dim=3)
+    body.add_chunk("c", (0.0, 0.0, 0.0))
+    frame = frame_on(terrain, 0.0)
+
+    for i in range(20):
+        picker.tip_target(context(body, time=i * TICK_DT), frame)
+    assert picker.mode is LimbMode.PLANTED
+    start = picker.foothold.copy()
+
+    gaps = []
+    for i in range(20, 80):
+        picker.tip_target(context(body, time=i * TICK_DT), frame)
+        gaps.append(float(terrain.distance(picker.foothold)))
+
+    slid = float(start[0] - picker.foothold[0])
+    assert slid == pytest.approx(
+        0.6 * 60 * TICK_DT * float(np.cos(np.radians(20.0)) ** 2), abs=5e-3
+    )
+    assert float(start[1] - picker.foothold[1]) > 0.2, "it left the incline"
+    assert max(abs(gap - TIP_R) for gap in gaps) < 1e-3
+
+
+def test_flat_terrain_reproduces_the_ground_plane_footholds() -> None:
+    """``Terrain.flat(y)`` against ``ground_y = y + tip_radius``: the old world
+    spelled two ways must place the same feet, or every plane rig that migrates
+    changes gait."""
+
+    def gait(picker: FootholdPicker) -> list:
+        return drive(picker, ticks=300, speed=0.5, tip_radius=TIP_R)
+
+    plane = gait(
+        FootholdPicker(
+            stance=(0.0, -1.0, 0.0), ground_y=0.4 + TIP_R, step_threshold=0.3
+        )
+    )
+    field = gait(
+        FootholdPicker(
+            stance=(0.0, -1.0, 0.0),
+            ground_y=None,
+            terrain=Terrain.flat(0.4),
+            step_threshold=0.3,
+        )
+    )
+
+    assert [point is None for point in plane] == [point is None for point in field]
+    assert any(point is not None for point in plane)
+    for a, b in zip(plane, field):
+        if a is not None:
+            assert a == pytest.approx(b, abs=1e-5)
+
+
+def test_a_picker_with_no_terrain_of_its_own_stands_on_the_worlds() -> None:
+    """``ctx.terrain`` is the solver's world; following it is what lets one
+    saved creature be dropped into any world without re-wiring each limb."""
+    terrain = ramp(20.0)
+    config = SolverConfig(terrain=terrain)
+    picker = FootholdPicker(stance=(0.0, -1.0, 0.0))
+
+    settle(picker, frame_on(terrain, 1.5), config=config)
+
+    assert picker.mode is LimbMode.PLANTED
+    assert float(picker.foothold[1]) > 0.3, "the plant fell back to ground_y"
+    assert abs(float(terrain.distance(picker.foothold)) - TIP_R) < 1e-3
+
+
+def test_the_pickers_own_terrain_wins_over_the_contexts() -> None:
+    """The explicit choice is the one the author made; the context is only the
+    default a creature inherits from wherever it happens to be standing."""
+    own = Terrain.flat(1.0)
+    world = Terrain.flat(0.0)
+    picker = FootholdPicker(stance=(0.0, -1.0, 0.0), terrain=own)
+    frame = LimbFrame(
+        root=np.array([0.0, 2.0, 0.0], dtype=np.float32),
+        tip=np.array([0.0, 1.08, 0.0], dtype=np.float32),
+        velocity=np.zeros(3, dtype=np.float32),
+        reach=1.4,
+        tip_radius=TIP_R,
+    )
+
+    settle(picker, frame, config=SolverConfig(terrain=world))
+
+    # The world's floor is out of this limb's reach, so standing at all means
+    # the constructor's surface won.
+    assert picker.mode is LimbMode.PLANTED
+    assert float(picker.foothold[1]) == pytest.approx(1.0 + TIP_R, abs=1e-5)
+
+
+def test_the_flat_path_is_untouched_when_no_terrain_exists_anywhere() -> None:
+    """No picker terrain and no config terrain must stay the plane behaviour,
+    bit for bit — that is every rig authored before terrain existed."""
+    with_config = FootholdPicker(stance=(0.0, -1.0, 0.0), ground_y=0.3)
+    without = FootholdPicker(stance=(0.0, -1.0, 0.0), ground_y=0.3)
+    body = Body(dim=3)
+    body.add_chunk("c", (0.0, 0.0, 0.0))
+
+    for i in range(40):
+        a = with_config.tip_target(
+            context(body, time=i * TICK_DT, config=SolverConfig(ground_y=0.2)),
+            frame_at(0.3 * i * TICK_DT, 0.3, tip_radius=TIP_R),
+        )
+        b = without.tip_target(
+            context(body, time=i * TICK_DT),
+            frame_at(0.3 * i * TICK_DT, 0.3),
+        )
+        assert (a is None) == (b is None)
+        if a is not None:
+            assert (a == b).all()
+
+    assert float(with_config.foothold[1]) == pytest.approx(0.3, abs=1e-6)
+
+
+def test_a_terrain_picker_refuses_to_serialize_where_a_plain_one_does_not() -> None:
+    """The world belongs to the document — ``SolverConfig.terrain``, and the
+    document section that will carry it — not to one foot of one creature. So
+    ``terrain=None`` round-trips exactly as the plane configuration always has,
+    and a picker holding a live surface is refused loudly rather than written
+    without it and reloaded standing somewhere else."""
+    plain = FootholdPicker(ground_y=0.13, lead_time=1.0 / 3.0)
+
+    loaded = serialize.decode_controller(serialize.encode_controller(plain))
+
+    assert loaded.terrain is None
+    assert loaded.ground_y == 0.13
+    assert loaded.lead_time == 1.0 / 3.0
+
+    with pytest.raises(
+        serialize.ControllerFormatError, match=r"FootholdPicker\.terrain"
+    ):
+        serialize.encode_controller(FootholdPicker(terrain=Terrain.flat(0.0)))
 
 
 # ----------------------------------------------------------------------
