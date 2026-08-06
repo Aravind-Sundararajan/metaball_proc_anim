@@ -64,6 +64,30 @@ Gait timing reads :attr:`ControlContext.time` rather than counting ticks, so
 :meth:`ControllerStack.reset` rewinds the gait for free. The plant and the mode
 are genuinely stateful and cannot be derived from a clock; :meth:`reset` exists
 for those.
+
+**Propulsion.** Everything above describes a limb that reaches. Two opt-in
+fields turn it into a limb that *pushes*, which is a different thing and worth
+stating plainly, because a creature whose body is carried along a path and whose
+feet merely keep up is being dragged, not walking.
+
+:attr:`LimbIK.reaction` pays the seek back. The IK pushes mid and tip; with a
+reaction the root is pushed by the exact negative of that sum, so the limb's
+contribution to the tick nets to zero and the limb becomes a closed actuator
+between the root and the foot rather than a thruster hanging off it.
+
+:attr:`FootholdPicker.drive` is what gives the actuator something to do. A
+planted foothold retreats through the world at ``-drive`` while it is held, so
+the limb is continuously pushing its own foot backward. That is a stance phase:
+the foot presses back, the ground's friction refuses to let it slide, and the
+reaction on the root carries the body forward over it.
+
+The momentum bookkeeping is the whole argument, and it is short. Gravity is
+vertical, constraint projection is internal, and a limb with ``reaction=1``
+contributes nothing net — so the only external horizontal force on the creature
+is ground friction, which can do nothing but *remove* tangential speed from a
+chunk it is touching. A body therefore gains forward momentum only by having its
+feet carry backward momentum for the floor to absorb. Feet that push backward
+while planted is not one way to walk; in this model it is the only way.
 """
 
 from __future__ import annotations
@@ -206,10 +230,6 @@ class LimbIK:
     :class:`FootholdPicker` — or a fixed world point, or ``None`` for a limb
     that is temporarily off.
 
-    Only ``mid`` and ``tip`` are pushed. The root is the limb's attachment and
-    belongs to whatever moves the body; a controller that also shoved the root
-    would be quietly steering the creature from inside its knee.
-
     ``mid_weight`` scales the elbow's spring relative to the tip's. The elbow is
     a hint about *how* to bend and the tip is the actual goal, so giving them
     equal authority makes a limb that fights itself whenever the constraint
@@ -219,6 +239,37 @@ class LimbIK:
     rest lengths of the ``root-mid`` and ``mid-tip`` links — the authored bone
     lengths, not the current squashed separations, which is what keeps the
     solved pose from chasing its own compression.
+
+    ``reaction`` is the fraction of the seek that the root is charged for. At
+    ``0`` — the default — only ``mid`` and ``tip`` are pushed and the root is
+    never touched; at ``1`` the root takes the exact negative of what the other
+    two were given.
+
+    That default was the original behaviour and it was a reasonable one. A limb
+    whose root is untouched can be aimed anywhere without disturbing the body it
+    hangs from, which is exactly what you want when the root is pinned or
+    carried: the pin absorbs the reaction, and the limb solves against a hip
+    that is already where the animation says it should be. Charging the root
+    unconditionally would instead let the IK steer the creature from inside its
+    own knee, because a seek is one-sided (see :meth:`ControlContext.seek`) and
+    a one-sided force on a free body is a thruster. Point four such limbs at
+    footholds and the creature flies.
+
+    The catch, and the reason this field exists, is that the same one-sidedness
+    runs the other way too: an unreacted limb also holds *itself* up, so a
+    creature standing on four of them levitates on its own IK and its feet never
+    load the floor. At ``reaction=1`` the limb's three forces sum to exactly
+    zero, the levitation goes, the body's weight reaches the ground through the
+    links, and a planted foot pushing backward moves the body forward. That is
+    propulsion, and it is unavailable at any other setting.
+
+    The reaction is **not** withheld while the foot swings. It is tempting —
+    the swing pushes the body backward, which looks like a loss — but the swing
+    force has to go somewhere, and the only alternatives are to invent momentum
+    or to leave the leg levitating. What is true is that the reaction is zero
+    whenever the limb contributes nothing, which is precisely when the target
+    source has no opinion: a :class:`FootholdPicker` with nothing in reach
+    returns ``None``, and a dangling limb charges the root nothing.
     """
 
     root: int
@@ -232,6 +283,7 @@ class LimbIK:
     damping: float = 14.0
     mid_weight: float = 0.35
     max_force: float | None = 500.0
+    reaction: float = 0.0
     enabled: bool = True
 
     def update(self, ctx: ControlContext) -> None:
@@ -247,14 +299,20 @@ class LimbIK:
         mid_goal, tip_goal = two_bone_ik(
             frame.root, goal, length_a, length_b, self.pole, self.flip
         )
-        ctx.seek(
+        pushed = ctx.seek(
             self.mid,
             mid_goal,
             self.strength * self.mid_weight,
             self.damping * self.mid_weight,
             self.max_force,
         )
-        ctx.seek(self.tip, tip_goal, self.strength, self.damping, self.max_force)
+        pushed = pushed + ctx.seek(
+            self.tip, tip_goal, self.strength, self.damping, self.max_force
+        )
+        if self.reaction:
+            # The clamped forces, not the requested ones, or the pair stops
+            # summing to zero exactly when max_force starts to matter.
+            ctx.add_force(self.root, -pushed * np.float32(self.reaction))
 
     def frame(self, ctx: ControlContext) -> LimbFrame | None:
         """Snapshot this limb, or ``None`` if the editor deleted part of it.
@@ -329,6 +387,17 @@ class FootholdPicker:
     rig author does not have to keep two numbers in sync. ``scatter`` jitters
     each new foothold through :attr:`ControlContext.rng`, which is what stops
     two legs on identical templates from landing in perfect lockstep.
+
+    ``drive`` is the locomotion intent, in world units per second, and ``None``
+    — the default — leaves the plant exactly as fixed as it has always been. Set
+    it and a held foothold retreats through the world at ``-drive``, so the limb
+    spends its stance pushing its own foot backward; new footholds are placed
+    that much further ahead to keep the stance centred under the root rather
+    than trailing behind it. Paired with :attr:`LimbIK.reaction` this is what
+    propels a creature, and without that reaction it is only a foot that
+    scuffs. Nothing here reads the body's actual speed, so ``drive`` is a
+    command and not a measurement: a creature that cannot achieve it simply
+    slips.
     """
 
     stance: Sequence[float] = (0.0, -1.0, 0.0)
@@ -342,6 +411,7 @@ class FootholdPicker:
     period: float = 0.0
     phase: float = 0.0
     duty: float = 0.5
+    drive: Sequence[float] | None = None
 
     mode: LimbMode = field(init=False, default=LimbMode.DANGLING)
     foothold: np.ndarray | None = field(init=False, default=None)
@@ -374,9 +444,16 @@ class FootholdPicker:
         self._swing_to = np.zeros(0, dtype=np.float32)
         self._step_start = 0.0
 
+    @property
+    def planted(self) -> bool:
+        """Whether a foot is currently bearing on a committed point."""
+        return self.mode is LimbMode.PLANTED and self.foothold is not None
+
     def tip_target(self, ctx: ControlContext, limb: LimbFrame) -> np.ndarray | None:
         if self.mode is LimbMode.REACHING:
             return self._swing(ctx.time)
+
+        self._retreat(ctx)
 
         reach = self._reach(limb)
         if self.mode is LimbMode.PLANTED and not self._out_of_position(limb, reach):
@@ -407,6 +484,22 @@ class FootholdPicker:
         self._swing_to = np.zeros(0, dtype=np.float32)
         self._step_start = 0.0
 
+    def _retreat(self, ctx: ControlContext) -> None:
+        """Slide a held plant backward at ``-drive``. This is the stance phase.
+
+        Reading ``ctx.dt`` rather than the gait clock means the plant travels the
+        commanded distance per *second* whatever the tick rate, and means a
+        picker whose limb was skipped this tick does not retreat without having
+        pushed on anything.
+        """
+        plant = self.foothold
+        if self.drive is None or plant is None:
+            return
+        if self.mode is not LimbMode.PLANTED:
+            return
+        travel = _fit(self.drive, plant.shape[0]) * np.float32(ctx.dt)
+        self.foothold = self._on_ground(plant - travel)
+
     def _swing(self, time: float) -> np.ndarray:
         progress = (time - self._step_start) / self.step_duration
         if progress >= 1.0:
@@ -435,7 +528,10 @@ class FootholdPicker:
         return self._on_ground(limb.root + _fit(self.stance, limb.root.shape[0]))
 
     def _candidate(self, ctx: ControlContext, limb: LimbFrame) -> np.ndarray:
-        point = self._neutral(limb) + limb.velocity * np.float32(self.lead_time)
+        travel = limb.velocity
+        if self.drive is not None:
+            travel = travel + _fit(self.drive, limb.root.shape[0])
+        point = self._neutral(limb) + travel * np.float32(self.lead_time)
         if self.scatter > 0.0:
             point = point + ctx.rng.normal(0.0, self.scatter, size=point.shape).astype(
                 np.float32

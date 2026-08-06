@@ -15,6 +15,12 @@ implementation. The foothold cases mostly drive :meth:`FootholdPicker.tip_target
 with synthetic :class:`LimbFrame` snapshots — that is the whole seam between the
 two halves, and driving it directly is what lets a step's arc be measured to the
 tick without a solver in the way.
+
+The reaction and drive cases are the same shape. A reaction is a claim about a
+*sum* — that the three forces a limb contributes cancel — so it is asserted on
+the force accumulator rather than on where anything ended up, which is the only
+place the claim is exactly true. What the pair is *for* needs a whole creature
+and lives in ``test_balance.py``.
 """
 
 from __future__ import annotations
@@ -130,6 +136,21 @@ def test_the_root_is_never_pushed() -> None:
     assert (ctx.forces[body.slot(hip)] == 0.0).all()
     assert ctx.forces[body.slot(knee)].any()
     assert ctx.forces[body.slot(foot)].any()
+
+
+def test_a_reaction_still_moves_nothing_during_update() -> None:
+    """The contract does not soften because the limb pushes back."""
+    body, hip, knee, foot = leg()
+    limb = LimbIK(hip, knee, foot, target=(0.6, 0.9, 0.2), pole=POLE, reaction=1.0)
+    ctx = context(body)
+    pos = body.pos.copy()
+    prev = body.prev_pos.copy()
+
+    limb.update(ctx)
+
+    assert (body.pos == pos).all()
+    assert (body.prev_pos == prev).all()
+    assert float(np.abs(ctx.forces).sum()) > 0.0
 
 
 def test_a_whole_stack_of_limbs_moves_nothing_during_accumulate() -> None:
@@ -475,6 +496,214 @@ def test_without_a_ground_plane_the_plant_keeps_the_stance_height() -> None:
 
     assert picker.mode is LimbMode.PLANTED
     assert float(targets[-1][1]) == pytest.approx(0.0, abs=1e-6)
+
+
+# ----------------------------------------------------------------------
+# reaction — the limb as a closed actuator rather than a thruster
+# ----------------------------------------------------------------------
+
+
+def test_the_reaction_is_equal_and_opposite() -> None:
+    body, hip, knee, foot = leg()
+    limb = LimbIK(hip, knee, foot, target=(0.6, 0.9, 0.2), pole=POLE, reaction=1.0)
+    ctx = context(body)
+
+    limb.update(ctx)
+
+    root = ctx.forces[body.slot(hip)]
+    assert root.any()
+    assert root == pytest.approx(
+        -(ctx.forces[body.slot(knee)] + ctx.forces[body.slot(foot)])
+    )
+    assert ctx.forces.sum(axis=0) == pytest.approx(np.zeros(3), abs=1e-4)
+
+
+@pytest.mark.parametrize("reaction", [0.25, 0.5, 1.0])
+def test_the_reaction_is_charged_at_its_own_fraction(reaction: float) -> None:
+    body, hip, knee, foot = leg()
+    target = (0.6, 0.9, 0.2)
+    full = context(body)
+    LimbIK(hip, knee, foot, target=target, pole=POLE, reaction=1.0).update(full)
+    part = context(body)
+
+    LimbIK(hip, knee, foot, target=target, pole=POLE, reaction=reaction).update(part)
+
+    assert part.forces[body.slot(hip)] == pytest.approx(
+        full.forces[body.slot(hip)] * reaction
+    )
+    assert part.forces[body.slot(knee)] == pytest.approx(full.forces[body.slot(knee)])
+
+
+def test_the_reaction_pays_back_the_clamped_force_not_the_requested_one() -> None:
+    """Paying back the requested force would break the pair exactly when it bites."""
+    body, hip, knee, foot = leg()
+    limb = LimbIK(
+        hip, knee, foot, target=(0.6, 0.4, 0.2), pole=POLE, reaction=1.0, max_force=10.0
+    )
+    ctx = context(body)
+
+    limb.update(ctx)
+
+    assert float(np.linalg.norm(ctx.forces[body.slot(foot)])) == pytest.approx(10.0)
+    assert float(np.linalg.norm(ctx.forces[body.slot(knee)])) == pytest.approx(10.0)
+    assert ctx.forces.sum(axis=0) == pytest.approx(np.zeros(3), abs=1e-4)
+
+
+def test_a_limb_with_nothing_to_stand_on_charges_the_root_nothing() -> None:
+    """Not planted reaches the root as zero because it reaches it as nothing."""
+    body, hip, knee, foot = leg(root_y=3.0)
+    picker = FootholdPicker(stance=(0.0, -3.0, 0.0), ground_y=0.0)
+    ctx = context(body)
+
+    LimbIK(hip, knee, foot, target=picker, pole=POLE, reaction=1.0).update(ctx)
+
+    assert picker.mode is LimbMode.DANGLING
+    assert not ctx.forces.any()
+
+
+def test_a_limb_with_no_target_at_all_charges_the_root_nothing() -> None:
+    body, hip, knee, foot = leg()
+    ctx = context(body)
+
+    LimbIK(hip, knee, foot, target=None, reaction=1.0).update(ctx)
+
+    assert not ctx.forces.any()
+
+
+def test_an_unreacted_limb_injects_momentum_over_a_whole_gait() -> None:
+    """The thruster, measured: what an unpaired seek hands the world every tick."""
+    config = SolverConfig(ground_y=0.0, iterations=6)
+
+    def injected(reaction: float) -> float:
+        body, hip, knee, foot = leg()
+        picker = FootholdPicker(
+            stance=(0.0, -1.2, 0.0), ground_y=0.08, step_threshold=0.3
+        )
+        stack = ControllerStack(body, seed=6)
+        stack.add(LimbIK(hip, knee, foot, target=picker, pole=POLE, reaction=reaction))
+        total = np.zeros(3, dtype=np.float64)
+        for _ in range(400):
+            body.pos[body.slot(hip), 0] += 0.4 * TICK_DT
+            stack.tick(body, TICK_DT, config)
+            total += stack.forces.sum(axis=0)
+        return float(np.linalg.norm(total))
+
+    assert injected(0.0) > 100.0
+    assert injected(1.0) < 1e-2
+
+
+def test_a_reacting_limb_stays_finite_reaching_far_past_its_span() -> None:
+    body, hip, knee, foot = leg()
+    body.set_pinned(hip, False)
+    stack = ControllerStack(body)
+    stack.add(
+        LimbIK(hip, knee, foot, target=(500.0, -900.0, 300.0), pole=POLE, reaction=1.0)
+    )
+    config = SolverConfig(iterations=6)
+
+    for _ in range(1000):
+        stack.tick(body, TICK_DT, config)
+
+    assert np.isfinite(body.pos).all()
+    reach = float(np.linalg.norm(body.pos[body.slot(foot)] - body.pos[body.slot(hip)]))
+    assert reach < 1.7
+
+
+# ----------------------------------------------------------------------
+# drive — a stance that pushes rather than merely holds
+# ----------------------------------------------------------------------
+
+
+def test_a_driven_plant_retreats_at_exactly_the_drive_speed() -> None:
+    picker = FootholdPicker(
+        stance=(0.0, -1.0, 0.0),
+        ground_y=0.0,
+        step_threshold=10.0,
+        drive=(0.8, 0.0, 0.0),
+    )
+    body = Body(dim=3)
+    body.add_chunk("c", (0.0, 0.0, 0.0))
+    picker.tip_target(context(body), frame_at(0.0))
+    for i in range(1, 20):
+        picker.tip_target(context(body, time=i * TICK_DT), frame_at(0.0))
+    assert picker.mode is LimbMode.PLANTED
+    start = picker.foothold.copy()
+
+    for i in range(20, 60):
+        picker.tip_target(context(body, time=i * TICK_DT), frame_at(0.0))
+
+    assert float(start[0] - picker.foothold[0]) == pytest.approx(
+        0.8 * 40 * TICK_DT, abs=1e-4
+    )
+    assert float(picker.foothold[1]) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_an_undriven_plant_is_still_a_fixed_point() -> None:
+    picker = FootholdPicker(stance=(0.0, -1.0, 0.0), ground_y=0.0, step_threshold=10.0)
+    body = Body(dim=3)
+    body.add_chunk("c", (0.0, 0.0, 0.0))
+    for i in range(20):
+        picker.tip_target(context(body, time=i * TICK_DT), frame_at(0.0))
+    planted = picker.foothold.copy()
+
+    for i in range(20, 60):
+        picker.tip_target(context(body, time=i * TICK_DT), frame_at(0.0))
+
+    assert (picker.foothold == planted).all()
+
+
+def test_a_drive_places_new_footholds_that_much_further_ahead() -> None:
+    """Read at touchdown, before the plant has begun retreating out from under it."""
+
+    def first_plant(intent) -> np.ndarray:
+        picker = FootholdPicker(
+            stance=(0.0, -1.0, 0.0), ground_y=0.0, lead_time=0.25, drive=intent
+        )
+        body = Body(dim=3)
+        body.add_chunk("c", (0.0, 0.0, 0.0))
+        for i in range(40):
+            picker.tip_target(context(body, time=i * TICK_DT), frame_at(0.0))
+            if picker.planted:
+                return picker.foothold.copy()
+        raise AssertionError("the picker never planted")
+
+    still = first_plant(None)
+    driven = first_plant((0.6, 0.0, 0.0))
+
+    assert float(driven[0] - still[0]) == pytest.approx(0.6 * 0.25, abs=1e-4)
+
+
+def test_a_drive_eventually_forces_the_foot_to_step() -> None:
+    """The retreating plant is what outruns ``step_threshold`` on a still body."""
+    picker = FootholdPicker(
+        stance=(0.0, -1.0, 0.0),
+        ground_y=0.0,
+        step_threshold=0.3,
+        step_duration=0.2,
+        lead_time=0.1,
+        drive=(0.5, 0.0, 0.0),
+    )
+    body = Body(dim=3)
+    body.add_chunk("c", (0.0, 0.0, 0.0))
+    plants = set()
+    for i in range(400):
+        picker.tip_target(context(body, time=i * TICK_DT), frame_at(0.0))
+        if picker.foothold is not None:
+            plants.add(round(float(picker.foothold[0]), 2))
+
+    assert len(plants) > 20
+    assert picker.mode is not LimbMode.DANGLING
+
+
+def test_the_planted_flag_tracks_the_mode() -> None:
+    picker = FootholdPicker(stance=(0.0, -1.0, 0.0), ground_y=0.0)
+    assert not picker.planted
+
+    drive(picker, ticks=20, speed=0.0)
+    assert picker.planted
+
+    picker.reset()
+    assert not picker.planted
 
 
 # ----------------------------------------------------------------------
