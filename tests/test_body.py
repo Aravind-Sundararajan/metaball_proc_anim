@@ -187,6 +187,56 @@ class TestRemoval:
         assert body.chunk(a).name == "a"
 
 
+class TestLinkIndex:
+    """The index maps id pairs to array slots, and removal relocates a link."""
+
+    def test_a_relocated_link_stays_findable(self):
+        """Removing a middle link moves the tail one into its place."""
+        body = Body()
+        ids = [body.add_chunk(f"c{i}", [float(i), 0.0, 0.0]) for i in range(4)]
+        for a, b in zip(ids, ids[1:]):
+            body.add_link(a, b)
+        body.set_link(ids[2], ids[3], rest=7.5)
+
+        body.remove_link(ids[0], ids[1])
+
+        assert body.has_link(ids[2], ids[3])
+        assert body.link(ids[2], ids[3]).rest == pytest.approx(7.5)
+
+    def test_every_link_survives_removing_each_other_one(self):
+        body = Body()
+        ids = [body.add_chunk(f"c{i}", [float(i), 0.0, 0.0]) for i in range(8)]
+        pairs = list(zip(ids, ids[1:]))
+        for a, b in pairs:
+            body.add_link(a, b, rest=float(a))
+
+        body.remove_link(*pairs[3])
+        remaining = [p for i, p in enumerate(pairs) if i != 3]
+
+        assert body.n_links == len(remaining)
+        for a, b in remaining:
+            assert body.has_link(a, b)
+            assert body.link(a, b).rest == pytest.approx(float(a))
+
+    def test_removing_a_chunk_leaves_a_consistent_index(self):
+        body, ids = square_with_diagonal()
+        body.remove_chunk(ids[0])
+
+        for link in body.links():
+            assert body.has_link(link.a, link.b)
+            assert body.link(link.a, link.b).rest == pytest.approx(link.rest)
+
+    def test_lookup_does_not_degrade_with_link_count(self):
+        """It was a linear scan, which made a per-pair-per-tick caller quadratic."""
+        body = Body()
+        ids = [body.add_chunk(f"c{i}", [float(i), 0.0, 0.0]) for i in range(200)]
+        for a, b in zip(ids, ids[1:]):
+            body.add_link(a, b)
+
+        assert body.link(ids[0], ids[1]).rest == pytest.approx(1.0)
+        assert body.link(ids[-2], ids[-1]).rest == pytest.approx(1.0)
+
+
 class TestStorage:
     def test_arrays_survive_capacity_growth(self):
         """np.resize repeats data when growing; the live prefix must still be intact."""

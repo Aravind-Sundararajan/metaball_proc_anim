@@ -137,7 +137,11 @@ class Body:
         self._link_elasticity = np.ones(self._link_cap, dtype=np.float32)
 
         self._slot_of: dict[int, int] = {}
-        self._link_keys: set[tuple[int, int]] = set()
+        # Canonical id pair -> index into the link arrays. A dict rather than a
+        # set because every lookup previously rescanned every link: SpineFollow
+        # resolves a rest length per pair per tick, which made a long chain
+        # quadratic in its own length.
+        self._link_at: dict[tuple[int, int], int] = {}
         self._next_id = 0
 
     # ------------------------------------------------------------------
@@ -380,7 +384,7 @@ class Body:
             raise ValueError(f"cannot link chunk {id_a} to itself")
 
         key = (min(id_a, id_b), max(id_a, id_b))
-        if key in self._link_keys:
+        if key in self._link_at:
             return False
 
         if rest is None:
@@ -399,34 +403,37 @@ class Body:
         self._link_rest[i] = rest
         self._link_type[i] = int(type)
         self._link_elasticity[i] = elasticity
-        self._link_keys.add(key)
+        self._link_at[key] = i
         self._n_links += 1
         return True
 
     def remove_link(self, id_a: int, id_b: int) -> bool:
         key = (min(id_a, id_b), max(id_a, id_b))
-        if key not in self._link_keys:
+        index = self._link_at.get(key)
+        if index is None:
             return False
 
-        slot_a = self._slot_of[id_a]
-        slot_b = self._slot_of[id_b]
-        for i in range(self._n_links):
-            pair = (int(self._link_a[i]), int(self._link_b[i]))
-            if pair == (slot_a, slot_b) or pair == (slot_b, slot_a):
-                last = self._n_links - 1
-                if i != last:
-                    self._link_a[i] = self._link_a[last]
-                    self._link_b[i] = self._link_b[last]
-                    self._link_rest[i] = self._link_rest[last]
-                    self._link_type[i] = self._link_type[last]
-                    self._link_elasticity[i] = self._link_elasticity[last]
-                self._n_links -= 1
-                self._link_keys.discard(key)
-                return True
-        return False
+        last = self._n_links - 1
+        if index != last:
+            self._link_a[index] = self._link_a[last]
+            self._link_b[index] = self._link_b[last]
+            self._link_rest[index] = self._link_rest[last]
+            self._link_type[index] = self._link_type[last]
+            self._link_elasticity[index] = self._link_elasticity[last]
+            # The link relocated out of the tail now lives at `index`, so its
+            # entry has to follow it or the next lookup returns a stale slot.
+            moved = (
+                int(self._ids[self._link_a[index]]),
+                int(self._ids[self._link_b[index]]),
+            )
+            self._link_at[(min(moved), max(moved))] = index
+
+        del self._link_at[key]
+        self._n_links -= 1
+        return True
 
     def has_link(self, id_a: int, id_b: int) -> bool:
-        return (min(id_a, id_b), max(id_a, id_b)) in self._link_keys
+        return (min(id_a, id_b), max(id_a, id_b)) in self._link_at
 
     def set_link(
         self,
@@ -470,15 +477,7 @@ class Body:
         )
 
     def _link_index(self, id_a: int, id_b: int) -> int | None:
-        if (min(id_a, id_b), max(id_a, id_b)) not in self._link_keys:
-            return None
-        slot_a = self._slot_of[id_a]
-        slot_b = self._slot_of[id_b]
-        for i in range(self._n_links):
-            pair = (int(self._link_a[i]), int(self._link_b[i]))
-            if pair == (slot_a, slot_b) or pair == (slot_b, slot_a):
-                return i
-        return None
+        return self._link_at.get((min(id_a, id_b), max(id_a, id_b)))
 
     def links(self) -> Iterator[Link]:
         for i in range(self._n_links):
