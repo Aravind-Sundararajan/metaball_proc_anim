@@ -15,7 +15,6 @@ suspicious result.
 """
 
 import numpy as np
-import pytest
 
 from mesh_xml.core.solver import TICK_DT, SolverConfig
 from mesh_xml.core.terrain import Terrain
