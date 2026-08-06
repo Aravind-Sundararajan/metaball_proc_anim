@@ -86,6 +86,17 @@ class ControlContext:
         slot = self.body.slot(chunk_id)
         return (self.body.pos[slot] - self.body.prev_pos[slot]) / np.float32(self.dt)
 
+    @property
+    def terrain(self):
+        """The world's SDF, or ``None``. Passed through from the solver config.
+
+        Controllers that place things in the world — a foothold picker — take
+        their surface at construction today; this exists so a controller *can*
+        read the world the solver will actually collide against, rather than
+        being handed a second copy that can disagree with it.
+        """
+        return self.config.terrain if self.config is not None else None
+
     def ground_level(self, chunk_id: int) -> float | None:
         """The world ``y`` a chunk of this radius comes to rest at, or ``None``.
 

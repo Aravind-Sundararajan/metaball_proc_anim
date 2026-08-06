@@ -41,35 +41,15 @@ from __future__ import annotations
 import numpy as np
 
 from mesh_xml.core.body import Body
+from mesh_xml.core.distance import DEGENERATE_EPSILON, PRIMITIVE_STRIDE
 
-__all__ = ["PRIMITIVE_STRIDE", "pack", "primitive_count"]
+__all__ = ["DEGENERATE_EPSILON", "PRIMITIVE_STRIDE", "pack", "primitive_count"]
 
-#: Floats per primitive: ``[ax, ay, az, ra, bx, by, bz, rb]``.
-#:
-#: The radii are interleaved rather than trailing so each half is a tight
-#: ``vec4``, which is what a std430 buffer wants and what avoids padding.
-PRIMITIVE_STRIDE = 8
+# Canonical home of the record format and its two degeneracies is
+# core/distance.py, since the world's terrain shares the same primitives.
+# Re-exported here so every existing consumer keeps its import path.
 
-#: Below this end separation a round cone is treated as a sphere. The exact
-#: formula divides by the squared axis length, so the degenerate case has to be
-#: branched around rather than left to produce a NaN.
-#:
-#: .. important::
-#:    This covers only the *first* of two degeneracies, and a consumer that
-#:    guards on it alone will still render NaN. The second has no epsilon
-#:    because it is not a near-miss but an exact geometric condition:
-#:
-#:        ``abs(ra - rb) >= |b - a|``  —  one end ball contains the other.
-#:
-#:    The exact formulation takes the square root of ``|b-a|² - (ra-rb)²``,
-#:    which goes negative there. The fallback is the larger-radius end sphere,
-#:    and that is exact rather than an approximation: the convex hull of two
-#:    balls where one contains the other *is* the larger ball.
-#:
-#:    :func:`pack` emits such records in ordinary use — a large head chunk with
-#:    a small eye chunk linked close to it produces one — so both branches are
-#:    live paths, not defensive padding. Any GLSL port must carry both.
-DEGENERATE_EPSILON = 1e-6
+
 
 
 def primitive_count(body: Body) -> int:

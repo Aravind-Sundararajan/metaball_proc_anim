@@ -31,6 +31,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from mesh_xml.core.body import Body, LinkType
+from mesh_xml.core.terrain import Terrain
 
 __all__ = [
     "TICK_HZ",
@@ -73,6 +74,11 @@ class SolverConfig:
     floor asks for one. Without it, and with nothing pinned, a body under
     gravity simply falls forever, which is correct and also useless to look at.
 
+    ``terrain`` is the general world: an SDF the body collides with, taking
+    precedence over ``ground_y`` when set (docs/TERRAIN.md). The field exists
+    from the contract commit so pickers and documents can carry a world; the
+    collision that consumes it lands in ``_collide_terrain``.
+
     ``ground_friction`` is the Coulomb coefficient ``mu``. Each contact tick
     the floor may undo up to ``mu`` times the chunk's penetration depth of its
     tangential travel; depth is how a position solver expresses normal force,
@@ -90,6 +96,7 @@ class SolverConfig:
     max_velocity: float = 100.0
     ground_y: float | None = None
     ground_friction: float = 0.35
+    terrain: Terrain | None = None
 
 
 def step(

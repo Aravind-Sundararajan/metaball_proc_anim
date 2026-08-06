@@ -1,4 +1,5 @@
-// The metaball field, kept line-for-line with mesh_xml/render/field.py.
+// The metaball field, kept line-for-line with mesh_xml/core/distance.py
+// (the primitive math) and mesh_xml/render/field.py (the fold).
 //
 // That correspondence is the whole point of having a CPU reference at all: it
 // is only a check on this shader while the two compute the same thing. Any edit
