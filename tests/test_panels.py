@@ -26,6 +26,7 @@ from mesh_xml.core import Body
 from mesh_xml.editor.document import (
     AddChunk,
     Document,
+    Macro,
     RemoveChunk,
     SetRadius,
 )
@@ -54,6 +55,14 @@ class _UnguardedChunkPanel(panels.ChunkPanel):
 
 class _UnguardedSurfacePanel(panels.SurfacePanel):
     """:class:`SurfacePanel` with the latch defeated."""
+
+    @property
+    def syncing(self) -> bool:
+        return False
+
+
+class _UnguardedSmoothingPanel(panels.SmoothingPanel):
+    """:class:`SmoothingPanel` with the latch defeated."""
 
     @property
     def syncing(self) -> bool:
@@ -101,7 +110,14 @@ def label_texts(widget: QWidget) -> list[str]:
 class TestBuildPanels:
     def test_returns_one_panel_per_dock_title(self, document):
         built = panels.build_panels(document)
-        assert list(built) == ["Playback", "Chunks", "Surface", "Solver", "Smoothing"]
+        assert list(built) == [
+            "Playback",
+            "Chunks",
+            "Surface",
+            "Solver",
+            "Smoothing",
+            "Curve",
+        ]
 
     def test_every_panel_is_a_widget_bound_to_the_document(self, document):
         for panel in panels.build_panels(document).values():
@@ -229,6 +245,46 @@ class TestSurfacePanel:
         panel.set_show_rig_overlay(True)
         assert panel._overlay.isChecked()
 
+    def test_the_projection_is_panel_state_and_announces_itself(self, document):
+        """The camera belongs to the viewport, so the panel can only say so."""
+        panel = panels.SurfacePanel(document)
+        seen = []
+        panel.orthographic_changed.connect(seen.append)
+
+        panel._ortho.setChecked(True)
+        assert seen == [True]
+        assert panel.orthographic
+
+        panel._ortho.setChecked(False)
+        assert seen == [True, False]
+        assert not panel.orthographic
+
+    def test_the_projection_can_be_set_from_outside(self, document):
+        """The main window adopts the camera's own state on startup this way."""
+        panel = panels.SurfacePanel(document)
+        panel.set_orthographic(True)
+        assert panel._ortho.isChecked()
+        assert panel.orthographic
+
+    def test_setting_the_projection_to_what_it_already_is_says_nothing(self, document):
+        panel = panels.SurfacePanel(document)
+        seen = []
+        panel.orthographic_changed.connect(seen.append)
+        panel.set_orthographic(False)
+        assert seen == []
+
+    def test_the_projection_survives_a_document_refresh(self, document):
+        """It is not in MetaballSettings, so a settings refresh must not clear it."""
+        panel = panels.SurfacePanel(document)
+        panel.set_orthographic(True)
+        document.settings_changed.emit()
+        assert panel.orthographic
+        assert panel._ortho.isChecked()
+
+    def test_the_projection_note_explains_the_framing(self, document):
+        panel = panels.SurfacePanel(document)
+        assert any("ortho height" in text for text in label_texts(panel))
+
     def test_the_blend_note_warns_about_authored_radii(self, document):
         """Nobody tuning radii finds this in sdf.py before they lose an hour to it."""
         panel = panels.SurfacePanel(document)
@@ -320,6 +376,137 @@ class TestSmoothingPanel:
         texts = " ".join(label_texts(panel))
         assert "Per-tick" in texts
         assert "per point" in texts
+
+
+class TestPerPointSmoothing:
+    """A tight head over a loose gut: the reason DrawPoints stores these per point."""
+
+    def slot_of(self, document, chunk_id: int) -> int:
+        return document.body.chunk_ids().index(chunk_id)
+
+    def test_an_edit_reaches_only_the_selected_chunks(self, document):
+        panel = panels.SmoothingPanel(document)
+        ids = document.body.chunk_ids()
+        panel._stiffness.setValue(0.5)
+
+        document.set_selection([ids[0]])
+        panel._stiffness.setValue(0.95)
+
+        stiffness = document.draw.stiffness
+        assert float(stiffness[self.slot_of(document, ids[0])]) == pytest.approx(0.95)
+        assert float(stiffness[self.slot_of(document, ids[1])]) == pytest.approx(0.5)
+        assert float(stiffness[self.slot_of(document, ids[3])]) == pytest.approx(0.5)
+
+    def test_damping_is_scoped_the_same_way(self, document):
+        panel = panels.SmoothingPanel(document)
+        ids = document.body.chunk_ids()
+        panel._damping.setValue(0.1)
+
+        document.set_selection([ids[2]])
+        panel._damping.setValue(0.99)
+
+        damping = document.draw.damping
+        assert float(damping[self.slot_of(document, ids[2])]) == pytest.approx(0.99)
+        assert float(damping[self.slot_of(document, ids[0])]) == pytest.approx(0.1)
+
+    def test_the_scope_is_the_selection_in_table_order(self, document):
+        panel = panels.SmoothingPanel(document)
+        ids = document.body.chunk_ids()
+        assert panel.scope_ids() == ids
+
+        document.set_selection([ids[3], ids[1]])
+        assert panel.scope_ids() == [ids[1], ids[3]]
+
+    def test_the_boxes_follow_the_selection(self, document):
+        panel = panels.SmoothingPanel(document)
+        ids = document.body.chunk_ids()
+        document.set_selection([ids[1]])
+        panel._stiffness.setValue(0.2)
+
+        document.set_selection([ids[2]])
+        assert panel._stiffness.value() != pytest.approx(0.2)
+
+        document.set_selection([ids[1]])
+        assert panel._stiffness.value() == pytest.approx(0.2)
+
+    def test_a_mixed_scope_says_so(self, document):
+        panel = panels.SmoothingPanel(document)
+        ids = document.body.chunk_ids()
+        assert "differ" not in " ".join(label_texts(panel))
+
+        document.set_selection([ids[1]])
+        panel._stiffness.setValue(0.2)
+        document.set_selection([])
+
+        assert "differ" in " ".join(label_texts(panel))
+
+    def test_squash_stays_rig_wide(self, document):
+        """DrawPoints stores one scalar; a per-point squash would be a field nothing reads."""
+        panel = panels.SmoothingPanel(document)
+        document.set_selection([document.body.chunk_ids()[0]])
+        panel._squash.setValue(0.4)
+        assert document.draw.squash == pytest.approx(0.4)
+
+    def test_a_per_chunk_edit_does_not_become_the_rig_default(self, document):
+        panel = panels.SmoothingPanel(document)
+        ids = document.body.chunk_ids()
+        panel._stiffness.setValue(0.5)
+        document.set_selection([ids[0]])
+        panel._stiffness.setValue(0.95)
+
+        document.do(AddChunk("tip", (9.0, 0.0, 0.0)))
+
+        added = document.body.chunk_ids()[-1]
+        assert float(
+            document.draw.stiffness[self.slot_of(document, added)]
+        ) == pytest.approx(0.5)
+
+    def test_a_structural_edit_does_not_flatten_per_chunk_work(self, document):
+        """A radius-curve apply arrives as a Macro, and Macro is structural."""
+        panel = panels.SmoothingPanel(document)
+        ids = document.body.chunk_ids()
+        panel._stiffness.setValue(0.5)
+        document.set_selection([ids[1]])
+        panel._stiffness.setValue(0.2)
+        document.set_selection([])
+
+        document.do(Macro([SetRadius(ids[0], 0.44)], text="Radius Curve"))
+
+        assert float(
+            document.draw.stiffness[self.slot_of(document, ids[1])]
+        ) == pytest.approx(0.2)
+
+    def test_per_chunk_values_survive_a_deletion_elsewhere(self, document):
+        """remove_chunk swaps the last chunk into the freed slot; sync remaps by id."""
+        panel = panels.SmoothingPanel(document)
+        ids = document.body.chunk_ids()
+        panel._stiffness.setValue(0.5)
+        document.set_selection([ids[3]])
+        panel._stiffness.setValue(0.2)
+        document.set_selection([])
+
+        document.do(RemoveChunk(ids[0]))
+
+        assert float(
+            document.draw.stiffness[self.slot_of(document, ids[3])]
+        ) == pytest.approx(0.2)
+
+    def test_a_replaced_body_forgets_the_rig_default(self, document):
+        panel = panels.SmoothingPanel(document)
+        panel._stiffness.setValue(0.9)
+        document.open(LEGACY_RIG)
+        document.do(AddChunk("tip", (9.0, 0.0, 0.0)))
+
+        assert float(document.draw.stiffness.max()) != pytest.approx(0.9)
+        assert float(document.draw.stiffness.min()) == pytest.approx(
+            float(document.draw.stiffness.max())
+        )
+
+    def test_the_note_describes_per_point_authoring(self, document):
+        panel = panels.SmoothingPanel(document)
+        texts = " ".join(label_texts(panel))
+        assert "selected chunks only" in texts
+        assert "loose gut" in texts
 
 
 class TestChunkPanel:
@@ -514,6 +701,36 @@ class TestReentrancy:
         guarded, unguarded = counts
         assert guarded == 1
         assert unguarded > 1, "the comparison is not exercising the latch"
+
+    def test_a_selection_change_does_not_repaint_the_rig_with_one_value(
+        self, make_document
+    ):
+        """The scope moves between the write and the echo, so the echo lands wrong.
+
+        Selecting a chunk refreshes the spin boxes from *that* chunk. Unguarded,
+        Qt reports the write as a user edit, the handler applies it to the scope
+        the selection has just become, and clicking a second chunk silently
+        flattens everything the author gave the first one.
+        """
+        results = []
+        alive = []
+        for panel_class in (panels.SmoothingPanel, _UnguardedSmoothingPanel):
+            document = make_document()
+            panel = panel_class(document)
+            alive.append(panel)
+            ids = document.body.chunk_ids()
+
+            document.set_selection([ids[1]])
+            panel._stiffness.setValue(0.2)
+            document.set_selection([])
+
+            results.append(float(document.draw.stiffness[1]))
+
+        guarded, unguarded = results
+        assert guarded == pytest.approx(0.2)
+        assert unguarded != pytest.approx(0.2), (
+            "the comparison is not exercising the latch"
+        )
 
     def test_editing_a_name_submits_exactly_one_command(self, document):
         panel = panels.ChunkPanel(document)

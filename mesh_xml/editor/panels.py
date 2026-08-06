@@ -21,13 +21,16 @@ refresh, and :func:`_user_edit` drops any control signal that arrives while it i
 held. Every handler carries the decorator, so a missing guard is visible at the
 point of declaration rather than at the point of failure.
 
-Two pieces of state are deliberately *not* the document's, and both are marked
-as such at their definition: :attr:`SurfacePanel.show_rig_overlay`, which
-:class:`~mesh_xml.render.gl.metaball.MetaballSettings` has no field for, and
+Three pieces of state are deliberately *not* the document's, and all three are
+marked as such at their definition: :attr:`SurfacePanel.show_rig_overlay`, which
+:class:`~mesh_xml.render.gl.metaball.MetaballSettings` has no field for,
+:attr:`SurfacePanel.orthographic`, which belongs to the viewport's
+:class:`~mesh_xml.render.gl.camera.OrbitCamera` and not to the rig at all, and
 :meth:`PlaybackPanel.single_step`, which has no counterpart on
-:class:`~mesh_xml.editor.document.Document`. Both are exposed as panel signals so
-the main window can wire them to the viewport rather than either one being
-smuggled onto the document behind its own contract.
+:class:`~mesh_xml.editor.document.Document`. All three are exposed as panel
+signals so the main window can wire them to the viewport rather than any of them
+being smuggled onto the document behind its own contract. The radius curve in
+:mod:`mesh_xml.editor.curve_panel` is a fourth, for the same reason.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from functools import wraps
 from itertools import combinations
 from typing import Callable, Iterator
 
+import numpy as np
 from PySide6.QtCore import (
     QItemSelectionModel,
     Qt,
@@ -365,6 +369,14 @@ class SurfacePanel(_Panel):
     #: window carries it from here to the viewport.
     overlay_changed = Signal(bool)
 
+    #: Whether the viewport projects orthographically. The camera owns the
+    #: projection and the panel does not own the camera, so this is panel state
+    #: plus a signal for exactly the reason ``overlay_changed`` is: the
+    #: alternative is a panel reaching through the main window into a widget it
+    #: does not have, which is how the old app's settings ended up in three
+    #: places at once.
+    orthographic_changed = Signal(bool)
+
     def __init__(self, document: Document, parent: QWidget | None = None) -> None:
         super().__init__(document, parent)
 
@@ -380,6 +392,8 @@ class SurfacePanel(_Panel):
         self._max_steps.setSingleStep(16)
         self._overlay = QCheckBox("Show rig overlay")
         self._show_rig_overlay = False
+        self._ortho = QCheckBox("Orthographic")
+        self._orthographic = False
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_blend())
@@ -394,6 +408,7 @@ class SurfacePanel(_Panel):
         self._debug.currentIndexChanged.connect(self._on_debug_changed)
         self._max_steps.valueChanged.connect(self._on_max_steps_changed)
         self._overlay.toggled.connect(self._on_overlay_toggled)
+        self._ortho.toggled.connect(self._on_ortho_toggled)
         self._follow(document.settings_changed, document.body_replaced)
 
         self.refresh()
@@ -409,6 +424,26 @@ class SurfacePanel(_Panel):
         with self._sync():
             self._overlay.setChecked(show)
         self.overlay_changed.emit(show)
+
+    @property
+    def orthographic(self) -> bool:
+        return self._orthographic
+
+    def set_orthographic(self, orthographic: bool) -> None:
+        """Set the projection from outside, e.g. to adopt the camera's own state.
+
+        Writing the checkbox under the latch is what makes this usable as the
+        *initial* sync as well as an external change: without it the write would
+        come straight back as a user edit and the signal would fire during
+        construction, before the main window had finished connecting anything.
+        """
+        orthographic = bool(orthographic)
+        if orthographic == self._orthographic:
+            return
+        self._orthographic = orthographic
+        with self._sync():
+            self._ortho.setChecked(orthographic)
+        self.orthographic_changed.emit(orthographic)
 
     def set_surface_colour(self, rgb: tuple[float, float, float]) -> None:
         self._document.metaball.surface_colour = tuple(float(v) for v in rgb)
@@ -445,9 +480,24 @@ class SurfacePanel(_Panel):
         layout.addRow("Surface", self._surface_colour)
         layout.addRow("Background", self._background_colour)
         layout.addRow(self._overlay)
+        layout.addRow(self._ortho)
+        layout.addRow(
+            _note(
+                "Orthographic keeps the subject about the same size on screen: "
+                "the camera derives its ortho height from the perspective "
+                "framing, so the toggle is a comparison rather than a "
+                "re-framing exercise. A view setting; it is not saved with the "
+                "rig."
+            )
+        )
         self._overlay.setToolTip(
             "Draw chunks and links over the surface. A view setting; it is not "
             "saved with the rig."
+        )
+        self._ortho.setToolTip(
+            "Drop perspective. Parallel edges stay parallel, so relative chunk "
+            "sizes down a chain can be compared by eye instead of being "
+            "confounded by depth."
         )
         return box
 
@@ -490,6 +540,10 @@ class SurfacePanel(_Panel):
         self.set_show_rig_overlay(show)
 
     @_user_edit
+    def _on_ortho_toggled(self, orthographic: bool) -> None:
+        self.set_orthographic(orthographic)
+
+    @_user_edit
     def _on_pick_surface_colour(self) -> None:
         picked = self._pick(self._document.metaball.surface_colour, "Surface colour")
         if picked is not None:
@@ -526,6 +580,7 @@ class SurfacePanel(_Panel):
         )
         self._max_steps.setValue(int(settings.max_steps))
         self._overlay.setChecked(self._show_rig_overlay)
+        self._ortho.setChecked(self._orthographic)
 
 
 class SolverPanel(_Panel):
@@ -660,12 +715,29 @@ class SolverPanel(_Panel):
 class SmoothingPanel(_Panel):
     """The draw-point springs — the lag that makes a stiff rig read as flesh.
 
-    :class:`~mesh_xml.render.draw_points.DrawPoints` stores these per point, and
-    a tight head over a loose gut is the whole reason it does. Nothing exposes
-    that yet, so this panel writes one value across every point and re-applies it
-    whenever the chunk set changes: ``DrawPoints.sync`` gives a freshly added
-    point the *constructor* defaults, so without the re-apply the number on
-    screen would quietly stop describing the rig.
+    :class:`~mesh_xml.render.draw_points.DrawPoints` stores stiffness and damping
+    per point, and a tight head over a loose gut is the whole reason it does. The
+    spin boxes address the **selected chunks**, falling back to every point when
+    nothing is selected — the same rule ``ChunkPanel``'s Connect button uses, so
+    "the selection" means one thing across the window.
+
+    That scope is what makes the latch load bearing here rather than merely
+    tidy. Changing the selection refreshes the boxes from the newly scoped
+    points; unguarded, that write comes straight back as a user edit and is
+    applied to the *new* scope, so clicking a second chunk silently flattens
+    everything the author had just given the first one.
+
+    ``DrawPoints.sync`` hands a freshly added point the *constructor* defaults,
+    which the retired uniform version fixed by re-applying its one value to every
+    point on every ``topology_changed``. That cure is now worse than the disease:
+    it would wipe per-chunk authoring on any structural edit, including the
+    :class:`Macro` a radius-curve apply submits. So the panel instead remembers
+    the last **rig-wide** value it wrote and gives it to genuinely new ids only,
+    tracked in :attr:`_known`. A per-chunk edit deliberately does not become the
+    default; it is a statement about one chunk, not about the rig.
+
+    Squash stays rig-wide because ``DrawPoints`` stores one scalar for it, and
+    inventing a per-point squash here would be a field the renderer cannot read.
     """
 
     def __init__(self, document: Document, parent: QWidget | None = None) -> None:
@@ -674,18 +746,35 @@ class SmoothingPanel(_Panel):
         self._stiffness = _spin(0.0, 1.0, 0.01)
         self._damping = _spin(0.0, 1.0, 0.01)
         self._squash = _spin(0.0, 5.0, 0.05)
+        self._scope = QLabel()
+        self._mixed = _note("")
+
+        #: The last rig-wide pair, handed to chunks added later. ``None`` means
+        #: the author has not made a rig-wide statement, so new points keep the
+        #: ``DrawPoints`` constructor defaults — which is exactly what the boxes
+        #: are already showing.
+        self._default: tuple[float, float] | None = None
+        self._known: set[int] = set(document.body.chunk_ids())
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_springs())
         layout.addStretch(1)
 
-        self._stiffness.valueChanged.connect(self._on_value_changed)
-        self._damping.valueChanged.connect(self._on_value_changed)
-        self._squash.valueChanged.connect(self._on_value_changed)
-        self._follow(document.settings_changed, document.body_replaced)
+        self._stiffness.valueChanged.connect(self._on_spring_changed)
+        self._damping.valueChanged.connect(self._on_spring_changed)
+        self._squash.valueChanged.connect(self._on_squash_changed)
+        self._follow(document.settings_changed, document.selection_changed)
         document.topology_changed.connect(self._on_topology_changed)
+        document.body_replaced.connect(self._on_body_replaced)
 
         self.refresh()
+
+    def scope_ids(self) -> list[int]:
+        """The chunks the spin boxes write: the selection, or the whole rig."""
+        ids = self._document.body.chunk_ids()
+        selection = self._document.selection
+        scoped = [chunk_id for chunk_id in ids if chunk_id in selection]
+        return scoped or ids
 
     def _build_springs(self) -> QWidget:
         box = QGroupBox("Draw points")
@@ -694,6 +783,8 @@ class SmoothingPanel(_Panel):
         layout.addRow("Stiffness", self._stiffness)
         layout.addRow("Damping", self._damping)
         layout.addRow("Squash", self._squash)
+        layout.addRow(self._scope)
+        layout.addRow(self._mixed)
         layout.addRow(
             _note(
                 "Per-tick coefficients, not per-second: they are applied once "
@@ -704,9 +795,11 @@ class SmoothingPanel(_Panel):
         )
         layout.addRow(
             _note(
-                "One value is written to every draw point. The model stores them "
-                "per point — a tight head over a loose gut — but per-point "
-                "authoring is not exposed yet."
+                "Stiffness and damping are stored per point, and these boxes "
+                "write the selected chunks only — a tight head over a loose "
+                "gut. Select nothing to write every point, which also sets what "
+                "a chunk added later inherits. Squash is one number for the "
+                "whole rig; the model has nowhere to put a per-point one."
             )
         )
 
@@ -727,25 +820,89 @@ class SmoothingPanel(_Panel):
         return box
 
     @_user_edit
-    def _on_value_changed(self, _value: float) -> None:
-        self._push_uniform()
+    def _on_spring_changed(self, _value: float) -> None:
+        self._push_springs()
+        self._document.settings_changed.emit()
+
+    @_user_edit
+    def _on_squash_changed(self, value: float) -> None:
+        self._document.draw.squash = float(value)
         self._document.settings_changed.emit()
 
     def _on_topology_changed(self) -> None:
-        self._push_uniform()
+        self._adopt_new_points()
 
-    def _push_uniform(self) -> None:
+    def _on_body_replaced(self) -> None:
+        """A new rig arrives with new draw points, so the old default is void."""
+        self._default = None
+        self._known = set(self._document.body.chunk_ids())
+        self.refresh()
+
+    def _push_springs(self) -> None:
         draw = self._document.draw
-        draw.stiffness[:] = self._stiffness.value()
-        draw.damping[:] = self._damping.value()
-        draw.squash = float(self._squash.value())
+        stiffness = float(self._stiffness.value())
+        damping = float(self._damping.value())
+        mask = self._mask(self._document.selection or None)
+        draw.stiffness[mask] = stiffness
+        draw.damping[mask] = damping
+        if not self._document.selection:
+            self._default = (stiffness, damping)
+
+    def _adopt_new_points(self) -> None:
+        """Give ids the panel has never seen the rig-wide default, and only them."""
+        ids = self._document.body.chunk_ids()
+        fresh = {chunk_id for chunk_id in ids if chunk_id not in self._known}
+        self._known = set(ids)
+        if self._default is None or not fresh:
+            return
+        draw = self._document.draw
+        mask = self._mask(fresh)
+        draw.stiffness[mask], draw.damping[mask] = self._default
+
+    def _mask(self, wanted: set[int] | None) -> np.ndarray:
+        """Draw-point slots for ``wanted`` ids; ``None`` means every point.
+
+        Built by walking the body's own id order rather than indexing by id,
+        because ``DrawPoints`` is slot-indexed and a chunk's slot is not its id:
+        ``Body.remove_chunk`` swaps the last chunk into the freed slot. Sizing
+        from the draw array rather than the chunk count is what keeps a stale
+        sync from raising IndexError out of a signal handler.
+        """
+        count = len(self._document.draw.stiffness)
+        if wanted is None:
+            return np.ones(count, dtype=bool)
+        mask = np.zeros(count, dtype=bool)
+        for slot, chunk_id in enumerate(self._document.body.chunk_ids()[:count]):
+            mask[slot] = chunk_id in wanted
+        return mask
 
     def _refresh(self) -> None:
         draw = self._document.draw
-        if len(draw.stiffness):
-            self._stiffness.setValue(float(draw.stiffness[0]))
-            self._damping.setValue(float(draw.damping[0]))
+        mask = self._mask(self._document.selection or None)
+        selected = len(self._document.selection)
+
+        if mask.any():
+            stiffness, damping = draw.stiffness[mask], draw.damping[mask]
+            self._stiffness.setValue(float(stiffness[0]))
+            self._damping.setValue(float(damping[0]))
+            mixed = bool(
+                (stiffness != stiffness[0]).any() or (damping != damping[0]).any()
+            )
+        else:
+            mixed = False
+
         self._squash.setValue(float(draw.squash))
+        self._scope.setText(
+            f"Writing to {selected} selected chunk(s)."
+            if selected
+            else f"Writing to every draw point ({len(draw.stiffness)})."
+        )
+        self._mixed.setText(
+            "These chunks differ; the boxes show the first and an edit levels "
+            "them."
+            if mixed
+            else ""
+        )
 
 
 class ChunkPanel(_Panel):
@@ -974,10 +1131,16 @@ def build_panels(document: Document) -> dict[str, QWidget]:
     The main window assembles docks out of this without naming a single panel
     class, so adding one is an edit to this function alone.
     """
+    # Imported here rather than at module scope: curve_panel builds on _Panel and
+    # the shared form helpers from this module, so a top-level import in both
+    # directions would be a cycle. This is the only edge that closes it.
+    from mesh_xml.editor.curve_panel import CurvePanel
+
     return {
         "Playback": PlaybackPanel(document),
         "Chunks": ChunkPanel(document),
         "Surface": SurfacePanel(document),
         "Solver": SolverPanel(document),
         "Smoothing": SmoothingPanel(document),
+        "Curve": CurvePanel(document),
     }

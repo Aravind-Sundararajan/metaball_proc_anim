@@ -64,7 +64,11 @@ class MainWindow(QMainWindow):
         # Playback stays visible; the four editing panels share one tab stack,
         # because five panels stretched down a single column leaves every one of
         # them too short to use.
-        tabbed = [self._docks[t] for t in ("Chunks", "Surface", "Solver", "Smoothing") if t in self._docks]
+        tabbed = [
+            self._docks[t]
+            for t in ("Chunks", "Surface", "Solver", "Smoothing", "Curve")
+            if t in self._docks
+        ]
         for previous, dock in zip(tabbed, tabbed[1:]):
             self.tabifyDockWidget(previous, dock)
         if tabbed:
@@ -77,9 +81,11 @@ class MainWindow(QMainWindow):
         surface = self.panels.get("Surface")
         if surface is not None:
             surface.overlay_changed.connect(self._set_rig_overlay)
+            surface.orthographic_changed.connect(self._set_orthographic)
             # The panel is the checkbox's owner, so the viewport follows it
             # rather than the two starting out disagreeing.
             surface.set_show_rig_overlay(self.viewport.show_rig)
+            surface.set_orthographic(self.viewport.camera.orthographic)
 
         playback = self.panels.get("Playback")
         if playback is not None:
@@ -87,6 +93,17 @@ class MainWindow(QMainWindow):
 
     def _set_rig_overlay(self, visible: bool) -> None:
         self.viewport.show_rig = visible
+
+    def _set_orthographic(self, orthographic: bool) -> None:
+        """Switch projection and mark the frame dirty.
+
+        The emit is load-bearing. The camera uniforms are uploaded every frame,
+        but nothing marks a frame dirty on a projection change, and the viewport
+        idles when nothing has moved — so without this the toggle would sit
+        invisible until something unrelated happened to invalidate a frame.
+        """
+        self.viewport.camera.orthographic = orthographic
+        self.viewport.camera_changed.emit()
 
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -112,6 +129,7 @@ class MainWindow(QMainWindow):
         view_menu = self.menuBar().addMenu("&View")
         self._action(view_menu, "&Frame All", QKeySequence("F"), self.viewport.frame_all)
         self._action(view_menu, "Toggle &Rig Overlay", QKeySequence("R"), self.toggle_rig)
+        self._action(view_menu, "&Orthographic", QKeySequence("O"), self.toggle_orthographic)
         self._action(view_menu, "&Play / Pause", QKeySequence(Qt.Key.Key_Space), self.toggle_running)
         view_menu.addSeparator()
         for title, dock in self._docks.items():
@@ -151,6 +169,13 @@ class MainWindow(QMainWindow):
             surface.set_show_rig_overlay(visible)
         else:
             self.viewport.show_rig = visible
+
+    def toggle_orthographic(self) -> None:
+        surface = self.panels.get("Surface")
+        if surface is not None:
+            surface.set_orthographic(not surface.orthographic)
+        else:
+            self._set_orthographic(not self.viewport.camera.orthographic)
 
     def delete_selected(self) -> None:
         for chunk_id in sorted(self.document.selection):
