@@ -203,6 +203,18 @@ def read_legacy(
                 has_mesh=bone.has_mesh,
                 radius_defaulted=not _usable_radius(bone.radius),
             )
+            # The mesh fields also land on the chunk itself, as strings the
+            # body carries opaquely. The sidecar record is richer and typed,
+            # but it dies with this import object — Document.open keeps only
+            # the body — and a v3 save writes chunk meta, so this is the leg
+            # of §2.4's journey that actually reaches disk.
+            carried = body.meta_of(chunk_id)
+            if bone.mesh_type is not None:
+                carried["type"] = str(bone.mesh_type)
+            if bone.height is not None:
+                carried["height"] = str(bone.height)
+            if bone.material is not None:
+                carried["material"] = str(bone.material)
             if not bone.has_mesh:
                 missing_mesh.append(chunk_id)
         elif bone.name not in merged_names:

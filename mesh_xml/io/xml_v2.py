@@ -192,7 +192,15 @@ def save(
             attrs["pinned"] = "true"
         else:
             attrs["mass"] = _fmt(chunk.mass)
-        ET.SubElement(chunks_el, "chunk", attrs)
+        chunk_el = ET.SubElement(chunks_el, "chunk", attrs)
+        # Meta rides as string children. Additive — no children means the
+        # empty dict every earlier document already meant, so no version
+        # bump. Dropping it was defect §2.4 arriving one save late: the
+        # legacy importer carefully kept a capsule's type and height as
+        # opaque meta, and the first v3 save silently discarded them.
+        for key in sorted(chunk.meta):
+            meta_el = ET.SubElement(chunk_el, "meta", {"name": str(key)})
+            meta_el.text = str(chunk.meta[key])
 
     links_el = ET.SubElement(root, "links")
     for link in body.links():
@@ -302,6 +310,11 @@ def read(path: str | Path) -> Rig:
             )
 
         pinned = _bool_attr(el, "pinned", default=False)
+        meta = {
+            child.get("name", ""): (child.text or "")
+            for child in el.findall("meta")
+            if child.get("name")
+        }
         try:
             body.add_chunk(
                 name=el.get("name", ""),
@@ -310,6 +323,7 @@ def read(path: str | Path) -> Rig:
                 mass=_float_attr(el, "mass", default=1.0),
                 pinned=pinned,
                 id=chunk_id,
+                meta=meta or None,
             )
         except ValueError as exc:
             raise SchemaError(f"chunk {chunk_id}: {exc}") from None

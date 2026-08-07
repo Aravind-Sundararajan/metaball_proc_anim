@@ -426,6 +426,22 @@ Landed after Phase 5, in one fan-out:
   (the table now snapshots beside the primitives it describes); and the
   tile slack now scales with the settings' own ``max_distance`` instead of
   assuming the default.
+* **Creature colour, honest meta, and unwelded exports.** Blend groups grew
+  from render trick to authored data. First the prerequisite bug: v3 saves
+  silently dropped chunk meta — the very fields the §2.4 fix preserved on
+  import — and the legacy reader itself only kept them in a sidecar the
+  editor discards, so a capsule's type and height never actually reached
+  disk. Meta now rides ``<meta>`` children (additive, no version bump) and
+  the legacy importer stamps the chunk too, closing §2.4's journey at last.
+  On that foundation: an authored creature colour lives in chunk meta under
+  ``sdf.COLOUR_META``, painted onto every chunk of a component (a creature
+  has no object of its own; a colour on one chunk dies with it) by
+  ``Document.set_creature_colour`` — one undo step, Surface-panel picker,
+  outranks the golden-angle palette, garbage falls back rather than
+  breaking the render. And ``File > Export Mesh`` finally exists: surface
+  nets over the *grouped* field, so a herd arrives in Blender as separate
+  animals — the hard minimum of exact fields is the exact union field, so
+  the mesh stays as closed as the ungrouped case.
 * **Rig Legs: the worm becomes a quadruped in one click.** The decision the
   autorig declined — legs need to know how the creature is driven — is now
   made from evidence: ``autorig.fit_legs`` compiles the *measured*

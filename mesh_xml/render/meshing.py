@@ -178,13 +178,23 @@ class Mesh:
 
 
 def polygonise(
-    primitives: np.ndarray, blend: float = 0.0, resolution: int = 64
+    primitives: np.ndarray,
+    blend: float = 0.0,
+    resolution: int = 64,
+    groups: np.ndarray | None = None,
 ) -> Mesh:
     """Surface-net the blended field of a ``(P, 8)`` primitive array.
 
     ``resolution`` is cells along the longest axis of the sampled box. Cells are
     cubes, so the other two axes get however many they need to stay square — a
     long thin body costs proportionally less than its bounding box suggests.
+
+    ``groups`` is the blend-group ranges the field respects — smooth minimum
+    within a creature, hard minimum across (:func:`mesh_xml.render.field.field`)
+    — so an exported herd keeps the same separate skins the viewport draws
+    instead of welding at every contact. The hard minimum of exact fields is
+    the exact union field, so the surface nets see one well-signed function
+    and the mesh stays as closed as the ungrouped case.
 
     An empty primitive array gives an empty mesh rather than raising. The union
     of nothing has no surface, and :func:`~mesh_xml.render.field.field` answers
@@ -211,7 +221,7 @@ def polygonise(
     counts = np.ceil(extent / cell).astype(np.int64) + 2 * PADDING_CELLS
     origin = 0.5 * (lo + hi) - 0.5 * counts * cell
 
-    values = _sample(prims, blend, origin, cell, counts)
+    values = _sample(prims, blend, origin, cell, counts, groups)
     inside = values < 0.0
 
     local, hits = _cell_vertices(values, inside)
@@ -228,7 +238,7 @@ def polygonise(
     faces, open_edges = _faces(inside, vertex_id, counts)
     return Mesh(
         vertices=vertices,
-        normals=normal(vertices, prims, blend),
+        normals=normal(vertices, prims, blend, groups=groups),
         faces=faces,
         cell=cell,
         open_edges=open_edges,
@@ -246,6 +256,7 @@ def _sample(
     origin: np.ndarray,
     cell: float,
     counts: np.ndarray,
+    groups: np.ndarray | None = None,
 ) -> np.ndarray:
     """Field values on the ``counts + 1`` lattice, a block of points at a time.
 
@@ -264,7 +275,7 @@ def _sample(
         block = points[: stop - start]
         for d, coordinate in enumerate(np.unravel_index(np.arange(start, stop), shape)):
             block[:, d] = axes[d][coordinate]
-        flat[start:stop] = field(block, prims, blend)
+        flat[start:stop] = field(block, prims, blend, groups)
     return values
 
 

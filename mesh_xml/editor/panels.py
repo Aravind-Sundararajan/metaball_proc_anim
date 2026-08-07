@@ -401,6 +401,7 @@ class SurfacePanel(_Panel):
         self._ortho = QCheckBox("Orthographic")
         self._orthographic = False
         self._floor = QCheckBox("Show floor")
+        self._creature_colour = QPushButton("Creature colour…")
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_blend())
@@ -415,6 +416,7 @@ class SurfacePanel(_Panel):
         self._debug.currentIndexChanged.connect(self._on_debug_changed)
         self._max_steps.valueChanged.connect(self._on_max_steps_changed)
         self._floor.toggled.connect(self._on_floor_toggled)
+        self._creature_colour.clicked.connect(self._on_pick_creature_colour)
         self._overlay.toggled.connect(self._on_overlay_toggled)
         self._ortho.toggled.connect(self._on_ortho_toggled)
         self._follow(document.settings_changed, document.body_replaced)
@@ -487,6 +489,7 @@ class SurfacePanel(_Panel):
         box.setLayout(layout)
         layout.addRow("Surface", self._surface_colour)
         layout.addRow("Background", self._background_colour)
+        layout.addRow(self._creature_colour)
         layout.addRow(self._overlay)
         layout.addRow(self._ortho)
         layout.addRow(self._floor)
@@ -513,6 +516,11 @@ class SurfacePanel(_Panel):
             "creature's shadow on it. Stands down on its own when a terrain "
             "is loaded — the terrain is the world, and two floors would "
             "contradict each other."
+        )
+        self._creature_colour.setToolTip(
+            "Paint the whole creature the selection touches — every chunk of "
+            "its connected component, one undo step, saved with the rig. "
+            "Unpainted creatures keep their automatic palette hue."
         )
         return box
 
@@ -576,6 +584,14 @@ class SurfacePanel(_Panel):
         )
         if picked is not None:
             self.set_background_colour(picked)
+
+    @_user_edit
+    def _on_pick_creature_colour(self) -> None:
+        picked = self._pick(
+            self._document.metaball.surface_colour, "Creature colour"
+        )
+        if picked is not None:
+            self._document.set_creature_colour(picked)
 
     def _pick(
         self, current: tuple[float, float, float], title: str

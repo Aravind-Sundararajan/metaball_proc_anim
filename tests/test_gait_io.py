@@ -695,3 +695,51 @@ def test_a_new_controller_type_costs_one_call_and_no_writer_change(
     assert loaded.speed == 3.5
     assert loaded.enabled is False
     assert "test_wander" in serialize.registered()
+
+
+class TestMetaRoundTrip:
+    """Chunk meta must survive a v3 save — losing it was defect 2.4, one save late."""
+
+    def test_meta_survives_save_and_load(self, tmp_path):
+        from mesh_xml.core import Body
+        from mesh_xml.io import xml_v2
+
+        body = Body()
+        body.add_chunk(
+            "capsule",
+            (0.0, 0.0, 0.0),
+            meta={"type": "capsule", "height": "1.5", "colour": "0.9 0.2 0.1"},
+        )
+        body.add_chunk("bare", (1.0, 0.0, 0.0))
+        path = tmp_path / "meta.xml"
+        xml_v2.save(body, path)
+
+        reread = xml_v2.read(path).body
+        ids = reread.chunk_ids()
+        assert reread.chunk(ids[0]).meta == {
+            "type": "capsule",
+            "height": "1.5",
+            "colour": "0.9 0.2 0.1",
+        }
+        assert reread.chunk(ids[1]).meta == {}
+
+    def test_a_legacy_capsule_survives_the_first_v3_save(self, tmp_path):
+        """The 2.4 continuation: the legacy importer keeps type and height as
+        meta; the v3 save used to silently drop them one step later."""
+        from mesh_xml.io import xml_legacy, xml_v2
+
+        body = xml_legacy.read_legacy(
+            "tests/data/legacy_v1_character_armature.xml"
+        ).body
+        carried = {
+            cid: dict(body.chunk(cid).meta)
+            for cid in body.chunk_ids()
+            if body.chunk(cid).meta
+        }
+        assert carried, "the fixture should carry mesh metadata"
+
+        path = tmp_path / "resaved.xml"
+        xml_v2.save(body, path)
+        reread = xml_v2.read(path).body
+        for cid, meta in carried.items():
+            assert {k: str(v) for k, v in meta.items()} == reread.chunk(cid).meta

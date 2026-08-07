@@ -46,6 +46,7 @@ from mesh_xml.core.body import Body
 from mesh_xml.core.distance import DEGENERATE_EPSILON, PRIMITIVE_STRIDE
 
 __all__ = [
+    "COLOUR_META",
     "DEGENERATE_EPSILON",
     "PRIMITIVE_STRIDE",
     "group_bounds",
@@ -58,6 +59,12 @@ __all__ = [
 #: conjugate, which is what keeps any number of groups maximally spread without
 #: knowing the count in advance.
 _GOLDEN_HUE = 0.61803398875
+
+#: Chunk-meta key an authored creature colour lives under, as "r g b" floats
+#: in [0, 1]. Meta because a creature has no object of its own — it is a
+#: connected component — and meta is the one per-chunk store that is opaque to
+#: the simulation and round-trips through every format era.
+COLOUR_META = "colour"
 
 # Canonical home of the record format and its two degeneracies is
 # core/distance.py, since the world's terrain shares the same primitives.
@@ -171,6 +178,12 @@ def group_table(
     Groups are connected components over *all* links, mechanism braces
     included: a knee stop is part of the creature it stops, even though it
     carries no flesh.
+
+    An authored colour outranks the palette: the first chunk of a component
+    (in slot order) carrying parseable ``COLOUR_META`` — ``"r g b"`` floats —
+    colours the whole creature. Unparseable meta falls back to the palette
+    rather than raising, because a colour is a preference and a broken one
+    must not make a document unrenderable.
     """
     rows = _row_groups(body)
     if rows.size == 0:
@@ -182,13 +195,34 @@ def group_table(
     out[:, 0] = starts
     out[:, 1] = counts
 
+    labels = _component_labels(body)
     hue, saturation, value = colorsys.rgb_to_hsv(*base_colour)
     for group in range(len(counts)):
-        shifted = colorsys.hsv_to_rgb(
+        authored = _authored_colour(body, np.nonzero(labels == group)[0])
+        if authored is not None:
+            out[group, 4:7] = authored
+            continue
+        out[group, 4:7] = colorsys.hsv_to_rgb(
             (hue + group * _GOLDEN_HUE) % 1.0, saturation, value
         )
-        out[group, 4:7] = shifted
     return out
+
+
+def _authored_colour(
+    body: Body, slots: np.ndarray
+) -> tuple[float, float, float] | None:
+    """The component's authored colour, or ``None`` for the palette."""
+    for slot in slots:
+        raw = body.meta_of(body.id_at(int(slot))).get(COLOUR_META)
+        if not raw:
+            continue
+        try:
+            parts = [float(part) for part in str(raw).split()]
+        except ValueError:
+            continue
+        if len(parts) == 3:
+            return tuple(min(max(part, 0.0), 1.0) for part in parts)
+    return None
 
 
 def group_bounds(

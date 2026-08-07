@@ -293,3 +293,37 @@ class TestGroupBounds:
         bounds = sdf.group_bounds(np.zeros((0, 8), dtype=np.float32), table)
         assert bounds.shape == (1, 8)
         assert bounds[0, 3] == 0.0
+
+
+class TestAuthoredColour:
+    def test_meta_colour_outranks_the_palette(self):
+        body = TestBlendGroups._herd()
+        first_a = body.chunk_ids()[0]
+        body.meta_of(first_a)["colour"] = "0.9 0.1 0.2"
+
+        table = sdf.group_table(body, base_colour=(0.2, 0.5, 0.8))
+        assert table[0, 4:7] == pytest.approx((0.9, 0.1, 0.2))
+        assert not np.allclose(table[1, 4:7], table[0, 4:7])
+
+    def test_any_chunk_of_the_component_can_carry_it(self):
+        body = TestBlendGroups._herd()
+        # b-worm chunks are slots 3-4; paint the second one only.
+        b_last = body.chunk_ids()[4]
+        body.meta_of(b_last)["colour"] = "0 1 0"
+
+        table = sdf.group_table(body)
+        assert table[1, 4:7] == pytest.approx((0.0, 1.0, 0.0))
+
+    def test_garbage_meta_falls_back_to_the_palette(self):
+        body = TestBlendGroups._herd()
+        body.meta_of(body.chunk_ids()[0])["colour"] = "salmon"
+
+        table = sdf.group_table(body, base_colour=(0.2, 0.5, 0.8))
+        assert table[0, 4:7] == pytest.approx((0.2, 0.5, 0.8))
+
+    def test_values_clamp_into_unit_range(self):
+        body = TestBlendGroups._herd()
+        body.meta_of(body.chunk_ids()[0])["colour"] = "2.0 -1.0 0.5"
+
+        table = sdf.group_table(body)
+        assert table[0, 4:7] == pytest.approx((1.0, 0.0, 0.5))

@@ -113,6 +113,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         self._action(file_menu, "&Save", QKeySequence.StandardKey.Save, self.save)
         self._action(file_menu, "Save &As…", QKeySequence.StandardKey.SaveAs, self.save_as)
+        self._action(file_menu, "Export &Mesh…", None, self.export_mesh)
         file_menu.addSeparator()
         self._action(file_menu, "E&xit", QKeySequence.StandardKey.Quit, self.close)
 
@@ -236,6 +237,19 @@ class MainWindow(QMainWindow):
         )
         if path:
             self._save_to(Path(path))
+
+    def export_mesh(self) -> None:
+        stem = self.document.path.stem if self.document.path else "rig"
+        suggested = str((self.document.path or Path.cwd() / "x").parent / f"{stem}.obj")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Mesh", suggested, "Meshes (*.obj *.stl)"
+        )
+        if not path:
+            return
+        try:
+            self.document.export_mesh(Path(path))
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Failed", f"{Path(path).name}\n\n{exc}")
 
     def _save_to(self, path: Path) -> None:
         try:

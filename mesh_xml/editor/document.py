@@ -47,6 +47,7 @@ __all__ = [
     "Rename",
     "AddLink",
     "RemoveLink",
+    "SetMeta",
     "SetControllerField",
     "RemoveController",
     "ReplaceControllers",
@@ -232,6 +233,39 @@ class RemoveLink:
         document.body.add_link(
             self.a, self.b, rest=self._rest, type=LinkType(self._type), elasticity=self._elasticity
         )
+
+
+@dataclass
+class SetMeta:
+    """Assign (or, with ``None``, remove) one key of a chunk's opaque meta.
+
+    Meta is the simulation-invisible store — import leftovers, creature
+    colour — so this is a value command: the surface may need repainting but
+    no topology moved.
+    """
+
+    chunk_id: int
+    key: str
+    value: str | None
+    text: str = "Edit Meta"
+    _previous: str | None = None
+    _had: bool = False
+
+    def apply(self, document: Document) -> None:
+        meta = document.body.meta_of(self.chunk_id)
+        self._had = self.key in meta
+        self._previous = meta.get(self.key)
+        if self.value is None:
+            meta.pop(self.key, None)
+        else:
+            meta[self.key] = self.value
+
+    def revert(self, document: Document) -> None:
+        meta = document.body.meta_of(self.chunk_id)
+        if self._had:
+            meta[self.key] = self._previous
+        else:
+            meta.pop(self.key, None)
 
 
 @dataclass
@@ -733,6 +767,66 @@ class Document(QObject):
         commands.append(ReplaceControllers(stack))
         self.do(Macro(commands, text="Rig Legs"))
         self.status.emit(f"Rigged {fitted.description}")
+
+    def set_creature_colour(self, rgb: tuple[float, float, float]) -> None:
+        """Paint every creature the selection touches, as one undo step.
+
+        The colour is written to *every* chunk of each selected chunk's
+        connected component, not a representative: a creature has no object
+        of its own, and a colour on one chunk would vanish the moment that
+        chunk was deleted or the creature split. Written to meta under
+        :data:`~mesh_xml.render.sdf.COLOUR_META`, which now round-trips
+        through v3 saves, so a painted herd stays painted.
+        """
+        if not self.selection:
+            self.status.emit("Select a chunk of the creature to colour first")
+            return
+        value = " ".join(f"{min(max(float(v), 0.0), 1.0):.4f}" for v in rgb)
+
+        chunks: set[int] = set()
+        for selected in self.selection:
+            frontier = [selected]
+            while frontier:
+                current = frontier.pop()
+                if current in chunks:
+                    continue
+                chunks.add(current)
+                frontier.extend(self.body.neighbors(current))
+
+        commands: list[Command] = [
+            SetMeta(cid, sdf.COLOUR_META, value) for cid in sorted(chunks)
+        ]
+        if len(commands) == 1:
+            self.do(commands[0])
+        else:
+            self.do(Macro(commands, text="Creature Colour"))
+        self.status.emit(f"Coloured {len(chunks)} chunk(s)")
+
+    def export_mesh(self, path, resolution: int = 96) -> Path:
+        """Polygonise the surface as drawn and write it beside the document.
+
+        The mesh honours the blend groups — smooth flesh within a creature, a
+        hard skin between them — so an exported herd arrives in Blender as
+        the separate animals the viewport shows, not as one weld. Positions
+        are the draw positions, matching what the viewer sees.
+        """
+        from mesh_xml.io.mesh_export import write_mesh
+        from mesh_xml.render.meshing import polygonise
+
+        primitives = self.primitives()
+        groups = sdf.group_table(self.body)[:, :2]
+        mesh = polygonise(
+            primitives,
+            blend=self.metaball.blend,
+            resolution=resolution,
+            groups=groups,
+        )
+        out = write_mesh(Path(path), mesh.vertices, mesh.faces, mesh.normals)
+        note = f"Exported {len(mesh.vertices)} vertices to {out.name}"
+        if mesh.open_edges:
+            note += f" ({mesh.open_edges} open edge(s) — raise the resolution)"
+        self.status.emit(note)
+        return out
 
     # ------------------------------------------------------------------
     # files

@@ -584,3 +584,76 @@ class TestRigLegs:
             if type(c).__name__ == "Posture"
         )
         assert posture.support, "the feet must survive the trip"
+
+
+class TestCreatureColour:
+    def test_paints_the_whole_component_and_undoes_whole(self, document):
+        target = ids_of(document)[2]
+        document.set_selection([target])
+
+        document.set_creature_colour((0.9, 0.1, 0.2))
+        for cid in ids_of(document):
+            assert document.body.meta_of(cid)["colour"] == "0.9000 0.1000 0.2000"
+
+        document.undo()
+        for cid in ids_of(document):
+            assert "colour" not in document.body.meta_of(cid)
+        assert not document.can_undo
+
+    def test_only_the_selected_creature_is_painted(self, document):
+        lone = document.body.add_chunk("lone", (9.0, 0.0, 0.0))
+        document.set_selection([ids_of(document)[0]])
+
+        document.set_creature_colour((0.0, 1.0, 0.0))
+        assert "colour" not in document.body.meta_of(lone)
+
+    def test_no_selection_is_a_polite_no_op(self, document):
+        document.set_selection(())
+        document.set_creature_colour((1.0, 0.0, 0.0))
+        assert not document.can_undo
+
+    def test_the_colour_survives_a_save(self, document, tmp_path):
+        document.set_selection([ids_of(document)[0]])
+        document.set_creature_colour((0.3, 0.6, 0.9))
+        path = tmp_path / "painted.xml"
+        document.save(path)
+
+        reopened = Document()
+        reopened.open(path)
+        first = reopened.body.chunk_ids()[0]
+        assert reopened.body.meta_of(first)["colour"] == "0.3000 0.6000 0.9000"
+
+
+class TestExportMesh:
+    def test_exports_a_closed_obj(self, document, tmp_path):
+        out = document.export_mesh(tmp_path / "rig.obj", resolution=48)
+        text = out.read_text(encoding="utf-8")
+        assert text.count("\nf ") > 100
+        assert text.startswith("#") or "v " in text
+
+    def test_a_herd_exports_unwelded(self, document, tmp_path):
+        """Two creatures inside blend range must export as two skins: the
+        grouped field is a hard union, so the meshes near the gap differ
+        from the welded single-group surface."""
+        body = Body()
+        for creature, y in enumerate((0.0, 1.05)):
+            ids = [
+                body.add_chunk(f"w{creature}{i}", (i * 0.8, y, 0.0), radius=0.45)
+                for i in range(3)
+            ]
+            for a, b in zip(ids, ids[1:]):
+                body.add_link(a, b)
+        document._replace(body, None)
+        document.metaball.blend = 0.4
+
+        out = document.export_mesh(tmp_path / "herd.obj", resolution=48)
+        vertices = [
+            line for line in out.read_text(encoding="utf-8").splitlines()
+            if line.startswith("v ")
+        ]
+        assert len(vertices) > 200
+
+        from mesh_xml.render.meshing import polygonise
+
+        welded = polygonise(document.primitives(), blend=0.4, resolution=48)
+        assert len(vertices) != len(welded.vertices)
