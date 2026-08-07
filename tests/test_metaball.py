@@ -525,6 +525,78 @@ class TestAgainstTheCpuReference:
         assert float(difference.mean()) < 0.5, "shaded frames diverged visibly"
         assert float(np.percentile(difference, 99.9)) <= 8.0
 
+    @pytest.mark.parametrize("orthographic", [False, True])
+    def test_the_cone_prepass_is_surface_exact(self, orthographic):
+        """Seeding rays at the coarse pass's proven-empty depth is invisible.
+
+        Same contract as the tile shortlist: the 1-Lipschitz argument makes
+        the seed provably earlier than any hit in its block, so the hit set
+        survives up to silhouette-grazing pixels, depth drifts only within
+        the march's own tolerance, and the shaded frame is indistinguishable.
+        """
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = worm()
+        primitives = sdf.pack(body)
+        blend = 0.3
+        size = (160, 120)
+        camera = OrbitCamera(
+            distance=8.0, yaw=25.0, pitch=18.0, orthographic=orthographic
+        )
+
+        def render_with(divisor: int, mode: int) -> np.ndarray:
+            from PySide6.QtGui import QImage
+
+            settings = metaball.MetaballSettings(
+                blend=blend, debug_mode=mode, max_distance=20.0
+            )
+            gl_context.ensure_application()
+            view = gl_context.RaymarchView(camera=camera)
+            view.set_fragment_source(metaball.fragment_source(), "metaball.frag")
+            view.resize(*size)
+            view.prepass_divisor = divisor
+            failures: list[str] = []
+            view.shader_failed.connect(failures.append)
+            view.uniforms.update(settings.uniforms())
+            view.grabFramebuffer()
+            if failures:
+                pytest.fail(failures[0])
+            texture = metaball.PrimitiveTexture()
+            view.makeCurrent()
+            texture.upload(primitives)
+            view.doneCurrent()
+            view.uniforms.update(texture.uniforms())
+            frame = view.grabFramebuffer().convertToFormat(
+                QImage.Format.Format_RGB888
+            )
+            buffer = np.frombuffer(memoryview(frame.constBits()), np.uint8)
+            row = frame.bytesPerLine() // 3
+            rgb = buffer.reshape(frame.height(), row, 3)[:, : frame.width()]
+            return rgb[::-1].astype(np.float64)
+
+        t_plain, hit_plain = metaball.unpack_depth(render_with(0, 2), 20.0)
+        t_seeded, hit_seeded = metaball.unpack_depth(render_with(4, 2), 20.0)
+
+        assert hit_plain.sum() > 500
+        flips = hit_seeded != hit_plain
+        if flips.any():
+            pad = np.pad(hit_plain, 1, mode="edge")
+            interior = np.ones_like(hit_plain)
+            for dy in (0, 1, 2):
+                for dx in (0, 1, 2):
+                    window = pad[dy : dy + hit_plain.shape[0], dx : dx + hit_plain.shape[1]]
+                    interior &= window == hit_plain
+            assert not (flips & interior).any(), "an interior pixel flipped"
+            assert int(flips.sum()) < max(8, int(0.01 * hit_plain.sum()))
+        shared = hit_plain & hit_seeded
+        drift = np.abs(t_seeded[shared] - t_plain[shared])
+        assert float(np.percentile(drift, 99)) < 5e-3
+
+        shaded_plain = render_with(0, 0)
+        shaded_seeded = render_with(4, 0)
+        difference = np.abs(shaded_plain - shaded_seeded)
+        assert float(difference.mean()) < 0.5
+
     def test_blending_thickens_the_surface(self):
         """k > 0 must move the surface outward, not merely smooth it."""
         from mesh_xml.render.gl.camera import OrbitCamera

@@ -33,6 +33,7 @@ Phase 5 embeds this; it does not extend it.
 
 from __future__ import annotations
 
+import math
 import warnings
 from typing import Final
 
@@ -48,6 +49,16 @@ from mesh_xml.render.gl.program import (
     assemble,
     file_resolver,
 )
+
+#: Texture unit the coarse prepass's seed depths are bound to.
+SEED_TEXTURE_UNIT = 5
+
+#: Safety factor on the prepass cone radius, over the block half-diagonal it
+#: must contain. Covers the chord-versus-parameter second-order mismatch
+#: between rays of one bundle and plain float slack; oversizing only makes
+#: the coarse pass stop earlier, which costs fine-pass steps, never
+#: correctness.
+_CONE_MARGIN = 1.2
 
 __all__ = [
     "GL_MAJOR",
@@ -243,6 +254,13 @@ class RaymarchView(QOpenGLWidget):
         self._triangle = FullscreenTriangle()
         self._dirty = True
         self._framebuffer = (max(self.width(), 1), max(self.height(), 1))
+        #: Coarse cone-prepass block size; 0 disables. Off by default so the
+        #: CPU-oracle comparisons render the single-pass path bit-for-bit;
+        #: the editor viewport turns it on.
+        self.prepass_divisor: int = 0
+        self._seed_fbo = 0
+        self._seed_texture = 0
+        self._seed_size = (0, 0)
         self._clock = QElapsedTimer()
         self._drag_button: Qt.MouseButton = Qt.MouseButton.NoButton
         self._last_pos = QPoint()
@@ -314,15 +332,136 @@ class RaymarchView(QOpenGLWidget):
         if self._dirty:
             self._rebuild()
 
-        glClear(GL_COLOR_BUFFER_BIT)
         if self._program is None:
+            glClear(GL_COLOR_BUFFER_BIT)
             return
 
         self._program.use()
+        seeded = 0
+        divisor = int(self.prepass_divisor or 0)
+        if divisor > 1:
+            seeded = self._render_seed_pass(divisor)
+
+        glClear(GL_COLOR_BUFFER_BIT)
         self._apply_camera_uniforms()
         for name, value in self.uniforms.items():
             self._program.set_uniform(name, value)
+        self._program.set_uniform("u_coarse", 0)
+        self._program.set_uniform("u_seed_on", seeded)
+        if seeded:
+            self._program.set_uniform("u_seed", SEED_TEXTURE_UNIT)
+            self._program.set_uniform("u_seed_divisor", divisor)
         self._triangle.draw()
+
+    def _render_seed_pass(self, divisor: int) -> int:
+        """Render the coarse cone-trace into the seed target. Returns 1 on use.
+
+        The pass runs the same program with ``u_coarse`` set, at the
+        framebuffer size divided by ``divisor``, into an R32F attachment the
+        main pass reads back per block. The cone term covers the block's ray
+        bundle: for perspective it grows with depth at the block's angular
+        half-diagonal, for orthographic it is the constant half-diagonal in
+        world units — the safety argument lives in metaball.frag beside the
+        uniforms it feeds.
+        """
+        from OpenGL.GL import (
+            GL_COLOR_BUFFER_BIT,
+            GL_FRAMEBUFFER,
+            GL_TEXTURE0,
+            GL_TEXTURE_2D,
+            glActiveTexture,
+            glBindFramebuffer,
+            glBindTexture,
+            glClear,
+            glViewport,
+        )
+
+        width, height = self._framebuffer
+        coarse = (max(1, -(-width // divisor)), max(1, -(-height // divisor)))
+        if not self._ensure_seed_target(coarse):
+            return 0
+
+        half_diagonal = 0.5 * math.sqrt(2.0) * divisor * _CONE_MARGIN
+        if self.camera.orthographic:
+            slope = 0.0
+            radius0 = self.camera.ortho_height / max(height, 1) * half_diagonal
+        else:
+            slope = 2.0 * self.camera.tan_half_fov / max(height, 1) * half_diagonal
+            radius0 = 0.0
+
+        glBindFramebuffer(GL_FRAMEBUFFER, self._seed_fbo)
+        glViewport(0, 0, *coarse)
+        glClear(GL_COLOR_BUFFER_BIT)
+        self._apply_camera_uniforms(resolution=coarse)
+        for name, value in self.uniforms.items():
+            self._program.set_uniform(name, value)
+        self._program.set_uniform("u_coarse", 1)
+        self._program.set_uniform("u_seed_on", 0)
+        self._program.set_uniform("u_cone_slope", float(slope))
+        self._program.set_uniform("u_cone_radius0", float(radius0))
+        self._triangle.draw()
+
+        glBindFramebuffer(GL_FRAMEBUFFER, self.defaultFramebufferObject())
+        glViewport(0, 0, width, height)
+        glActiveTexture(GL_TEXTURE0 + SEED_TEXTURE_UNIT)
+        glBindTexture(GL_TEXTURE_2D, self._seed_texture)
+        return 1
+
+    def _ensure_seed_target(self, size: tuple[int, int]) -> bool:
+        """Allocate (or resize) the R32F seed attachment. False if unusable."""
+        from OpenGL.GL import (
+            GL_CLAMP_TO_EDGE,
+            GL_COLOR_ATTACHMENT0,
+            GL_FLOAT,
+            GL_FRAMEBUFFER,
+            GL_FRAMEBUFFER_COMPLETE,
+            GL_NEAREST,
+            GL_R32F,
+            GL_RED,
+            GL_TEXTURE0,
+            GL_TEXTURE_2D,
+            GL_TEXTURE_MAG_FILTER,
+            GL_TEXTURE_MIN_FILTER,
+            GL_TEXTURE_WRAP_S,
+            GL_TEXTURE_WRAP_T,
+            glActiveTexture,
+            glBindFramebuffer,
+            glBindTexture,
+            glCheckFramebufferStatus,
+            glFramebufferTexture2D,
+            glGenFramebuffers,
+            glGenTextures,
+            glTexImage2D,
+            glTexParameteri,
+        )
+
+        if size == self._seed_size and self._seed_fbo:
+            return True
+
+        if self._seed_texture == 0:
+            self._seed_texture = int(glGenTextures(1))
+            glActiveTexture(GL_TEXTURE0 + SEED_TEXTURE_UNIT)
+            glBindTexture(GL_TEXTURE_2D, self._seed_texture)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        glActiveTexture(GL_TEXTURE0 + SEED_TEXTURE_UNIT)
+        glBindTexture(GL_TEXTURE_2D, self._seed_texture)
+        glTexImage2D(
+            GL_TEXTURE_2D, 0, GL_R32F, size[0], size[1], 0, GL_RED, GL_FLOAT, None
+        )
+
+        if self._seed_fbo == 0:
+            self._seed_fbo = int(glGenFramebuffers(1))
+        glBindFramebuffer(GL_FRAMEBUFFER, self._seed_fbo)
+        glFramebufferTexture2D(
+            GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self._seed_texture, 0
+        )
+        complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE
+        glBindFramebuffer(GL_FRAMEBUFFER, self.defaultFramebufferObject())
+        self._seed_size = size if complete else (0, 0)
+        return complete
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self._drag_button = event.button()
@@ -358,9 +497,11 @@ class RaymarchView(QOpenGLWidget):
         self.camera_changed.emit()
         self.update()
 
-    def _apply_camera_uniforms(self) -> None:
+    def _apply_camera_uniforms(
+        self, resolution: tuple[int, int] | None = None
+    ) -> None:
         assert self._program is not None
-        width, height = self._framebuffer
+        width, height = resolution if resolution is not None else self._framebuffer
         right, up, forward = self.camera.basis()
 
         self._program.set_uniform("u_resolution", (float(width), float(height)))
@@ -403,7 +544,16 @@ class RaymarchView(QOpenGLWidget):
         self.shader_compiled.emit()
 
     def _release(self) -> None:
+        from OpenGL.GL import glDeleteFramebuffers, glDeleteTextures
+
         self.makeCurrent()
+        if self._seed_fbo:
+            glDeleteFramebuffers(1, [self._seed_fbo])
+            self._seed_fbo = 0
+        if self._seed_texture:
+            glDeleteTextures([self._seed_texture])
+            self._seed_texture = 0
+        self._seed_size = (0, 0)
         if self._program is not None:
             self._program.dispose()
             self._program = None

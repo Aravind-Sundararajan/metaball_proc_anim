@@ -35,6 +35,50 @@ uniform float u_normal_epsilon;
 uniform int   u_floor_enabled;
 uniform float u_floor_height;
 
+// The coarse cone prepass. Pass one renders at a fraction of the resolution
+// with u_coarse set: each coarse pixel sphere-traces while its distance still
+// clears a cone wide enough to contain its whole block's ray bundle, and
+// writes how far it provably got into an R32F target. Pass two seeds every
+// full-resolution ray at its block's depth. The safety argument is the bound
+// cull's, one step on: the field is 1-Lipschitz, every fine-ray point at
+// parameter t lies within cone_radius(t) of the coarse point, so a coarse
+// value above the cone radius proves the fine field positive — no fine ray
+// can hit before the seed. Surface-exact, not byte-exact, exactly like the
+// tile shortlist: empty-space step sizes change, the surfaces hit do not.
+// cone_radius(t) = u_cone_radius0 + t * u_cone_slope covers both projections:
+// perspective cones grow with t, orthographic bundles have constant width.
+uniform int   u_coarse;
+uniform float u_cone_slope;
+uniform float u_cone_radius0;
+uniform int   u_seed_on;
+uniform sampler2D u_seed;
+uniform int   u_seed_divisor;
+
+float cone_radius(float t) {
+    return u_cone_radius0 + t * u_cone_slope;
+}
+
+float trace_coarse(vec3 origin, vec3 direction) {
+    float t = 0.0;
+    for (int i = 0; i < u_max_steps; ++i) {
+        float d = sd_scene(origin + direction * t);
+        float slack = d - cone_radius(t);
+        if (slack < u_surface_epsilon * max(1.0, t)) break;
+        // The divisor keeps the invariant exact as the cone widens across
+        // the step; at real cone slopes it costs a fraction of a percent.
+        t += slack * u_step_relaxation / (1.0 + u_cone_slope);
+        if (t > u_max_distance) return u_max_distance;
+    }
+    return t;
+}
+
+float seeded_start() {
+    if (u_seed_on == 0) return 0.0;
+    ivec2 block = ivec2(gl_FragCoord.xy) / max(u_seed_divisor, 1);
+    block = clamp(block, ivec2(0), textureSize(u_seed, 0) - ivec2(1));
+    return max(texelFetch(u_seed, block, 0).r, 0.0);
+}
+
 const float GRID_CELL       = 1.0;   // world units per minor cell
 const float GRID_MAJOR      = 5.0;   // minor cells per major line
 const float GRID_FADE_START = 18.0;  // eye distance where the grid starts to go
@@ -51,7 +95,7 @@ struct Hit {
 
 Hit trace(vec3 origin, vec3 direction) {
     Hit result;
-    result.t = 0.0;
+    result.t = seeded_start();
     result.hit = false;
     result.steps = 0;
 
@@ -145,9 +189,18 @@ float grid_line(vec2 p, float cell) {
 }
 
 void main() {
-    sdf_arm_tiles(gl_FragCoord.xy);
     vec3 direction = camera_ray(v_uv);
     vec3 origin = camera_origin(v_uv);
+
+    // The coarse pass wants none of the fine pass's machinery: no tiles
+    // (its pixels straddle tile boundaries), no floor, no shading — just
+    // how far the whole block's bundle provably travels, written as depth.
+    if (u_coarse != 0) {
+        frag_colour = vec4(trace_coarse(origin, direction), 0.0, 0.0, 1.0);
+        return;
+    }
+
+    sdf_arm_tiles(gl_FragCoord.xy);
     Hit result = trace(origin, direction);
 
     if (u_debug_mode == 2) {

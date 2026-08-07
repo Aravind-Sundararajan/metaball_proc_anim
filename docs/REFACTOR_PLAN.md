@@ -426,6 +426,21 @@ Landed after Phase 5, in one fan-out:
   (the table now snapshots beside the primitives it describes); and the
   tile slack now scales with the settings' own ``max_distance`` instead of
   assuming the default.
+* **The cone prepass, and the plateau named.** A coarse pass at quarter
+  resolution sphere-traces each pixel block's whole ray bundle — stepping
+  only the slack beyond a cone wide enough to contain it — and writes the
+  proven-empty depth to an R32F target that seeds every full-resolution
+  ray. Same 1-Lipschitz safety argument as the bound cull, same
+  surface-exact contract as the tiles, held by the same hit-set and drift
+  tests in both projections; the oracle harness leaves it off and renders
+  the single-pass path bit-for-bit. Measured honestly: ~15% on small
+  scenes, 0-2% at herd scale — because the cull and tiles had already made
+  empty-space steps nearly free, and what remains is near-surface marching
+  and shading, which no seed can skip. Kept for the small-scene win and
+  the second-pass machinery, and recorded as the point where the
+  march-acceleration ladder converged: global fold to cull 2.4x, tiles
+  +8%, prepass +2%. Further frame time lives in shading cost or resolution
+  scaling, not in marching fewer steps.
 * **Creature colour, honest meta, and unwelded exports.** Blend groups grew
   from render trick to authored data. First the prerequisite bug: v3 saves
   silently dropped chunk meta — the very fields the §2.4 fix preserved on

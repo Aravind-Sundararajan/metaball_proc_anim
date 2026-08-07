@@ -346,6 +346,9 @@ class MetaballViewport(RaymarchView):
 
         super().__init__(camera=camera, parent=parent)
         self.set_fragment_source(fragment_source(), SHADER_NAME)
+        # The coarse cone prepass earns its keep at editor resolutions; the
+        # oracle harness leaves it off to keep single-pass renders bit-exact.
+        self.prepass_divisor = 4
 
         self._document = document
         self._texture: PrimitiveTexture = PrimitiveTexture()
