@@ -9,7 +9,7 @@ force accumulator exists to prevent. Rain World layers itself the same way:
 creature AI thinks at its own cadence, sets targets, and the body physics
 follows without ever being written to directly.
 
-Two brain architectures ship, deliberately different in kind:
+Three brain architectures ship, deliberately different in kind:
 
 * :class:`Grazer` is a **finite state machine** (:class:`Fsm`): a handful of
   named states with explicit transitions. FSMs are the right tool when the
@@ -20,6 +20,13 @@ Two brain architectures ship, deliberately different in kind:
   search from the perceived world state to a goal, and replanning whenever the
   world stops matching the plan's assumptions. GOAP earns its complexity when
   behaviour should *fall out* of goals rather than be enumerated by hand.
+* :class:`Scavenger` is **utility-based** (:func:`choose`): every option is
+  scored each think and the best score simply wins, with a commitment bonus
+  keeping the incumbent from flickering at a boundary. Utility earns its
+  place when the interesting part is not the modes but the *trade-off* —
+  hunger against fear against curiosity — and it exercises perception in a
+  way chase and flee never need to: the scavenger acts on a relation between
+  two creatures it is neither of, and on a memory of it after the fact.
 
 Both are ordinary registered controllers: they sit on the stack, save into v3
 documents, grow a panel UI, and tick at 40 Hz while *thinking* on their own
@@ -45,7 +52,7 @@ import numpy as np
 
 from mesh_xml.anim.controller import ControlContext
 
-__all__ = ["Fsm", "GoapAction", "plan", "Grazer", "Hunter"]
+__all__ = ["Fsm", "GoapAction", "plan", "choose", "Grazer", "Hunter", "Scavenger"]
 
 #: A destination this close counts as reached — half a typical chunk radius,
 #: so arrival does not oscillate across the threshold.
@@ -171,6 +178,34 @@ def plan(
     return None
 
 
+def choose(
+    scores: Mapping[str, float],
+    incumbent: str | None = None,
+    commitment: float = 0.0,
+) -> str:
+    """Utility selection: the best score wins, the incumbent gets a bonus.
+
+    The whole of utility AI that these domains need. ``commitment`` is
+    hysteresis — added to the incumbent's score so two options trading places
+    across a boundary do not flicker the behaviour at think rate; zero makes
+    the choice memoryless. Ties go to the earlier entry, so callers control
+    the tiebreak by insertion order and a seeded run replays exactly.
+
+    An empty ``scores`` raises: a brain with no option to weigh has a bug
+    upstream, and "do whatever was last" would hide it.
+    """
+    if not scores:
+        raise ValueError("choose() needs at least one scored option")
+    best: str | None = None
+    best_score = float("-inf")
+    for name, score in scores.items():
+        if name == incumbent:
+            score += commitment
+        if score > best_score:
+            best, best_score = name, score
+    return best
+
+
 @dataclass
 class _Brain:
     """The shared body of a brain: cadence, steering, and perception.
@@ -275,17 +310,29 @@ class _Brain:
             return None
         mine = self._position(ctx)
         best: tuple[np.ndarray, float] | None = None
+        for theirs in self._peer_points(ctx, species):
+            distance = float(np.linalg.norm(theirs - mine))
+            if best is None or distance < best[1]:
+                best = (theirs, distance)
+        return best
+
+    def _peer_points(self, ctx: ControlContext, species: str) -> list[np.ndarray]:
+        """Anchor positions of every peer of ``species``, in stack order.
+
+        The relational half of perception: a brain that cares how two *other*
+        creatures stand to each other needs all of them, not the nearest.
+        """
+        if not species:
+            return []
+        points: list[np.ndarray] = []
         for peer in ctx.peers:
             if peer is self or getattr(peer, "species", None) != species:
                 continue
             anchor = getattr(peer, "anchor", None)
             if anchor is None or not ctx.has(anchor):
                 continue
-            theirs = np.asarray(ctx.body.chunk(anchor).pos, dtype=np.float64)
-            distance = float(np.linalg.norm(theirs - mine))
-            if best is None or distance < best[1]:
-                best = (theirs, distance)
-        return best
+            points.append(np.asarray(ctx.body.chunk(anchor).pos, dtype=np.float64))
+        return points
 
 
 @dataclass
@@ -432,3 +479,143 @@ class Hunter(_Brain):
     @property
     def _actions(self) -> dict[str, GoapAction]:
         return {action.name: action for action in HUNT}
+
+
+@dataclass
+class Scavenger(_Brain):
+    """A utility carrion-eater: watches the hunt, remembers where it ended.
+
+    Nothing here chases and nothing here is chased — the scavenger's whole
+    livelihood is a *relation between two other creatures*. Each think it
+    watches every ``watches``/``robs`` pair, and when a chase concludes inside
+    its senses (the pair converging within ``scrap_range``) it remembers the
+    midpoint as a scrap site. The memory then behaves like one: it goes stale
+    over ``site_ttl`` and is worth less as it ages, which is what makes this
+    brain exercise perception the other two never need — it acts on where
+    something *happened*, not on where anything *is*.
+
+    The decision is a utility trade-off (:func:`choose`), not modes with
+    rules: fear of a close hunter, appetite scaled by the site's freshness,
+    wariness while one is visible, and idle wandering all put a number on the
+    table and the best number wins, with ``commitment`` keeping the incumbent
+    from flickering at a boundary. Two habits fall out of the scoring rather
+    than being coded anywhere: a *guarded* kill — hunter within
+    ``danger_range`` of the site — offers no appetite at all, so the
+    scavenger lurks at ``observe_range`` until the owner wanders off; and
+    fear always outbids food, so a feed run aborts the moment the hunter
+    turns back.
+
+    ``activity`` is persisted like the grazer's ``state``; the site memory is
+    runtime, the same ruling the hunter's plan gets — a reopened document
+    knows what the creature was doing, not what it once saw, and a scavenger
+    reopened mid-``feed`` with no site simply re-decides on the next think.
+    """
+
+    species: str = "scavenger"
+    watches: str = "hunter"
+    robs: str = "grazer"
+    sense_range: float = 8.0
+    danger_range: float = 2.8
+    observe_range: float = 4.5
+    scrap_range: float = 2.0
+    site_ttl: float = 25.0
+    feed_range: float = 0.7
+    feast_time: float = 3.0
+    flee_distance: float = 4.0
+    commitment: float = 0.15
+    activity: str = "wander"
+
+    _site: np.ndarray | None = field(default=None, init=False, repr=False)
+    _site_at: float = field(default=0.0, init=False, repr=False)
+    _fed_until: float = field(default=-1.0, init=False, repr=False)
+
+    def reset(self) -> None:
+        super().reset()
+        self.activity = "wander"
+        self._site = None
+        self._site_at = 0.0
+        self._fed_until = -1.0
+
+    @property
+    def site(self) -> np.ndarray | None:
+        """The remembered scrap site — what a debug overlay would draw."""
+        return None if self._site is None else self._site.copy()
+
+    def _think(self, ctx: ControlContext) -> None:
+        self._observe(ctx)
+        mine = self._position(ctx)
+        hunter = self._nearest_peer(ctx, self.watches)
+
+        if ctx.time < self._fed_until:
+            self.activity = "digest"
+            if self._arrived(ctx):
+                self._destination = self._wander_point(ctx)
+            return
+
+        scores = {"wander": 0.2}
+        if hunter is not None and hunter[1] <= self.sense_range:
+            scores["lurk"] = 0.4
+            if hunter[1] <= self.danger_range:
+                scores["flee"] = (
+                    1.0 + (self.danger_range - hunter[1]) / self.danger_range
+                )
+        if self._site is not None:
+            guarded = hunter is not None and (
+                float(np.linalg.norm(hunter[0] - self._site)) <= self.danger_range
+            )
+            if not guarded:
+                freshness = 1.0 - (ctx.time - self._site_at) / self.site_ttl
+                scores["feed"] = 0.55 + 0.35 * freshness
+
+        incumbent = self.activity if self.activity in scores else None
+        self.activity = choose(scores, incumbent, self.commitment)
+
+        if self.activity == "wander":
+            if self._arrived(ctx):
+                self._destination = self._wander_point(ctx)
+        elif self.activity == "lurk":
+            self._destination = (
+                hunter[0][: mine.size]
+                + self._away(mine, hunter[0]) * self.observe_range
+            )
+        elif self.activity == "flee":
+            self._destination = mine + self._away(mine, hunter[0]) * self.flee_distance
+        elif self.activity == "feed":
+            self._destination = self._site.copy()
+            if float(np.linalg.norm(self._site[: mine.size] - mine)) <= self.feed_range:
+                self._fed_until = ctx.time + self.feast_time
+                self._site = None
+                self.activity = "digest"
+
+    def _observe(self, ctx: ControlContext) -> None:
+        """Watch every hunt in range; remember where the closest pair met.
+
+        A near miss also leaves a site — the pair converged and parted — and
+        that is honest scavenging: scraps are wherever a chase concluded, and
+        a creature reading only positions cannot tell a kill from an escape.
+        The site refreshes while the pair stays converged, so the memory ends
+        up at the strike, not at first contact.
+        """
+        hunters = self._peer_points(ctx, self.watches)
+        prey = self._peer_points(ctx, self.robs)
+        best: tuple[np.ndarray, float] | None = None
+        for hunter in hunters:
+            for quarry in prey:
+                gap = float(np.linalg.norm(hunter - quarry))
+                if best is None or gap < best[1]:
+                    best = ((hunter + quarry) / 2.0, gap)
+
+        if best is not None and best[1] <= self.scrap_range:
+            mine = self._position(ctx)
+            if float(np.linalg.norm(best[0][: mine.size] - mine)) <= self.sense_range:
+                self._site = best[0]
+                self._site_at = ctx.time
+
+        if self._site is not None and ctx.time - self._site_at > self.site_ttl:
+            self._site = None
+
+    @staticmethod
+    def _away(mine: np.ndarray, threat: np.ndarray) -> np.ndarray:
+        away = mine - threat[: mine.size]
+        length = float(np.linalg.norm(away))
+        return away / length if length > 1e-6 else np.eye(mine.size)[0]

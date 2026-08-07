@@ -14,7 +14,17 @@ import numpy as np
 import pytest
 
 from mesh_xml.anim import ControllerStack
-from mesh_xml.anim.behavior import FED, HUNT, Fsm, GoapAction, Grazer, Hunter, plan
+from mesh_xml.anim.behavior import (
+    FED,
+    HUNT,
+    Fsm,
+    GoapAction,
+    Grazer,
+    Hunter,
+    Scavenger,
+    choose,
+    plan,
+)
 from mesh_xml.anim.serialize import decode_controller, encode_controller, fields_of
 from mesh_xml.core import Body
 from mesh_xml.core.solver import SolverConfig
@@ -266,6 +276,119 @@ class TestHunter:
         assert brain.intent == "close_in"  # hungry again, prey visible but out of reach
 
 
+class TestChoose:
+    def test_the_best_score_wins(self):
+        assert choose({"a": 0.1, "b": 0.9}) == "b"
+
+    def test_commitment_holds_the_incumbent_within_its_margin(self):
+        scores = {"hold": 0.5, "switch": 0.6}
+        assert choose(scores, incumbent="hold", commitment=0.15) == "hold"
+        assert choose(scores, incumbent="hold", commitment=0.05) == "switch"
+
+    def test_zero_commitment_is_memoryless(self):
+        assert choose({"a": 0.4, "b": 0.5}, incumbent="a") == "b"
+
+    def test_ties_go_to_the_earlier_entry(self):
+        assert choose({"first": 0.5, "second": 0.5}) == "first"
+
+    def test_no_options_raises(self):
+        with pytest.raises(ValueError):
+            choose({})
+
+
+def carrion_arena(
+    scav: tuple[float, float, float],
+    hunter: tuple[float, float, float],
+    grazer: tuple[float, float, float],
+    **kwargs,
+):
+    """A scavenger with a real brain watching two inert beacons."""
+    body, ids = arena(scav, hunter, grazer)
+    stack = ControllerStack(body, seed=5)
+    brain = stack.add(Scavenger(ids[0], home=scav, **kwargs))
+    stack.add(_Beacon(ids[1], "hunter"))
+    stack.add(_Beacon(ids[2], "grazer"))
+    return body, ids, stack, brain
+
+
+class TestScavenger:
+    def test_a_concluded_chase_is_remembered_and_a_guarded_kill_is_lurked_at(self):
+        body, ids, stack, brain = carrion_arena(
+            (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), (6.0, 0.0, 0.0)
+        )
+        think_once(stack, body)
+
+        assert brain.site == pytest.approx((5.5, 0.0, 0.0))
+        assert brain.activity == "lurk", "the owner is still on the kill"
+
+    def test_an_unguarded_site_is_fed_on(self):
+        body, ids, stack, brain = carrion_arena(
+            (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), (6.0, 0.0, 0.0)
+        )
+        think_once(stack, body)
+        body.set_pos(ids[1], (30.0, 0.0, 0.0))
+
+        think_once(stack, body)
+        assert brain.activity == "feed"
+        assert brain._destination == pytest.approx((5.5, 0.0, 0.0))
+
+    def test_fear_outbids_food(self):
+        body, ids, stack, brain = carrion_arena(
+            (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), (6.0, 0.0, 0.0)
+        )
+        think_once(stack, body)
+        body.set_pos(ids[1], (1.0, 0.0, 0.0))
+        body.set_pos(ids[2], (30.0, 0.0, 0.0))
+
+        think_once(stack, body)
+        assert brain.activity == "flee"
+        assert brain._destination[0] < 0.0, "away from the hunter, not toward the site"
+
+    def test_a_far_off_conclusion_is_not_witnessed(self):
+        body, ids, stack, brain = carrion_arena(
+            (0.0, 0.0, 0.0), (20.0, 0.0, 0.0), (21.0, 0.0, 0.0)
+        )
+        think_once(stack, body)
+        assert brain.site is None
+
+    def test_the_memory_goes_stale(self):
+        body, ids, stack, brain = carrion_arena(
+            (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), (6.0, 0.0, 0.0)
+        )
+        think_once(stack, body)
+        assert brain.site is not None
+        body.set_pos(ids[1], (30.0, 0.0, 0.0))
+        body.set_pos(ids[2], (-30.0, 0.0, 0.0))
+
+        stack.time = brain.site_ttl + 1.0
+        think_once(stack, body)
+        assert brain.site is None
+        assert brain.activity == "wander"
+
+    def test_arriving_at_the_site_digests_and_consumes_it(self):
+        body, ids, stack, brain = carrion_arena(
+            (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), (6.0, 0.0, 0.0)
+        )
+        think_once(stack, body)
+        body.set_pos(ids[1], (30.0, 0.0, 0.0))
+        body.set_pos(ids[0], (5.4, 0.0, 0.0))
+
+        think_once(stack, body)
+        assert brain.activity == "digest"
+        assert brain.site is None
+        assert brain._fed_until > stack.time
+
+    def test_a_held_scavenger_still_thinks_but_does_not_steer(self):
+        body, ids, stack, brain = carrion_arena(
+            (0.0, 0.0, 0.0), (5.0, 0.0, 0.0), (6.0, 0.0, 0.0)
+        )
+        before = np.asarray(body.chunk(ids[0]).pos).copy()
+        stack.held.add(ids[0])
+        for _ in range(10):
+            think_once(stack, body)
+        assert np.asarray(body.chunk(ids[0]).pos) == pytest.approx(before)
+
+
 class TestPersistence:
     def test_both_brains_round_trip_through_the_registry(self):
         grazer = Grazer(3, home=(1.0, 2.0, 3.0), sense_range=5.5, state="flee")
@@ -282,6 +405,18 @@ class TestPersistence:
 
     def test_the_panel_will_see_the_fsm_state(self):
         assert "state" in fields_of(Grazer)
+
+    def test_the_scavenger_round_trips_and_its_memory_does_not(self):
+        brain = Scavenger(4, home=(0.0, 1.0, 0.0), site_ttl=12.0, activity="feed")
+        brain._site = np.array([9.0, 0.0, 9.0])
+
+        clone = decode_controller(encode_controller(brain))
+
+        assert isinstance(clone, Scavenger)
+        assert clone.site_ttl == pytest.approx(12.0)
+        assert clone.activity == "feed", "what it was doing is authored"
+        assert clone.site is None, "what it once saw is not"
+        assert "activity" in fields_of(Scavenger)
 
 
 class TestPredatorAndPrey:
@@ -323,3 +458,73 @@ class TestPredatorAndPrey:
 
         assert np.isfinite(body.pos).all()
         assert fed_at is not None, "the hunter never caught the grazer"
+
+
+class TestTheCarrionChain:
+    def test_the_scavenger_eventually_eats(self):
+        """Three brains, one body: the whole relational chain, closed.
+
+        The scavenger can only digest at a scrap site, sites exist only where
+        it *watched* a hunter and a grazer converge, and appetite only outbids
+        wariness once the hunter has left the kill. So the one bit checked at
+        the end — the scavenger fed — proves the chain end to end: witness,
+        remember, wait out the owner, dart in.
+        """
+        body = Body()
+        creatures: dict[str, list[int]] = {}
+        layouts = {
+            "hunter": ((-4.0, 0.5, 0.0), (-0.6, 0.0, 0.0)),
+            "grazer": ((4.0, 0.5, 0.0), (0.6, 0.0, 0.0)),
+            "scavenger": ((0.0, 0.5, 7.0), (0.0, 0.0, 0.6)),
+        }
+        for species, (head, step) in layouts.items():
+            ids = [
+                body.add_chunk(
+                    f"{species}{i}",
+                    tuple(h + i * s for h, s in zip(head, step)),
+                    radius=0.3,
+                )
+                for i in range(3)
+            ]
+            for a, b in zip(ids, ids[1:]):
+                body.add_link(a, b)
+            body.set_pinned(ids[0], True)
+            creatures[species] = ids
+
+        stack = ControllerStack(body, seed=11)
+        stack.add(
+            Hunter(
+                creatures["hunter"][0],
+                home=(-4.0, 0.5, 0.0),
+                speed=2.2,
+                sense_range=12.0,
+            )
+        )
+        stack.add(
+            Grazer(
+                creatures["grazer"][0],
+                home=(4.0, 0.5, 0.0),
+                speed=1.2,
+                sense_range=4.0,
+            )
+        )
+        scavenger = stack.add(
+            Scavenger(
+                creatures["scavenger"][0],
+                home=(0.0, 0.5, 7.0),
+                speed=1.6,
+                sense_range=20.0,
+                site_ttl=40.0,
+            )
+        )
+
+        config = SolverConfig(ground_y=0.0)
+        fed_at = None
+        for tick in range(3200):
+            stack.tick(body, TICK, config)
+            if scavenger._fed_until > 0.0:
+                fed_at = tick
+                break
+
+        assert np.isfinite(body.pos).all()
+        assert fed_at is not None, "the scavenger never reached a scrap site"

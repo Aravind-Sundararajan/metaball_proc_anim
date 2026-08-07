@@ -202,7 +202,7 @@ class TestItActuallyAnimates:
         """
         from mesh_xml.io import xml_v2
 
-        for name in ("chubby_worm", "character_armature", "simple_armature"):
+        for name in ("chubby_worm", "character_armature", "simple_armature", "scavenge"):
             rig = xml_v2.read(f"examples/{name}.xml")
             body = rig.body
             assert rig.controllers.controllers, name

@@ -508,6 +508,24 @@ Landed after Phase 5, in one fan-out:
   past its own muscles fails honestly in the solver. The Controllers panel
   carries the spin; the money test opens the shipped worm at tempo 2 and it
   sweeps the same anchor figure in half the ticks — a clock, not a new gait.
+* **The third brain: a utility scavenger that eats what the story leaves.**
+  ``choose`` — scores in, best out, a commitment bonus so boundaries do not
+  flicker — joins ``Fsm`` and ``plan`` as the third architecture, one
+  primitive per brain kind. ``Scavenger`` is the creature that earns it: it
+  neither chases nor is chased, but watches every hunter/grazer pair through
+  ``ctx.peers``, and when a chase concludes within its senses — the pair
+  converging inside ``scrap_range`` — it remembers the midpoint as a scrap
+  site that ages out over ``site_ttl``. That is perception the first two
+  brains never needed: a relation between two *other* creatures, and a memory
+  of where something happened rather than where anything is. The trade-offs
+  fall out of scoring, not rules — a guarded kill offers no appetite, so it
+  lurks at ``observe_range`` until the owner wanders off, and fear always
+  outbids food, so a feed run aborts the moment the hunter turns back.
+  ``examples/scavenge.xml`` ships the food chain as one v3 document (hunter
+  feeds at 8 simulated seconds, scavenger robs the site at 33), and the
+  integration test asserts one bit — the scavenger fed — which proves the
+  chain end to end, because feeding is only reachable through witness,
+  memory, patience and the dart.
 * **Controllers in the GUI, and grabs that win.** A Controllers panel: one
   group per controller on the stack, an enabled switch, spins for every
   numeric field the v3 registry persists — the widget list *is* the format's

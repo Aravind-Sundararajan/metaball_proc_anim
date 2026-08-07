@@ -83,7 +83,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from mesh_xml.anim.behavior import Grazer, Hunter
+from mesh_xml.anim.behavior import Grazer, Hunter, Scavenger
 from mesh_xml.anim.controller import Controller
 from mesh_xml.anim.controllers.balance import Level, Posture
 from mesh_xml.anim.controllers.drive import WaveAnchor
@@ -408,5 +408,6 @@ register("foothold_picker", FootholdPicker)
 register("wave_anchor", WaveAnchor)
 register("grazer", Grazer)
 register("hunter", Hunter)
+register("scavenger", Scavenger)
 register("posture", Posture)
 register("level", Level)
