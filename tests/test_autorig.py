@@ -214,3 +214,195 @@ class TestItActuallyAnimates:
 
             assert np.isfinite(body.pos).all(), name
             assert float(np.abs(body.pos - start).max()) > 0.3, name
+
+
+def legged_worm() -> tuple[Body, list[int], dict[int, list[list[int]]]]:
+    """The editor-authored shape: a spine with four legs grown by Add.
+
+    Geometry deliberately lands on the proven walker's proportions — spine at
+    the back height, hips a bone below, feet a radius off the floor — so the
+    span-normalised gait numbers compile to the values the balance suite
+    measured. Each leg is three chunks hanging from a spine chunk, exactly
+    what growing with the Add gesture produces.
+    """
+    body = Body(name="legged")
+    spine = [
+        body.add_chunk(f"s{i}", (i * 0.42, 1.05, 0.0), radius=0.2, mass=1.5)
+        for i in range(6)
+    ]
+    for a, b in zip(spine, spine[1:]):
+        body.add_link(a, b)
+
+    legs: dict[int, list[list[int]]] = {}
+    for station in (spine[1], spine[4]):
+        x = body.chunk(station).pos[0]
+        legs[station] = []
+        for side in (0.3, -0.3):
+            hip = body.add_chunk(f"h{x:.1f}{side:+.1f}", (x, 0.9, side), radius=0.12, mass=1.0)
+            knee = body.add_chunk(f"k{x:.1f}{side:+.1f}", (x, 0.49, side), radius=0.1, mass=0.4)
+            foot = body.add_chunk(f"f{x:.1f}{side:+.1f}", (x, 0.08, side), radius=0.08, mass=0.4)
+            body.add_link(station, hip)
+            body.add_link(hip, knee)
+            body.add_link(knee, foot)
+            legs[station].append([hip, knee, foot])
+    return body, spine, legs
+
+
+class TestFitLegs:
+    def test_a_leg_becomes_a_reacted_limb(self):
+        from mesh_xml.anim.controllers.limb import FootholdPicker, LimbIK
+
+        body, _spine, legs = legged_worm()
+        fitted = autorig.fit_legs(body, ground_y=0.0)
+        assert fitted is not None
+
+        iks = [c for c in fitted.controllers if isinstance(c, LimbIK)]
+        assert len(iks) == 4
+        fitted_limbs = {(ik.root, ik.mid, ik.tip) for ik in iks}
+        authored = {
+            tuple(leg) for station in legs.values() for leg in station
+        }
+        assert fitted_limbs == authored
+        for ik in iks:
+            assert ik.reaction == pytest.approx(1.0)
+            assert isinstance(ik.target, FootholdPicker)
+            assert ik.target.ground_y == pytest.approx(0.08)
+            assert ik.target.stance[1] == pytest.approx(-0.82)
+
+    def test_the_gait_is_a_trot(self):
+        """Same station: opposite phase. Diagonal pair: same phase."""
+        from mesh_xml.anim.controllers.limb import LimbIK
+
+        body, spine, legs = legged_worm()
+        fitted = autorig.fit_legs(body, ground_y=0.0)
+        phase_of = {
+            ik.root: ik.target.phase
+            for ik in fitted.controllers
+            if isinstance(ik, LimbIK)
+        }
+        (front_l, front_r) = [leg[0] for leg in legs[spine[1]]]
+        (rear_l, rear_r) = [leg[0] for leg in legs[spine[4]]]
+
+        assert phase_of[front_l] != phase_of[front_r]
+        assert phase_of[rear_l] != phase_of[rear_r]
+        assert phase_of[front_l] == phase_of[rear_r]
+        assert phase_of[front_r] == phase_of[rear_l]
+
+    def test_poles_split_fore_and_aft(self):
+        """Knees fold against the direction of travel in front, with it behind.
+
+        Heading-relative on purpose: the trunk's orientation is analyse's to
+        choose, so the walk may come out +x or -x — what must hold is that
+        the two stations' poles oppose each other along whatever drive the
+        fitter chose, front folding back the way a quadruped's do.
+        """
+        from mesh_xml.anim.controllers.limb import LimbIK
+
+        body, spine, legs = legged_worm()
+        fitted = autorig.fit_legs(body, ground_y=0.0)
+        iks = {
+            ik.root: ik for ik in fitted.controllers if isinstance(ik, LimbIK)
+        }
+        drive = np.asarray(next(iter(iks.values())).target.drive, dtype=float)
+        drive_hat = drive / np.linalg.norm(drive)
+
+        def station_along(station: int) -> float:
+            return float(np.asarray(body.chunk(station).pos) @ drive_hat)
+
+        front, rear = sorted(
+            (spine[1], spine[4]), key=station_along, reverse=True
+        )
+        for hip in (leg[0] for leg in legs[front]):
+            assert float(np.asarray(iks[hip].pole) @ drive_hat) < 0.0
+        for hip in (leg[0] for leg in legs[rear]):
+            assert float(np.asarray(iks[hip].pole) @ drive_hat) > 0.0
+
+    def test_posture_presses_on_the_feet_and_level_spans_the_hips(self):
+        from mesh_xml.anim.controllers.balance import Level, Posture
+
+        body, spine, legs = legged_worm()
+        fitted = autorig.fit_legs(body, ground_y=0.0)
+
+        postures = [c for c in fitted.controllers if isinstance(c, Posture)]
+        assert len(postures) == 2
+        feet = {leg[2] for station in legs.values() for leg in station}
+        for posture in postures:
+            assert set(posture.support) == feet
+        assert set(postures[0].chunks) == set(spine)
+        assert postures[0].height == pytest.approx(1.05, abs=1e-5)
+
+        levels = [c for c in fitted.controllers if isinstance(c, Level)]
+        assert len(levels) == 1
+        assert set(levels[0].chain) == {
+            leg[0] for station in legs.values() for leg in station
+        }
+
+    def test_the_truss_holds_hips_off_the_centreline(self):
+        body, spine, legs = legged_worm()
+        fitted = autorig.fit_legs(body, ground_y=0.0)
+
+        pairs = {tuple(sorted(pair)) for pair in fitted.truss}
+        front_hips = [leg[0] for leg in legs[spine[1]]]
+        # Each hip is triangulated against its station's trunk neighbours...
+        for hip in front_hips:
+            assert tuple(sorted((hip, spine[0]))) in pairs
+            assert tuple(sorted((hip, spine[2]))) in pairs
+        # ... and the station's pair brace each other.
+        assert tuple(sorted((front_hips[0], front_hips[1]))) in pairs
+
+    def test_pins_are_listed_for_removal(self):
+        body, spine, _legs = legged_worm()
+        body.set_pinned(spine[0], True)
+        fitted = autorig.fit_legs(body, ground_y=0.0)
+        assert fitted.unpin == [spine[0]]
+
+    def test_a_leggless_body_fits_nothing(self):
+        body = chain(6)
+        assert autorig.fit_legs(body, ground_y=0.0) is None
+
+
+class TestRiggedWalkActuallyWalks:
+    def test_the_fitted_worm_walks_its_own_heading(self):
+        """The whole point: grow legs in the editor's shape, fit, and it goes.
+
+        The proven walker travels 19.8 units in 25 s; this body was fitted
+        automatically rather than tuned by hand, so the floor here is
+        deliberately humbler — but it must genuinely *walk*: metres of travel
+        along its own spine axis, trunk held up, every value finite.
+        """
+        from mesh_xml.anim import ControllerStack
+
+        body, spine, _legs = legged_worm()
+        fitted = autorig.fit_legs(body, ground_y=0.0)
+        for a, b in fitted.truss:
+            if not body.has_link(a, b):
+                body.add_link(a, b, render=False)
+        for cid in fitted.unpin:
+            body.set_pinned(cid, False)
+        stack = ControllerStack(body, seed=7)
+        for controller in fitted.controllers:
+            stack.add(controller)
+
+        from mesh_xml.anim.controllers.limb import LimbIK
+
+        drive = np.asarray(
+            next(
+                c for c in fitted.controllers if isinstance(c, LimbIK)
+            ).target.drive,
+            dtype=float,
+        )
+        drive_hat = drive / np.linalg.norm(drive)
+
+        start = body.pos.mean(axis=0).copy()
+        config = SolverConfig(ground_y=0.0, iterations=8)
+        for _ in range(1000):
+            stack.tick(body, 1.0 / 40.0, config)
+
+        assert np.isfinite(body.pos).all()
+        moved = np.asarray(body.pos.mean(axis=0) - start, dtype=float)
+        travelled = float(moved[: drive_hat.size] @ drive_hat)
+        spine_height = float(
+            np.mean([body.chunk(cid).pos[1] for cid in spine])
+        )
+        assert travelled > 3.0, f"only travelled {travelled:.2f} along its drive"
+        assert spine_height > 0.7, f"trunk sagged to {spine_height:.2f}"

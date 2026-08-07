@@ -41,7 +41,15 @@ from mesh_xml.anim.controller import ControllerStack
 from mesh_xml.anim.controllers.spine import Breathe, SpineFollow
 from mesh_xml.core.body import Body
 
-__all__ = ["Chain", "Topology", "AutoRig", "analyse", "auto_controllers"]
+__all__ = [
+    "Chain",
+    "Topology",
+    "AutoRig",
+    "LegRig",
+    "analyse",
+    "auto_controllers",
+    "fit_legs",
+]
 
 #: An appendage tip within this multiple of its own length from the floor is a leg.
 LEG_GROUND_TOLERANCE = 0.6
@@ -256,6 +264,188 @@ def auto_controllers(
             stack.add(Breathe(free, amplitude=1.8, frequency=0.35))
 
     return AutoRig(stack, topology, anchor, tuple(driven))
+
+
+@dataclass
+class LegRig:
+    """What :func:`fit_legs` fitted, before any of it touches the body.
+
+    Pure data on purpose: the truss links and the unpinning are *structural*
+    edits, and the editor wants them as undoable commands while a script wants
+    them applied directly. Returning the plan instead of performing it lets
+    both callers own their own transaction.
+    """
+
+    controllers: list
+    truss: list[tuple[int, int]]
+    unpin: list[int]
+    description: str
+
+
+#: Gait numbers from the proven self-propelled walker (tests/test_balance.py),
+#: with the per-leg distances normalised by leg span so a stubby worm-leg and
+#: a stilt get the same gait *shape*. duty * period must exceed step_duration
+#: or the picker refuses to construct; 0.45 * 0.8 = 0.36 >= 0.24 holds.
+_GAIT_PERIOD = 0.8
+_GAIT_DUTY = 0.45
+_STEP_DURATION = 0.24
+_LEAD_TIME = 0.18
+_STEP_THRESHOLD_SPANS = 0.25
+_STEP_HEIGHT_SPANS = 0.5
+_DRIVE_SPEED = 0.5
+
+
+def fit_legs(body: Body, ground_y: float = 0.0) -> LegRig | None:
+    """Fit the walking stack to every leg-shaped appendage. ``None`` if none.
+
+    This is the decision :func:`auto_controllers` refuses to make, made — and
+    it can be made now because the recipe it compiles is no longer a guess:
+    it is the self-propelled walker the balance suite measures, transplanted.
+    Each candidate chain ``(spine, hip, knee, foot)`` becomes a
+    :class:`LimbIK` with ``reaction=1.0`` — forces sum to zero, footfalls
+    against Coulomb grip are the only thrust — fed by a trot-phased
+    :class:`FootholdPicker` whose stance is the leg's own authored droop.
+    The trunk gets :class:`Posture` pressing on the feet, the hips get
+    :class:`Posture` and :class:`Level`, and the body walks *free*: no pins,
+    no kinematic carry.
+
+    Two structural facts ride along as data rather than being applied here.
+    A lone link cannot hold a hip out to the side — it is isotropic — so each
+    hip is trussed to its spine chunk's trunk neighbours and to any hip
+    sharing its station, as mechanism links (force without flesh). And every
+    pinned chunk is listed for unpinning, because a walker's weight must
+    reach its feet and a driver's pin would absorb the postural forces meant
+    to hold it up.
+
+    Heading is the trunk's own horizontal axis; the drive, the pole vectors
+    (front knees fold back, rear fold forward) and the trot's diagonal pairs
+    all derive from it, so a creature authored facing any direction walks
+    the way it faces.
+    """
+    from mesh_xml.anim.controllers.balance import Level, Posture
+    from mesh_xml.anim.controllers.limb import FootholdPicker, LimbIK
+
+    topology = analyse(body, ground_y=ground_y)
+    legs = [chain for chain in topology.leg_candidates if len(chain) == 4]
+    if not legs or topology.trunk is None:
+        return None
+
+    def position(chunk_id: int) -> np.ndarray:
+        return np.asarray(body.pos[body.slot(chunk_id)], dtype=np.float64)
+
+    trunk = topology.trunk
+    heading = position(trunk.tip) - position(trunk.base)
+    heading[1] = 0.0
+    length = float(np.linalg.norm(heading))
+    heading = heading / length if length > 1e-6 else np.array([1.0, 0.0, 0.0])
+    up = np.zeros(3)
+    up[1] = 1.0
+    lateral = np.cross(up, heading)
+
+    trunk_order = {cid: i for i, cid in enumerate(trunk.chunks)}
+    stations = sorted(
+        {chain.base for chain in legs},
+        key=lambda cid: trunk_order.get(cid, 0),
+    )
+    station_index = {cid: i for i, cid in enumerate(stations)}
+    along = [float(position(cid) @ heading) for cid in stations]
+    median = float(np.median(along)) if along else 0.0
+
+    controllers: list = []
+    truss: list[tuple[int, int]] = []
+    feet: list[int] = []
+    hips: list[int] = []
+    for chain in sorted(legs, key=lambda c: (station_index[c.base], c.tip)):
+        base, hip, knee, foot = chain.chunks
+        feet.append(foot)
+        hips.append(hip)
+
+        span = float(
+            np.linalg.norm(position(knee) - position(hip))
+            + np.linalg.norm(position(foot) - position(knee))
+        )
+        foot_radius = float(body.radius[body.slot(foot)])
+        side = 0 if float((position(hip) - position(base)) @ lateral) >= 0.0 else 1
+        phase = 0.0 if (station_index[base] + side) % 2 == 0 else 0.5
+        front = float(position(base) @ heading) >= median
+        pole = tuple((-heading if front else heading).astype(float))
+
+        picker = FootholdPicker(
+            stance=tuple(float(v) for v in position(foot) - position(hip)),
+            ground_y=ground_y + foot_radius,
+            step_threshold=_STEP_THRESHOLD_SPANS * span,
+            step_height=_STEP_HEIGHT_SPANS * span,
+            step_duration=_STEP_DURATION,
+            lead_time=_LEAD_TIME,
+            period=_GAIT_PERIOD,
+            phase=phase,
+            duty=_GAIT_DUTY,
+            drive=tuple(float(v) for v in heading * _DRIVE_SPEED),
+        )
+        controllers.append(
+            LimbIK(
+                hip,
+                knee,
+                foot,
+                target=picker,
+                pole=pole,
+                strength=150.0,
+                damping=11.0,
+                max_force=120.0,
+                reaction=1.0,
+            )
+        )
+
+        # The hip truss: triangulate against the trunk neighbours so the
+        # isotropic hip link cannot let the leg swing under the centreline.
+        for neighbour in body.neighbors(base):
+            if neighbour in trunk_order and neighbour != hip:
+                truss.append((hip, neighbour))
+
+    # Hips sharing a station brace each other — the left-right pair.
+    by_station: dict[int, list[int]] = {}
+    for chain in legs:
+        by_station.setdefault(chain.base, []).append(chain.chunks[1])
+    for pair in by_station.values():
+        for a, b in zip(pair, pair[1:]):
+            truss.append((a, b))
+
+    spine = [cid for cid in trunk.chunks]
+    spine_height = float(np.mean([position(cid)[1] for cid in spine]))
+    controllers.append(
+        Posture(
+            spine,
+            height=spine_height,
+            strength=300.0,
+            damping=20.0,
+            max_force=120.0,
+            support=list(feet),
+        )
+    )
+    hip_height = float(np.mean([position(cid)[1] for cid in hips]))
+    controllers.append(
+        Posture(
+            list(hips),
+            height=hip_height,
+            strength=300.0,
+            damping=20.0,
+            max_force=120.0,
+            support=list(feet),
+        )
+    )
+    if len(hips) >= 2:
+        ordered = sorted(hips, key=lambda cid: float(position(cid) @ heading))
+        controllers.append(Level(ordered))
+
+    unpin = [
+        cid for cid in body.chunk_ids() if body.inv_mass[body.slot(cid)] == 0.0
+    ]
+    return LegRig(
+        controllers=controllers,
+        truss=truss,
+        unpin=unpin,
+        description=f"{len(legs)} leg(s) on {len(stations)} station(s)",
+    )
 
 
 def _is_leg(body: Body, chain: Chain, ground_y: float | None) -> bool:

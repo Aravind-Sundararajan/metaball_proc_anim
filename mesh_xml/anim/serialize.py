@@ -85,6 +85,7 @@ import numpy as np
 
 from mesh_xml.anim.behavior import Grazer, Hunter
 from mesh_xml.anim.controller import Controller
+from mesh_xml.anim.controllers.balance import Level, Posture
 from mesh_xml.anim.controllers.drive import WaveAnchor
 from mesh_xml.anim.controllers.limb import FootholdPicker, LimbIK, TipTarget
 from mesh_xml.anim.controllers.spine import Breathe, LookAt, SpineFollow
@@ -407,3 +408,5 @@ register("foothold_picker", FootholdPicker)
 register("wave_anchor", WaveAnchor)
 register("grazer", Grazer)
 register("hunter", Hunter)
+register("posture", Posture)
+register("level", Level)

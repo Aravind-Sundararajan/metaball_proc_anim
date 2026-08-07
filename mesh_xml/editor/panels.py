@@ -989,10 +989,12 @@ class ControllerPanel(_Panel):
         super().__init__(document, parent)
 
         self._autorig = QPushButton("Fit autorig")
+        self._rig_legs = QPushButton("Rig legs")
         self._empty = _note(
             "No controllers. Fit autorig to give this rig a spine, an idle "
             "breath, and a wave driver on its anchor — the same recipe the "
-            "shipped examples carry."
+            "shipped examples carry. Rig legs turns leg-shaped appendages "
+            "into a self-propelled walk."
         )
 
         #: One entry per built group: the controller type it was built for,
@@ -1009,8 +1011,14 @@ class ControllerPanel(_Panel):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(self._list_host)
 
+        fitters = QWidget()
+        fitters_layout = QHBoxLayout(fitters)
+        fitters_layout.setContentsMargins(0, 0, 0, 0)
+        fitters_layout.addWidget(self._autorig)
+        fitters_layout.addWidget(self._rig_legs)
+
         layout = QVBoxLayout(self)
-        layout.addWidget(self._autorig)
+        layout.addWidget(fitters)
         layout.addWidget(self._empty)
         layout.addWidget(scroll, 1)
 
@@ -1019,7 +1027,15 @@ class ControllerPanel(_Panel):
             "plus a wave driver leading its anchor. One undo step, pin "
             "included."
         )
+        self._rig_legs.setToolTip(
+            "Compile the measured walker onto every leg-shaped appendage — "
+            "three chunks grown from the spine, ending near the floor: "
+            "limb IK with paired reaction, trot-phased footholds, posture "
+            "pressing on the feet, a hip truss, and no pins. One undo step. "
+            "The creature walks the way its spine points."
+        )
         self._autorig.clicked.connect(self._on_autorig)
+        self._rig_legs.clicked.connect(self._on_rig_legs)
         self._follow(document.controllers_changed, document.body_replaced)
 
         self.refresh()
@@ -1027,6 +1043,10 @@ class ControllerPanel(_Panel):
     @_user_edit
     def _on_autorig(self) -> None:
         self._document.fit_autorig()
+
+    @_user_edit
+    def _on_rig_legs(self) -> None:
+        self._document.rig_legs()
 
     def _submit_field(self, index: int, field: str, value: object) -> None:
         if self.syncing:

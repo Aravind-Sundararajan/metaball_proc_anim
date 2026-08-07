@@ -514,3 +514,73 @@ class TestControllerCommands:
         if wave.anchor == first:
             assert document.body.chunk(first).mass == pytest.approx(anchor_mass)
         assert not document.can_undo
+
+
+class TestRigLegs:
+    """rig_legs turns leg-shaped appendages into the walking stack, undoably."""
+
+    @staticmethod
+    def _legged(document: Document) -> None:
+        body = Body(name="legged")
+        spine = [
+            body.add_chunk(f"s{i}", (i * 0.42, 1.05, 0.0), radius=0.2, mass=1.5)
+            for i in range(6)
+        ]
+        for a, b in zip(spine, spine[1:]):
+            body.add_link(a, b)
+        for station in (spine[1], spine[4]):
+            x = body.chunk(station).pos[0]
+            for side in (0.3, -0.3):
+                hip = body.add_chunk(f"h{station}{side:+.1f}", (x, 0.9, side), radius=0.12)
+                knee = body.add_chunk(f"k{station}{side:+.1f}", (x, 0.49, side), radius=0.1)
+                foot = body.add_chunk(f"f{station}{side:+.1f}", (x, 0.08, side), radius=0.08)
+                body.add_link(station, hip)
+                body.add_link(hip, knee)
+                body.add_link(knee, foot)
+        body.set_pinned(spine[0], True)
+        document._replace(body, None)
+
+    def test_one_click_one_undo(self, document):
+        self._legged(document)
+        links_before = document.body.n_links
+        pinned = document.body.chunk_ids()[0]
+
+        document.rig_legs()
+
+        names = sorted(type(c).__name__ for c in document.controllers.controllers)
+        assert names == ["Level", "LimbIK", "LimbIK", "LimbIK", "LimbIK", "Posture", "Posture"]
+        assert document.body.n_links > links_before, "the hip truss should land"
+        assert document.body.inv_mass[document.body.slot(pinned)] > 0.0
+        for link in document.body.links():
+            if not link.render:
+                break
+        else:
+            pytest.fail("truss links should be mechanism, not flesh")
+
+        document.undo()
+        assert document.controllers.controllers == []
+        assert document.body.n_links == links_before
+        assert document.body.inv_mass[document.body.slot(pinned)] == 0.0
+        assert not document.can_undo
+
+    def test_a_legless_body_is_a_polite_no_op(self, document):
+        document.rig_legs()
+        assert document.controllers.controllers == []
+        assert not document.can_undo
+
+    def test_the_rigged_walker_round_trips(self, document, tmp_path):
+        """Posture and Level are registered now, so a walker saves whole."""
+        self._legged(document)
+        document.rig_legs()
+        path = tmp_path / "walker.xml"
+        document.save(path)
+
+        reopened = Document()
+        reopened.open(path)
+        names = sorted(type(c).__name__ for c in reopened.controllers.controllers)
+        assert names == ["Level", "LimbIK", "LimbIK", "LimbIK", "LimbIK", "Posture", "Posture"]
+        posture = next(
+            c for c in reopened.controllers.controllers
+            if type(c).__name__ == "Posture"
+        )
+        assert posture.support, "the feet must survive the trip"

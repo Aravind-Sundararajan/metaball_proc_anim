@@ -200,11 +200,14 @@ class AddLink:
     b: int
     rest: float | None = None
     type: LinkType = LinkType.NORMAL
+    render: bool = True
     text: str = "Connect"
     _added: bool = False
 
     def apply(self, document: Document) -> None:
-        self._added = document.body.add_link(self.a, self.b, rest=self.rest, type=self.type)
+        self._added = document.body.add_link(
+            self.a, self.b, rest=self.rest, type=self.type, render=self.render
+        )
 
     def revert(self, document: Document) -> None:
         if self._added:
@@ -693,6 +696,43 @@ class Document(QObject):
             self.do(commands[0])
         else:
             self.do(Macro(commands, text="Fit Autorig"))
+
+    def rig_legs(self) -> None:
+        """Fit the walking stack to every leg-shaped appendage, as one undo step.
+
+        The counterpart of :meth:`fit_autorig` for the decision it declines:
+        :func:`~mesh_xml.anim.autorig.fit_legs` compiles the measured
+        self-propelled walker recipe onto the body's leg candidates, and this
+        method turns its plan into commands — the hip truss as mechanism
+        links, every pin removed (a walker's weight must reach its feet; a
+        driver's pin would absorb the posture holding it up), and the stack
+        replaced whole. Undo puts back the pins, the old stack, and takes the
+        truss out again.
+        """
+        ground = self.solver_config.ground_y
+        fitted = autorig.fit_legs(
+            self.body, ground_y=ground if ground is not None else 0.0
+        )
+        if fitted is None:
+            self.status.emit(
+                "No leg-shaped appendages: a leg is three chunks grown from "
+                "the spine, ending near the floor"
+            )
+            return
+
+        stack = ControllerStack(self.body, seed=self.controllers.seed)
+        for controller in fitted.controllers:
+            stack.add(controller)
+
+        commands: list[Command] = [
+            AddLink(a, b, render=False, text="Truss")
+            for a, b in fitted.truss
+            if not self.body.has_link(a, b)
+        ]
+        commands += [SetPinned(cid, False) for cid in fitted.unpin]
+        commands.append(ReplaceControllers(stack))
+        self.do(Macro(commands, text="Rig Legs"))
+        self.status.emit(f"Rigged {fitted.description}")
 
     # ------------------------------------------------------------------
     # files

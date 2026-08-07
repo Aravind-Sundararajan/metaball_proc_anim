@@ -426,6 +426,24 @@ Landed after Phase 5, in one fan-out:
   (the table now snapshots beside the primitives it describes); and the
   tile slack now scales with the settings' own ``max_distance`` instead of
   assuming the default.
+* **Rig Legs: the worm becomes a quadruped in one click.** The decision the
+  autorig declined — legs need to know how the creature is driven — is now
+  made from evidence: ``autorig.fit_legs`` compiles the *measured*
+  self-propelled walker (the balance suite's, 19.8 units in 25 s) onto every
+  ``leg_candidates`` chain. Each ``(spine, hip, knee, foot)`` becomes a
+  ``LimbIK(reaction=1.0)`` fed by a trot-phased ``FootholdPicker`` whose
+  stance is the leg's own authored droop and whose step lengths normalise by
+  leg span; the trunk and hips get ``Posture`` pressing on the feet, the
+  hips get ``Level`` and a mechanism-link truss (a lone link is isotropic
+  and lets a hip swing under the centreline); every pin is removed, because
+  a walker's weight must reach its feet. Heading, drive, trot pairing and
+  pole vectors all derive from the trunk's own axis, so a creature walks
+  the way it was authored to face. ``Document.rig_legs`` lands it as one
+  undo step, the panel gets the button beside Fit Autorig, and ``Posture``
+  and ``Level`` are registered at last — which also makes the balance
+  suite's walker savable for the first time. Proven end to end: a
+  gesture-shaped legged worm, fitted automatically, walks metres along its
+  own heading with the trunk held high, and round-trips through v3 whole.
 * **The behavior tier** (``anim/behavior.py``). Brains above controllers,
   obeying the same law one level up: a brain writes goals — destinations,
   choices — never forces, never positions it does not own. Two architectures
