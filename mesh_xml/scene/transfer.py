@@ -18,6 +18,11 @@ through unmapped — a straddling controller was already a design smell, and
 the stack's ``has_chunk`` guards turn its dangling half into silence, not a
 crash. Refusal is wholesale, the format's own ruling: if any travelling
 controller cannot be rebuilt, nothing has moved yet and nothing moves.
+
+Both ends must be realized — movement through abstract space, which Rain
+World's creatures do off camera constantly, is future work for the door
+tier, and the honest rule this round is that creatures cross between
+realized rooms.
 """
 
 from __future__ import annotations
@@ -43,6 +48,13 @@ def move_creature(
     keeps coordinates, which is the honest default while doors do not exist
     to say where "here" is.
     """
+    for room in (source, target):
+        if room.abstracted:
+            raise ValueError(
+                f"room {room.name!r} is abstracted; creatures cross between "
+                "realized rooms — an abstract crossing would tear a parked "
+                "creature from the half of it that is data"
+            )
     if source is target:
         raise ValueError("a creature cannot move to the room it is in")
     if source.body.dim != target.body.dim:

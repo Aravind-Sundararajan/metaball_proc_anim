@@ -580,6 +580,26 @@ Landed after Phase 5, in one fan-out:
   test shows a grazer standing at overlapping coordinates one room over
   never even flinches, because ``ctx.peers`` is the room's stack and the
   boundary needs no distance check anywhere.
+* **The abstract room** (``docs/ROOMS.md`` package 4). A room's cheap tier,
+  and the argument was sitting in the brain contract all along: a brain
+  steers only its own pinned anchor, so a creature reduced to that anchor is
+  one its brain cannot tell from the whole. ``Room.abstract()`` keeps one
+  pinned chunk per creature — the brain's anchor, or the minimum id where
+  nothing thinks — and parks the rest as data: chunks, links, and the
+  non-brain controllers with their stack indexes, because stack order is rng
+  draw order and must survive the round trip. Brains stay at full authority.
+  ``Room.realize()`` rebuilds each creature around wherever the brain has
+  since walked the anchor, controllers rebuilt fresh through the
+  serializer's identity remap with world points displaced — the door ruling
+  applied to abstraction, so a parked picker cannot wake holding a foothold
+  from a world that moved. ``Scene.activate(name)`` is the camera: one room
+  expensive, every other cheap, nothing anywhere stops thinking. The
+  equivalence test is stronger than the plan asked: a brain-only creature's
+  anchor lands within 1e-5 of the same spot after 400 ticks realized or
+  abstracted — abstraction does not change where a creature decides to go.
+  Measured, same population both ways (twenty 6-chunk grazers): twenty
+  abstracted rooms tick at 521 us against one realized room's 2,871 us —
+  5.5x under the "less than one realized room" acceptance line.
 * **Controllers in the GUI, and grabs that win.** A Controllers panel: one
   group per controller on the stack, an enabled switch, spins for every
   numeric field the v3 registry persists — the widget list *is* the format's

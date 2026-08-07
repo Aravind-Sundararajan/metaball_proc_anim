@@ -51,6 +51,24 @@ class Scene:
         known = ", ".join(sorted(room.name for room in self.rooms)) or "none"
         raise KeyError(f"no room named {name!r}; rooms are {known}")
 
+    def activate(self, name: str) -> Room:
+        """The camera enters ``name``: Rain World's realization boundary.
+
+        The named room realizes if it was abstracted; every other room not
+        already at the cheap tier drops to it. Nothing stops simulating
+        anywhere — :meth:`tick` still ticks every room, and the abstracted
+        ones keep thinking — activation only moves the one expensive tier
+        to where the viewport is pointed.
+        """
+        active = self.room(name)
+        for room in self.rooms:
+            if room is active:
+                if room.abstracted:
+                    room.realize()
+            elif not room.abstracted:
+                room.abstract()
+        return active
+
     def tick(self) -> None:
         """One fixed step everywhere. Every room ticks, looked at or not."""
         for room in self.rooms:
