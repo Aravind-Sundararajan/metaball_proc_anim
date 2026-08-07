@@ -237,6 +237,10 @@ class _Brain:
     #: fast creature is not thereby a hasty one.
     TEMPO = {"speed": 1, "swing_rate": 1}
 
+    #: World points that move with the creature (:mod:`mesh_xml.anim.place`):
+    #: a copied creature ranges around its own home, not its ancestor's.
+    PLACED = ("home",)
+
     _destination: np.ndarray | None = field(default=None, init=False, repr=False)
     _next_think: float = field(default=0.0, init=False, repr=False)
 

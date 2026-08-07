@@ -120,6 +120,7 @@ class TestBuildPanels:
         assert list(built) == [
             "Playback",
             "Chunks",
+            "Creatures",
             "Controllers",
             "Surface",
             "Solver",
@@ -891,3 +892,47 @@ class TestControllerPanel:
 
         assert undo_depth(document) == 1
         assert panel._tempo.value() == pytest.approx(2.0)
+
+
+class TestCreaturePanel:
+    def test_lists_creatures_and_picking_selects(self, document):
+        document.open("examples/hunt.xml")
+        panel = panels.CreaturePanel(document)
+
+        assert panel._roster.count() == 2
+        panel._on_pick(1)
+        grazer = document.creatures()[1]
+        assert document.selection == set(grazer.chunks)
+
+    def test_renaming_is_one_undo_step(self, document):
+        document.open("examples/hunt.xml")
+        panel = panels.CreaturePanel(document)
+        document.set_selection(set(document.creatures()[0].chunks))
+
+        panel._name.setText("apex")
+        panel._on_rename()
+
+        assert undo_depth(document) == 1
+        assert document.undo_text == "Rename Creature"
+        assert document.creatures()[0].name == "apex"
+        assert "apex" in panel._roster.itemText(0)
+
+    def test_a_focus_out_without_change_is_not_an_edit(self, document):
+        document.open("examples/hunt.xml")
+        panel = panels.CreaturePanel(document)
+        document.set_selection(set(document.creatures()[0].chunks))
+
+        panel._on_rename()
+
+        assert undo_depth(document) == 0
+
+    def test_the_duplicate_button_herds(self, document):
+        document.open("examples/chubby_worm.xml")
+        panel = panels.CreaturePanel(document)
+        document.set_selection({document.body.chunk_ids()[0]})
+
+        panel._duplicate.click()
+
+        assert len(document.creatures()) == 2
+        assert undo_depth(document) == 1
+        assert panel._roster.count() == 2

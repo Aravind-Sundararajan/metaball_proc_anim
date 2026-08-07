@@ -61,6 +61,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -76,6 +77,7 @@ from mesh_xml.core import solver
 from mesh_xml.editor.document import (
     AddLink,
     Command,
+    Creature,
     Document,
     Macro,
     RemoveChunk,
@@ -93,6 +95,7 @@ __all__ = [
     "SolverPanel",
     "SmoothingPanel",
     "ChunkPanel",
+    "CreaturePanel",
     "ControllerPanel",
     "build_panels",
 ]
@@ -989,6 +992,125 @@ class SmoothingPanel(_Panel):
         )
 
 
+class CreaturePanel(_Panel):
+    """The roster: pick a creature, name it, herd it.
+
+    The combo is a *view* of connected components — the document recomputes
+    it like a blend group, and row *n* here is surface group *n* out there.
+    Picking a row selects the creature's chunks, which is what arms every
+    per-creature edit (colour, tempo, duplicate): the roster does not act on
+    creatures directly, it aims the selection the existing gestures already
+    fire from.
+    """
+
+    def __init__(self, document: Document, parent: QWidget | None = None) -> None:
+        super().__init__(document, parent)
+
+        self._roster = QComboBox()
+        self._name = QLineEdit()
+        self._name.setPlaceholderText("unnamed")
+        self._duplicate = QPushButton("Duplicate")
+        self._empty = _note(
+            "No creatures yet. Add (A) grows chunks; linked chunks are one "
+            "creature, and every separate cluster is its own."
+        )
+
+        form = _form()
+        form.addRow("Creature", self._roster)
+        form.addRow("Name", self._name)
+        form.addRow(self._duplicate)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(self._empty)
+        layout.addStretch(1)
+
+        self._roster.setToolTip(
+            "Every creature in the document, in the surface's own group "
+            "order. Picking one selects its chunks."
+        )
+        self._name.setToolTip(
+            "The selected creature's name, painted across its chunks like "
+            "its colour. Clear it to fall back to the generated label."
+        )
+        self._duplicate.setToolTip(
+            "Copy every creature the selection touches — chunks, links, "
+            "meta, and its controllers with ids remapped and world points "
+            "carried along. One undo step; the copy takes the selection, so "
+            "duplicating again builds a herd."
+        )
+
+        self._roster.activated.connect(self._on_pick)
+        self._name.editingFinished.connect(self._on_rename)
+        self._duplicate.clicked.connect(self._on_duplicate)
+        self._follow(
+            document.topology_changed,
+            document.selection_changed,
+            document.body_replaced,
+            document.chunk_changed,
+        )
+
+        self.refresh()
+
+    @_user_edit
+    def _on_pick(self, index: int) -> None:
+        creatures = self._document.creatures()
+        if 0 <= index < len(creatures):
+            self._document.set_selection(creatures[index].chunks)
+
+    @_user_edit
+    def _on_rename(self) -> None:
+        creature = self._current_creature()
+        if creature is None:
+            return
+        text = self._name.text().strip()
+        # editingFinished also fires on plain focus-out; only a changed name
+        # is an edit, or every glance at the panel would push a command.
+        if (creature.name or "") == text:
+            return
+        self._document.rename_creature(text)
+
+    @_user_edit
+    def _on_duplicate(self) -> None:
+        self._document.duplicate_creature()
+
+    def _current_creature(self) -> Creature | None:
+        selection = self._document.selection
+        if not selection:
+            return None
+        for creature in self._document.creatures():
+            if selection <= set(creature.chunks):
+                return creature
+        return None
+
+    def _refresh(self) -> None:
+        creatures = self._document.creatures()
+        self._empty.setVisible(not creatures)
+        self._roster.setEnabled(bool(creatures))
+
+        self._roster.clear()
+        for index, creature in enumerate(creatures):
+            self._roster.addItem(
+                f"{creature.label(index)} — {len(creature.chunks)} chunk(s)"
+            )
+
+        current = self._current_creature()
+        if current is not None:
+            self._roster.setCurrentIndex(
+                next(
+                    i
+                    for i, c in enumerate(creatures)
+                    if c.chunks == current.chunks
+                )
+            )
+            self._name.setText(current.name or "")
+        else:
+            self._roster.setCurrentIndex(-1)
+            self._name.clear()
+        self._name.setEnabled(current is not None)
+        self._duplicate.setEnabled(bool(self._document.selection))
+
+
 class ControllerPanel(_Panel):
     """The gait, editable: every controller on the stack, its knobs, its switch.
 
@@ -1478,6 +1600,7 @@ def build_panels(document: Document) -> dict[str, QWidget]:
     return {
         "Playback": PlaybackPanel(document),
         "Chunks": ChunkPanel(document),
+        "Creatures": CreaturePanel(document),
         "Controllers": ControllerPanel(document),
         "Surface": SurfacePanel(document),
         "Solver": SolverPanel(document),

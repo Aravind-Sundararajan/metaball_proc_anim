@@ -301,6 +301,11 @@ class LimbIK:
     reaction: float = 0.0
     enabled: bool = True
 
+    #: World points that move with the creature (:mod:`mesh_xml.anim.place`):
+    #: a raw point ``target`` travels; a picker there places itself and the
+    #: ``pole`` is a direction, which is exactly why it is not listed.
+    PLACED = ("target",)
+
     def update(self, ctx: ControlContext) -> None:
         frame = self.frame(ctx)
         if frame is None:

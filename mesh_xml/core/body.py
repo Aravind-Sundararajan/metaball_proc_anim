@@ -526,6 +526,40 @@ class Body:
                 out.append(link.a)
         return out
 
+    def components(self) -> list[list[int]]:
+        """Connected components over every link, as lists of chunk ids.
+
+        This is the graph's own answer to "how many creatures live here".
+        Components are found over *all* links, mechanism braces included,
+        because identity is physical connectivity, not flesh; component order
+        is by first-seen slot and ids within one follow slot order, which is
+        the same numbering the renderer gives its blend groups — the roster's
+        creature *n* is the surface's group *n*.
+        """
+        adjacency: list[list[int]] = [[] for _ in range(self._n)]
+        for i in range(self._n_links):
+            a, b = int(self._link_a[i]), int(self._link_b[i])
+            adjacency[a].append(b)
+            adjacency[b].append(a)
+
+        label = np.full(self._n, -1, dtype=np.int64)
+        groups: list[list[int]] = []
+        for seed in range(self._n):
+            if label[seed] >= 0:
+                continue
+            label[seed] = len(groups)
+            stack = [seed]
+            while stack:
+                node = stack.pop()
+                for neighbour in adjacency[node]:
+                    if label[neighbour] < 0:
+                        label[neighbour] = label[seed]
+                        stack.append(neighbour)
+            groups.append([])
+        for slot in range(self._n):
+            groups[int(label[slot])].append(int(self._ids[slot]))
+        return groups
+
     # ------------------------------------------------------------------
     # derived hierarchy — serialization and chain walking only
     # ------------------------------------------------------------------

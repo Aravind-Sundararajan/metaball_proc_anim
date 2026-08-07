@@ -122,6 +122,9 @@ class SpineFollow:
     #: its heading faster; the gains are muscle, not clock, and stay authored.
     TEMPO = {"heading_speed": 1}
 
+    #: World points that move with the creature (:mod:`mesh_xml.anim.place`).
+    PLACED = ("lead",)
+
     @property
     def min_joint_degrees(self) -> float:
         """The tightest interior angle the joints are allowed to settle at."""
@@ -201,6 +204,10 @@ class LookAt:
     spacing: float | None = None
     max_force: float | None = 200.0
     enabled: bool = True
+
+    #: World points that move with the creature (:mod:`mesh_xml.anim.place`):
+    #: this ``target`` is only ever a world point, per the registry.
+    PLACED = ("target",)
 
     def update(self, ctx: ControlContext) -> None:
         if self.target is None:

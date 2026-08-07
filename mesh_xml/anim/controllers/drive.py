@@ -55,6 +55,9 @@ class WaveAnchor:
     #: its size (``amplitude``) is shape and stays.
     TEMPO = {"rate": 1}
 
+    #: World points that move with the creature (:mod:`mesh_xml.anim.place`).
+    PLACED = ("origin",)
+
     def swing(self, time: float) -> np.ndarray:
         """The wave's offset from ``origin`` at ``time``, sized to ``origin``.
 

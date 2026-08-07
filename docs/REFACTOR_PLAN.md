@@ -526,6 +526,25 @@ Landed after Phase 5, in one fan-out:
   integration test asserts one bit — the scavenger fed — which proves the
   chain end to end, because feeding is only reachable through witness,
   memory, patience and the dart.
+* **The creature roster: the herd gesture, and creatures you can name**
+  (``docs/ROOMS.md`` package 1). ``Body.components()`` makes the graph's own
+  answer to "how many creatures live here" public, in the renderer's
+  blend-group order — the roster's creature *n* wears surface group *n* —
+  and ``Document.creatures()`` names each from chunk meta the way colour and
+  tempo already ride there. The Creatures panel picks (which aims the
+  selection every per-creature gesture fires from), renames, and duplicates.
+  ``duplicate_creature`` copies a creature *whole*: chunks with masses, pins
+  and meta; links with rests, types and render flags (a brace stays a
+  brace); and its controllers rebuilt through ``serialize.remap_ids`` — the
+  decode path without the document, fresh instance, runtime re-derived —
+  with world points carried sideways by ``anim/place.py``, the third
+  per-class field declaration (``PLACED``, after ``TEMPO``): a copy whose
+  driver still pointed at its ancestor's ``origin`` would fight it for one
+  soul, and a ``pole`` translated like a point would stop being a direction.
+  Placement is the Add rule one creature up — past the body's +x extent,
+  copies in a row — one undo step, the copy takes the selection, so
+  duplicate-again herds. The money test herds the shipped worm: two waves,
+  two anchors, both swim, and the herd round-trips through v3 whole.
 * **Controllers in the GUI, and grabs that win.** A Controllers panel: one
   group per controller on the stack, an enabled switch, spins for every
   numeric field the v3 registry persists — the widget list *is* the format's

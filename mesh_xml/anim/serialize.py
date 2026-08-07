@@ -78,7 +78,7 @@ from __future__ import annotations
 
 import inspect
 import xml.etree.ElementTree as ET
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -99,6 +99,7 @@ __all__ = [
     "fields_of",
     "register",
     "registered",
+    "remap_ids",
 ]
 
 CONTROLLER_TAG = "controller"
@@ -260,6 +261,53 @@ def decode_controller(element: ET.Element) -> Persisted:
         raise ControllerFormatError(
             f"cannot rebuild {entry.cls.__name__} from this document: {exc}"
         ) from None
+
+
+def remap_ids(controller: Persisted, mapping: Mapping[int, int]) -> Persisted:
+    """A fresh controller with every chunk id passed through ``mapping``.
+
+    This is the decode path without the document: the copy is rebuilt through
+    the constructor from the registry's own field list, so it is a genuinely
+    new instance with its runtime state re-derived — the ruling a saved
+    creature already lives under — and nested registered values (the picker
+    inside a limb) rebuild recursively. Ids absent from the mapping pass
+    through untouched, so a caller holding one creature's ids can remap its
+    controllers without knowing the rest of the body.
+
+    The module docstring's caveat cuts both ways here: an integer field is
+    *presumed* to be a chunk id, because nothing can prove it either way.
+    True of every registered controller today; a future non-id integer field
+    would need its own exemption, and this docstring is where that debt is
+    recorded.
+    """
+    entry = _BY_CLASS.get(type(controller))
+    if entry is None:
+        raise ControllerFormatError(
+            f"{type(controller).__name__} is not a registered controller, so "
+            "its chunk ids cannot be remapped"
+        )
+    arguments = {
+        field: _remap_value(getattr(controller, field), mapping)
+        for field in entry.fields
+    }
+    return entry.cls(**arguments)
+
+
+def _remap_value(value: object, mapping: Mapping[int, int]) -> object:
+    if isinstance(value, (bool, np.bool_)):
+        return value
+    if isinstance(value, (int, np.integer)):
+        return mapping.get(int(value), int(value))
+    if isinstance(value, np.ndarray):
+        # Never shared with the original: a world-point array reached through
+        # two controllers would let one edit move both creatures.
+        return value.copy()
+    if isinstance(value, (list, tuple)):
+        items = [_remap_value(item, mapping) for item in value]
+        return items if isinstance(value, list) else tuple(items)
+    if type(value) in _BY_CLASS:
+        return remap_ids(value, mapping)
+    return value
 
 
 def _constructor_fields(cls: type) -> tuple[str, ...]:

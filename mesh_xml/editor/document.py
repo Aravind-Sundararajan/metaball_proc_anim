@@ -20,14 +20,14 @@ tweaking this tool exists for impossible.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from mesh_xml.anim import Clock, ControllerStack, autorig, tempo
+from mesh_xml.anim import Clock, ControllerStack, autorig, place, serialize, tempo
 from mesh_xml.anim.controllers.drive import WaveAnchor
 from mesh_xml.core import Body, LinkType
 from mesh_xml.core.solver import SolverConfig
@@ -49,14 +49,40 @@ __all__ = [
     "RemoveLink",
     "SetMeta",
     "SetControllerField",
+    "AddController",
     "RemoveController",
     "ReplaceControllers",
     "Macro",
+    "Creature",
 ]
 
 #: Spacing of a grown chunk, in radii. Under 2.0 on purpose: neighbours must
 #: overlap for the smooth-min surface to read as one volume rather than beads.
 _GROW_SPACING = 1.6
+
+#: Chunk-meta key carrying the creature's authored name. Painted across the
+#: component like colour and tempo: a creature has no object of its own, so
+#: its name rides its chunks and dies with them.
+CREATURE_META = "creature"
+
+
+@dataclass(frozen=True)
+class Creature:
+    """One connected component, as the roster sees it.
+
+    A view, not a noun: recomputed from the graph on demand, in the same
+    first-seen-slot order the renderer numbers its blend groups — the
+    roster's creature *n* wears surface group *n*. ``name`` is the first
+    :data:`CREATURE_META` found on the component's chunks (id order), or
+    ``None`` for the unnamed.
+    """
+
+    chunks: tuple[int, ...]
+    name: str | None
+
+    def label(self, index: int) -> str:
+        """What a roster row says: the authored name, or an honest default."""
+        return self.name if self.name else f"Creature {index}"
 
 
 class Command(Protocol):
@@ -74,13 +100,22 @@ class AddChunk:
     name: str
     pos: tuple[float, ...]
     radius: float = 0.25
+    mass: float = 1.0
+    pinned: bool = False
+    meta: dict | None = None
     chunk_id: int | None = None
     text: str = "Add Chunk"
 
     def apply(self, document: Document) -> None:
         # Reuses the id on redo so any link recorded against it still resolves.
         self.chunk_id = document.body.add_chunk(
-            self.name, self.pos, radius=self.radius, id=self.chunk_id
+            self.name,
+            self.pos,
+            radius=self.radius,
+            mass=self.mass,
+            pinned=self.pinned,
+            meta=self.meta,
+            id=self.chunk_id,
         )
 
     def revert(self, document: Document) -> None:
@@ -201,13 +236,19 @@ class AddLink:
     b: int
     rest: float | None = None
     type: LinkType = LinkType.NORMAL
+    elasticity: float = 1.0
     render: bool = True
     text: str = "Connect"
     _added: bool = False
 
     def apply(self, document: Document) -> None:
         self._added = document.body.add_link(
-            self.a, self.b, rest=self.rest, type=self.type, render=self.render
+            self.a,
+            self.b,
+            rest=self.rest,
+            type=self.type,
+            elasticity=self.elasticity,
+            render=self.render,
         )
 
     def revert(self, document: Document) -> None:
@@ -294,6 +335,25 @@ class SetControllerField:
 
 
 @dataclass
+class AddController:
+    """Append one controller to the stack.
+
+    Holds the instance itself rather than a recipe, so redo restores the
+    exact object any later :class:`SetControllerField` in the same history
+    still points at through its stack index.
+    """
+
+    controller: object
+    text: str = "Add Controller"
+
+    def apply(self, document: Document) -> None:
+        document.controllers.add(self.controller)
+
+    def revert(self, document: Document) -> None:
+        document.controllers.remove(self.controller)
+
+
+@dataclass
 class RemoveController:
     index: int
     text: str = "Remove Controller"
@@ -344,7 +404,13 @@ _STRUCTURAL = (AddChunk, RemoveChunk, AddLink, RemoveLink, Macro)
 #: Commands after which the controller panel must re-read the stack. Macro is
 #: included because a compound edit may carry controller commands inside it;
 #: a spurious refresh is cheap and a missed one is a stale panel.
-_CONTROLLER = (SetControllerField, RemoveController, ReplaceControllers, Macro)
+_CONTROLLER = (
+    SetControllerField,
+    AddController,
+    RemoveController,
+    ReplaceControllers,
+    Macro,
+)
 
 
 class Document(QObject):
@@ -891,6 +957,136 @@ class Document(QObject):
         else:
             self.do(Macro(commands, text="Creature Tempo"))
         self.status.emit(f"Tempo ×{value:g} on {touched} chunk(s)")
+
+    def creatures(self) -> list[Creature]:
+        """The roster: every connected component, named from its chunks.
+
+        Component order is the renderer's blend-group order (first-seen
+        slot), so row *n* here is the creature wearing group *n*'s surface.
+        """
+        roster: list[Creature] = []
+        for component in self.body.components():
+            name = None
+            for cid in sorted(component):
+                raw = self.body.meta_of(cid).get(CREATURE_META)
+                if raw:
+                    name = raw
+                    break
+            roster.append(Creature(chunks=tuple(sorted(component)), name=name))
+        return roster
+
+    def rename_creature(self, name: str) -> None:
+        """Name every creature the selection touches, as one undo step.
+
+        The name is painted across each component the way colour is, so it
+        survives any one chunk's deletion; an empty name clears it, and the
+        roster falls back to its honest generated label.
+        """
+        if not self.selection:
+            self.status.emit("Select a chunk of the creature to name first")
+            return
+        value = name.strip() or None
+
+        chunks: set[int] = set()
+        for component in self._selected_creatures():
+            chunks |= component
+        commands: list[Command] = [
+            SetMeta(cid, CREATURE_META, value, text="Rename Creature")
+            for cid in sorted(chunks)
+        ]
+        if len(commands) == 1:
+            self.do(commands[0])
+        else:
+            self.do(Macro(commands, text="Rename Creature"))
+        self.status.emit(
+            f"Named {len(chunks)} chunk(s) {value!r}" if value else "Name cleared"
+        )
+
+    def duplicate_creature(self) -> None:
+        """Copy every creature the selection touches — flesh, gait and all.
+
+        The herd gesture. Each copy is whole: chunks with their masses, pins
+        and meta (colour, tempo, name), links with their rests, types and
+        render flags, and the creature's own controllers rebuilt with ids
+        remapped (:func:`mesh_xml.anim.serialize.remap_ids`) and their world
+        points carried sideways (:func:`mesh_xml.anim.place.translate`) — a
+        copy left pointing at its ancestor's ``origin`` would fight it for
+        one soul. Placement is the Add rule one creature up: past the body's
+        +x extent, clear of everything, copies of a multi-selection laid out
+        in a row. One undo step; the copies take the selection, so
+        duplicating again herds.
+        """
+        if not self.selection:
+            self.status.emit("Select a chunk of the creature to duplicate first")
+            return
+        body = self.body
+        everything = [body.chunk(cid) for cid in body.chunk_ids()]
+        frontier = max(c.pos[0] + c.radius for c in everything)
+        next_id = max(body.chunk_ids(), default=-1) + 1
+
+        commands: list[Command] = []
+        copies: list[int] = []
+        taken: set[int] = set()
+        components = self._selected_creatures()
+        for component in components:
+            chunks = {cid: body.chunk(cid) for cid in sorted(component)}
+            spacing = _GROW_SPACING * max(c.radius for c in chunks.values())
+            left = min(c.pos[0] - c.radius for c in chunks.values())
+            right = max(c.pos[0] + c.radius for c in chunks.values())
+            dx = frontier + spacing - left
+            frontier = right + dx
+            offset = np.zeros(body.dim)
+            offset[0] = dx
+
+            mapping: dict[int, int] = {}
+            for cid in chunks:
+                mapping[cid] = next_id
+                next_id += 1
+            for cid, chunk in chunks.items():
+                commands.append(
+                    AddChunk(
+                        chunk.name,
+                        tuple(float(p) + float(o) for p, o in zip(chunk.pos, offset)),
+                        radius=chunk.radius,
+                        mass=1.0 if chunk.pinned else chunk.mass,
+                        pinned=chunk.pinned,
+                        meta=dict(chunk.meta),
+                        chunk_id=mapping[cid],
+                        text="Duplicate Creature",
+                    )
+                )
+            for link in body.links():
+                if link.a in mapping and link.b in mapping:
+                    commands.append(
+                        AddLink(
+                            mapping[link.a],
+                            mapping[link.b],
+                            rest=link.rest,
+                            type=link.type,
+                            elasticity=link.elasticity,
+                            render=link.render,
+                            text="Duplicate Creature",
+                        )
+                    )
+            for index, controller in enumerate(self.controllers.controllers):
+                if index in taken or not (tempo.chunk_refs(controller) & component):
+                    continue
+                taken.add(index)
+                try:
+                    copy = serialize.remap_ids(controller, mapping)
+                except serialize.ControllerFormatError:
+                    # An unregistered controller cannot be rebuilt; the
+                    # original keeps running, the copy goes without.
+                    continue
+                moved = place.translate(copy, offset)
+                if moved:
+                    copy = replace(copy, **moved)
+                commands.append(AddController(copy, text="Duplicate Creature"))
+            copies.extend(mapping.values())
+
+        self.do(Macro(commands, text="Duplicate Creature"))
+        self.set_selection(copies)
+        self.status.emit(f"Duplicated {len(components)} creature(s)")
 
     def export_mesh(self, path, resolution: int = 96) -> Path:
         """Polygonise the surface as drawn and write it beside the document.
