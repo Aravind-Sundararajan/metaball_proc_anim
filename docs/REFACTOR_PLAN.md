@@ -561,6 +561,25 @@ Landed after Phase 5, in one fan-out:
   for callers that own nothing per-tick — the game loop the smoke test
   drives by wall time alone — while the editor keeps its own loop, because
   its draw points ease once per tick, not once per frame.
+* **The scene, and creatures that cross it** (``docs/ROOMS.md`` package 3).
+  ``Scene`` holds rooms and *the* clock — adding a room aliases the scene's
+  clock into it, so "one clock per scene" is identity, not convention, and
+  cross-room time has no second accumulator to skew against. Every room
+  ticks whether looked at or not. ``move_creature`` is the door's mechanism
+  ahead of the door: the save/load journey run in memory — chunks with
+  masses, pins and meta, links with rests, types and render flags,
+  controllers rebuilt through ``serialize.remap_ids`` with world points
+  displaced by ``place.translate`` — so runtime state resets exactly as it
+  resets through a file, which is the plan's "a door is a serialization
+  boundary" executed. Refusal is wholesale: a creature that cannot be
+  carried whole is not carried at all, and nothing has moved when the raise
+  lands. The acceptance both held: the braced, coloured, tempo'd newt
+  crosses out and back field-for-field identical (fresh ids, re-derived
+  runtime), and a hunter that prowled an empty den hungry feeds within
+  thirty simulated seconds of arriving in the meadow — while the boundary
+  test shows a grazer standing at overlapping coordinates one room over
+  never even flinches, because ``ctx.peers`` is the room's stack and the
+  boundary needs no distance check anywhere.
 * **Controllers in the GUI, and grabs that win.** A Controllers panel: one
   group per controller on the stack, an enabled switch, spins for every
   numeric field the v3 registry persists — the widget list *is* the format's
