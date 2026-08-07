@@ -35,6 +35,7 @@ from mesh_xml.core.terrain import Terrain
 from mesh_xml.io import xml_legacy, xml_v2
 from mesh_xml.render import DrawPoints, sdf
 from mesh_xml.render.gl.metaball import MetaballSettings
+from mesh_xml.scene.room import Room
 
 __all__ = [
     "Command",
@@ -430,15 +431,15 @@ class Document(QObject):
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self.body = Body()
-        # The library defaults to no floor, which for an editor means pressing
-        # play drops the rig out of frame and never brings it back. An app is
-        # the right layer to decide there is a world.
-        self.solver_config = SolverConfig(ground_y=0.0)
+        #: The simulation this document edits. A document *is* one room
+        #: wearing undo, signals and a file path (``docs/ROOMS.md`` package
+        #: 2); everything the solver needs lives there, everything only an
+        #: editor needs lives here, and the properties below keep the
+        #: existing vocabulary (``document.body``, ``document.controllers``)
+        #: pointing at the room's own state.
+        self.room = Room(name="document")
         self.metaball = MetaballSettings()
-        self.clock = Clock()
         self.draw = DrawPoints(self.body)
-        self.controllers = ControllerStack(self.body)
         self.selection: set[int] = set()
         self.path: Path | None = None
 
@@ -447,6 +448,38 @@ class Document(QObject):
         self._undo: list[Command] = []
         self._redo: list[Command] = []
         self._rest_pose: dict[int, tuple[float, ...]] = {}
+
+    # ------------------------------------------------------------------
+    # the room's state, in the document's vocabulary
+    # ------------------------------------------------------------------
+
+    @property
+    def body(self) -> Body:
+        return self.room.body
+
+    @body.setter
+    def body(self, body: Body) -> None:
+        self.room.body = body
+
+    @property
+    def controllers(self) -> ControllerStack:
+        return self.room.controllers
+
+    @controllers.setter
+    def controllers(self, controllers: ControllerStack) -> None:
+        self.room.controllers = controllers
+
+    @property
+    def solver_config(self) -> SolverConfig:
+        return self.room.solver_config
+
+    @solver_config.setter
+    def solver_config(self, config: SolverConfig) -> None:
+        self.room.solver_config = config
+
+    @property
+    def clock(self) -> Clock:
+        return self.room.clock
 
     # ------------------------------------------------------------------
     # simulation
@@ -483,15 +516,15 @@ class Document(QObject):
         self.topology_changed.emit()
 
     def tick(self) -> None:
-        """One fixed simulation tick.
+        """One fixed simulation tick, plus the editor's own per-tick work.
 
-        The single place that knows what a tick consists of. Both :meth:`advance`
-        and :meth:`step_once` route through it, so the controllers run on both
-        paths. Two call sites each remembering the recipe is the exact shape this
-        module exists to delete, and the failure mode is quiet: single-stepping
-        would simply stop running them.
+        What a tick *is* lives in :meth:`Room.tick` — the room simulates
+        whether or not an editor is attached. What belongs here is only what
+        a window adds on top: easing the draw points that trail the physics.
+        Both :meth:`advance` and :meth:`step_once` route through this, so
+        the controllers run on both paths.
         """
-        self.controllers.tick(self.body, self.clock.dt, self.solver_config)
+        self.room.tick()
         self.draw.update(self.body)
 
     def step_once(self) -> None:

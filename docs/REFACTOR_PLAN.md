@@ -545,6 +545,22 @@ Landed after Phase 5, in one fan-out:
   copies in a row — one undo step, the copy takes the selection, so
   duplicate-again herds. The money test herds the shipped worm: two waves,
   two anchors, both swim, and the herd round-trips through v3 whole.
+* **The headless room** (``docs/ROOMS.md`` package 2). ``scene/room.py``:
+  a body, its stack, its solver settings and its clock, with no Qt import
+  anywhere — proven by a test that starts a bare interpreter, imports the
+  scene tier, and searches ``sys.modules`` for PySide6, because in-process
+  the claim is unfalsifiable once any earlier test loads a window. What a
+  tick *is* moved down into ``Room.tick``; ``Document`` became exactly what
+  the plan called it — one room wearing undo, signals and a file path —
+  with properties keeping the old vocabulary (``document.body``,
+  ``document.controllers``) pointing at the room's state, so the acceptance
+  was the null result: every editor test passed unchanged. The one opinion
+  a room holds is that there is a ground, inherited from the document
+  comment that used to hold it: a place without a floor drops its
+  population out of frame forever. ``Room.advance`` is the accumulator loop
+  for callers that own nothing per-tick — the game loop the smoke test
+  drives by wall time alone — while the editor keeps its own loop, because
+  its draw points ease once per tick, not once per frame.
 * **Controllers in the GUI, and grabs that win.** A Controllers panel: one
   group per controller on the stack, an enabled switch, spins for every
   numeric field the v3 registry persists — the widget list *is* the format's

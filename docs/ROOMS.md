@@ -1,6 +1,7 @@
 # Rooms: the scene-level plan
 
-**Status:** in progress — package 1 (creature roster) landed; 2–5 open.
+**Status:** in progress — packages 1 (creature roster) and 2 (headless room)
+landed; 3–5 open.
 **Date:** 2026-08-07
 **North star:** Rain World's world model — `Room` as the unit of simulation,
 `AbstractRoom`/`AbstractCreature` as the cheap tier behind it, creatures that
