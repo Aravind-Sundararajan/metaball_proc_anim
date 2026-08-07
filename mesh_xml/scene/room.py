@@ -91,6 +91,12 @@ class Room:
         self.controllers = ControllerStack(self.body)
         self.solver_config = SolverConfig(ground_y=0.0)
         self.clock = Clock()
+        #: The room's exits (:class:`~mesh_xml.scene.door.Door`), authored
+        #: like terrain is authored: data the room owns and the tick
+        #: republishes to the stack, so a brain's ``exit`` goal can find
+        #: where its named door stands this tick, however the list was
+        #: edited since the last one.
+        self.doors: list = []
         self._abstracted = False
         self._parked: list[_ParkedCreature] = []
 
@@ -101,6 +107,7 @@ class Room:
         same sentence :meth:`Document.tick` used to carry, moved down to
         where a game loop can reach it without a window.
         """
+        self.controllers.doors = {door.name: door.at for door in self.doors}
         self.controllers.tick(self.body, self.clock.dt, self.solver_config)
 
     def advance(self, elapsed: float) -> float:

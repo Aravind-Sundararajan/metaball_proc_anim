@@ -1,7 +1,8 @@
 # Rooms: the scene-level plan
 
 **Status:** in progress — packages 1 (creature roster), 2 (headless room),
-3 (scene + transfer) and 4 (abstraction) landed; 5 open.
+3 (scene + transfer), 4 (abstraction) and 5 (doors) landed; 6 (the editor
+scene binding) open.
 **Date:** 2026-08-07
 **North star:** Rain World's world model — `Room` as the unit of simulation,
 `AbstractRoom`/`AbstractCreature` as the cheap tier behind it, creatures that
@@ -75,14 +76,32 @@ but the point of rooms.
    abstracted room in about the time it would have taken realized (±think
    quantization), and a scene of twenty abstracted rooms ticks for less than
    one realized room's cost.
-5. **Doors and the editor.** Doors as named world points with a destination
-   (a v3 `<door>` beside `<terrain>`, additive); a brain-legible goal ("leave
-   via X") that walks the anchor there and hands it to the scene; a rooms
-   dock, per-room world settings, and Play that ticks the whole scene while
-   the viewport draws the active room.
+5. **Doors.** Doors as named world points with a destination (a v3 `<door>`
+   beside `<terrain>`, additive, `scene/door.py`); a brain-legible goal
+   ("leave via X") that walks the anchor there through `ctx.doors`; and the
+   scene's crossing — arrival inside the door's radius, `move_creature`
+   with the paired door's offset, the goal spent on arrival. A door whose
+   promise cannot be kept (unknown room or door, an abstracted side) is a
+   closed door: the creature waits in the doorway, and nothing raises
+   mid-tick.
+6. **The editor scene binding.** The rooms dock, per-room world settings,
+   and Play that ticks the whole scene while the viewport draws the active
+   room. Split from package 5 when the doors landed, because it is a
+   `Document`-identity rework, not a feature: a document is one room, so
+   several rooms means either several documents behind one window or one
+   document re-pointed live, and every panel holds a document reference
+   today. The constraints a design must answer before code: where the undo
+   stack lives when edits span rooms (per-room histories, or one history
+   of room-tagged commands); how panels follow a room switch (rebind,
+   rebuild, or a document that re-points its `room` and re-emits
+   everything); draw points and rest poses per room, not per window; and
+   what Play drives (the scene) versus what the transport shows (the
+   active room's clock, which is the scene's). `Document.open/save` also
+   grow doors here — the format is ready (`Rig.doors`), the editor simply
+   does not read it yet.
 
 Packages 1 and 2 are file-disjoint and can land in either order; 3 needs 2;
-4 and 5 need 3.
+4 and 5 need 3; 6 needs the rest.
 
 ## 4. Decisions taken in advance
 

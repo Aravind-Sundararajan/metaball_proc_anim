@@ -600,6 +600,27 @@ Landed after Phase 5, in one fan-out:
   Measured, same population both ways (twenty 6-chunk grazers): twenty
   abstracted rooms tick at 521 us against one realized room's 2,871 us —
   5.5x under the "less than one realized room" acceptance line.
+* **Doors, and the creatures that use them** (``docs/ROOMS.md`` package 5).
+  A ``Door`` is a named place paired with a promise — a world point, a
+  destination room and the far door's name — inert data the room owns and
+  republishes to its stack every tick, persisted as an additive ``<doors>``
+  section beside ``<terrain>`` with no version bump, so every older file
+  still reads. The split of labour follows the tier's one law: brains walk,
+  the scene crosses. A brain's ``exit`` field is an authored goal; when it
+  names a door in ``ctx.doors`` it overwrites the destination after every
+  think — leaving is louder than living, or a grazer that dawdled to flee
+  would never cross a dangerous room. The scene's ``_cross`` pass then
+  carries any creature standing inside its door's radius through
+  ``move_creature`` with the paired door's offset, home and origin
+  travelling too, and spends the goal on arrival: one door is one journey,
+  chained travel is a brain re-deciding. A promise that cannot be kept — an
+  unknown room, a missing far door, an abstracted side — is a closed door
+  the creature waits at, and nothing raises mid-tick. The integration test
+  is the whole story: a grazer with ``exit="east"`` walks out of the den,
+  steps out of the meadow's west door with its stride intact, and goes back
+  to wandering. What did not land here is the editor's half — rooms dock,
+  Play-the-scene — split into package 6 as a ``Document``-identity rework
+  with its design constraints named in the plan.
 * **Controllers in the GUI, and grabs that win.** A Controllers panel: one
   group per controller on the stack, an enabled switch, spins for every
   numeric field the v3 registry persists — the widget list *is* the format's

@@ -18,7 +18,7 @@ from mesh_xml.anim.controllers.drive import WaveAnchor
 from mesh_xml.anim.controllers.limb import FootholdPicker, LimbIK, LimbMode
 from mesh_xml.anim.controllers.spine import SpineFollow
 from mesh_xml.core import Body, LinkType
-from mesh_xml.scene import Room, Scene, move_creature
+from mesh_xml.scene import Door, Room, Scene, move_creature
 
 TICK = 1.0 / 40.0
 
@@ -227,6 +227,99 @@ class TestTransfer:
         assert len(remaining) == 1 and remaining[0].anchor == stays[0]
         arrived = meadow.controllers.controllers
         assert len(arrived) == 1 and arrived[0].origin[0] == pytest.approx(5.0)
+
+    def test_a_grazer_walks_out_of_the_den_into_the_meadow(self):
+        """The whole door story: goal, walk, crossing, and a spent exit.
+
+        The brain owns the walk (``exit`` steering through ``ctx.doors``),
+        the scene owns the crossing, and the paired door's offset keeps the
+        stride continuous — the creature steps out of the far door, home
+        and all, and the goal clears because one door is one journey.
+        """
+        scene = Scene()
+        den = scene.add_room(Room(name="den"))
+        meadow = scene.add_room(Room(name="meadow"))
+        ids = chain(den, "grazer", (0.0, 0.5, 0.0), (0.6, 0.0, 0.0))
+        den.controllers.add(Grazer(ids[0], home=(0.0, 0.5, 0.0), exit="east"))
+        den.doors.append(
+            Door("east", (5.0, 0.5, 0.0), to_room="meadow", to_door="west")
+        )
+        meadow.doors.append(
+            Door("west", (-5.0, 0.5, 0.0), to_room="den", to_door="east")
+        )
+
+        crossed_at = None
+        for tick in range(1200):
+            scene.tick()
+            if meadow.body.chunk_ids():
+                crossed_at = tick
+                break
+
+        assert crossed_at is not None, "the grazer never reached its door"
+        assert not den.body.chunk_ids() and not den.controllers.controllers
+        assert len(meadow.body.chunk_ids()) == 3
+
+        arrived = next(
+            c for c in meadow.controllers.controllers if isinstance(c, Grazer)
+        )
+        assert arrived.exit == "", "the goal is spent by crossing"
+        assert arrived.home == pytest.approx((-10.0, 0.5, 0.0)), (
+            "home crossed with the creature: authored point plus door offset"
+        )
+        anchor = np.asarray(meadow.body.chunk(arrived.anchor).pos)
+        west = np.asarray(meadow.doors[0].at)
+        assert float(np.linalg.norm(anchor - west)) <= meadow.doors[0].radius + 0.5
+
+    def test_a_door_to_nowhere_is_waited_at(self):
+        scene = Scene()
+        den = scene.add_room(Room(name="den"))
+        scene.add_room(Room(name="meadow"))
+        ids = chain(den, "grazer", (0.0, 0.5, 0.0), (0.6, 0.0, 0.0))
+        brain = den.controllers.add(
+            Grazer(ids[0], home=(0.0, 0.5, 0.0), exit="east")
+        )
+        den.doors.append(
+            Door("east", (5.0, 0.5, 0.0), to_room="attic", to_door="hatch")
+        )
+
+        for _ in range(600):
+            scene.tick()
+
+        assert sorted(den.body.chunk_ids()) == sorted(ids), "a closed door holds"
+        assert brain.exit == "east", "the goal is not spent on a door to nowhere"
+        anchor = np.asarray(den.body.chunk(ids[0]).pos)
+        door = np.asarray(den.doors[0].at)
+        assert float(np.linalg.norm(anchor - door)) <= den.doors[0].radius, (
+            "the creature waits in the doorway"
+        )
+
+    def test_a_parked_room_holds_its_travellers_until_it_realizes(self):
+        scene = Scene()
+        den = scene.add_room(Room(name="den"))
+        meadow = scene.add_room(Room(name="meadow"))
+        ids = chain(den, "grazer", (0.0, 0.5, 0.0), (0.6, 0.0, 0.0))
+        den.controllers.add(Grazer(ids[0], home=(0.0, 0.5, 0.0), exit="east"))
+        den.doors.append(
+            Door("east", (5.0, 0.5, 0.0), to_room="meadow", to_door="west")
+        )
+        meadow.doors.append(
+            Door("west", (-5.0, 0.5, 0.0), to_room="den", to_door="east")
+        )
+        den.abstract()
+
+        for _ in range(600):
+            scene.tick()
+        assert den.body.chunk_ids(), "an abstract room's creatures stay put"
+        assert not meadow.body.chunk_ids()
+
+        den.realize()
+        crossed = False
+        for _ in range(200):
+            scene.tick()
+            if meadow.body.chunk_ids():
+                crossed = True
+                break
+        assert crossed, "realization opens the door"
 
     def test_refusals_leave_both_rooms_untouched(self):
         den = Room(name="den")

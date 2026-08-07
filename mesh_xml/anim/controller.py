@@ -33,7 +33,8 @@ intermittent instability that cannot be replayed cannot be debugged.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 import numpy as np
@@ -78,6 +79,16 @@ class ControlContext:
     write only what you own. A controller that mutates a peer mid-tick has
     made tick order load-bearing, which is the bug the force accumulator
     exists to prevent."""
+
+    doors: Mapping[str, tuple[float, ...]] = field(default_factory=dict)
+    """The room's exits — door name to world point — as the stack's owner
+    declares them each tick.
+
+    Perception, not command, exactly like ``peers``: a brain whose goal is
+    to leave reads where its named door stands and walks its own anchor
+    there, and the crossing itself stays the scene's, since only the scene
+    can see both sides. Empty means a room with no way out, which is every
+    room from before doors existed."""
 
     def slot(self, chunk_id: int) -> int:
         return self.body.slot(chunk_id)
@@ -201,6 +212,12 @@ class ControllerStack:
         #: Plain mutable state rather than a tick argument because a grab
         #: outlives any one tick and belongs to whoever owns the stack.
         self.held: set[int] = set()
+        #: The room's exits by name; see :attr:`ControlContext.doors`.
+        #: Plain mutable state on ``held``'s terms: a doorway outlives any
+        #: one tick and belongs to whoever owns the stack — the scene
+        #: declares it from the room's authored doors, a test writes it
+        #: directly.
+        self.doors: dict[str, tuple[float, ...]] = {}
         self._forces = np.zeros((body.n_chunks, body.dim), dtype=np.float32)
 
     @property
@@ -259,6 +276,7 @@ class ControllerStack:
             config=config,
             held=frozenset(self.held),
             peers=tuple(self.controllers),
+            doors=dict(self.doors),
         )
         for controller in self.controllers:
             if getattr(controller, "enabled", True):

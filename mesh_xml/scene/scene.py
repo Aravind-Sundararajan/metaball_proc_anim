@@ -17,8 +17,11 @@ per-body document; doors and their persistence are package 5's contract.
 
 from __future__ import annotations
 
+import numpy as np
+
 from mesh_xml.anim.clock import Clock
 from mesh_xml.scene.room import Room
+from mesh_xml.scene.transfer import move_creature
 
 __all__ = ["Scene"]
 
@@ -70,9 +73,74 @@ class Scene:
         return active
 
     def tick(self) -> None:
-        """One fixed step everywhere. Every room ticks, looked at or not."""
+        """One fixed step everywhere, then the crossings the step earned.
+
+        Every room ticks, looked at or not; afterwards the scene carries
+        every creature that reached its named exit. Rooms first, doors
+        second, so a crossing sees the world the tick actually produced.
+        """
         for room in self.rooms:
             room.tick()
+        self._cross()
+
+    def _cross(self) -> None:
+        """Carry every creature standing in a door it asked to leave by.
+
+        The brain's half is walking the anchor to the door (``exit`` on the
+        brain, the door's point through ``ctx.doors``); this is the scene's
+        half — the only place a creature changes rooms. Arrival is the
+        anchor inside the door's radius; the crossing is
+        :func:`move_creature` with the paired door's offset, so a creature
+        steps out of the far door having kept its stride. The goal is spent
+        by crossing: ``exit`` clears on arrival, because one door is one
+        journey — chained travel is a brain re-deciding, not a scene
+        assuming.
+
+        Doors keep their promises only as far as they can: an address to a
+        room or door that does not exist, an abstracted room on either
+        side, is a closed door — the creature waits in the doorway, and
+        nothing raises mid-tick. Abstract-space migration is the transfer
+        module's named future work, not a silent behaviour here.
+        """
+        crossings: list[tuple[Room, Room, int, np.ndarray]] = []
+        for room in self.rooms:
+            if room.abstracted or not room.doors:
+                continue
+            doors = {door.name: door for door in room.doors}
+            for brain in room.controllers.controllers:
+                wanted = getattr(brain, "exit", "")
+                door = doors.get(wanted)
+                anchor = getattr(brain, "anchor", None)
+                if door is None or anchor is None or not room.body.has_chunk(anchor):
+                    continue
+                pos = np.asarray(room.body.chunk(anchor).pos, dtype=np.float64)
+                at = np.asarray(door.at, dtype=np.float64)[: pos.size]
+                if float(np.linalg.norm(pos - at)) > door.radius:
+                    continue
+                try:
+                    target = self.room(door.to_room)
+                except KeyError:
+                    continue
+                if target is room or target.abstracted:
+                    continue
+                arrival = next(
+                    (far for far in target.doors if far.name == door.to_door), None
+                )
+                if arrival is None:
+                    continue
+                offset = np.asarray(arrival.at, dtype=np.float64)[: pos.size] - at
+                crossings.append((room, target, int(anchor), offset))
+
+        for room, target, anchor, offset in crossings:
+            if not room.body.has_chunk(anchor):
+                continue  # a second brain of a creature that already crossed
+            mapping = move_creature(room, target, anchor, offset=tuple(offset))
+            arrived = set(mapping.values())
+            for controller in target.controllers.controllers:
+                if getattr(controller, "anchor", None) in arrived and getattr(
+                    controller, "exit", ""
+                ):
+                    controller.exit = ""
 
     def advance(self, elapsed: float) -> float:
         """Bank wall time and spend it on whole ticks across every room."""

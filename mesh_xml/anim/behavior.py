@@ -220,6 +220,17 @@ class _Brain:
     travelling. A held anchor is left entirely alone: the hand outranks the
     brain through the same ``ctx.held`` that already outranks
     :class:`~mesh_xml.anim.controllers.drive.WaveAnchor`.
+
+    ``exit`` is the one authored goal that outranks the think: name a door
+    and, every tick, the brain overwrites its own destination with that
+    door's point out of ``ctx.doors``. Leaving is louder than living —
+    louder than wander, flee, lurk, everything — deliberately: the author
+    said leave, and a grazer that dawdled to flee would never cross a
+    dangerous room. A name no door in this room answers to is inert and the
+    brain lives normally, because a goal is not an error; empty means live
+    here. The hand still outranks even leaving, through ``_move``'s
+    ``ctx.held`` check, and the crossing itself belongs to the scene — the
+    brain only ever walks to the doorway.
     """
 
     anchor: int
@@ -231,6 +242,13 @@ class _Brain:
     wander_range: float = 2.5
     think_period: float = 0.25
     enabled: bool = True
+
+    #: An authored goal: the name of the door to leave through, resolved
+    #: against ``ctx.doors`` each tick. Empty means live here. A constructor
+    #: field, so the v3 registry persists the intention to leave the way it
+    #: persists ``home`` — where the creature was *going* is authored; how
+    #: far it got is not.
+    exit: str = ""
 
     #: Tempo dimensions (:mod:`mesh_xml.anim.tempo`): travel and sway are
     #: locomotion and scale; ``think_period`` is cognition and does not — a
@@ -252,6 +270,16 @@ class _Brain:
         if ctx.time >= self._next_think:
             self._next_think = ctx.time + self.think_period
             self._think(ctx)
+        if self.exit:
+            door = ctx.doors.get(self.exit)
+            if door is not None:
+                # Leaving is louder than living: whatever the think just
+                # wanted — a wander point, a flight line — the authored goal
+                # overwrites it. An unknown name fell through above, and the
+                # brain lives normally: a goal is not an error.
+                self._destination = np.asarray(door, dtype=np.float64)[
+                    : ctx.body.dim
+                ]
         self._move(ctx)
 
     def _think(self, ctx: ControlContext) -> None:

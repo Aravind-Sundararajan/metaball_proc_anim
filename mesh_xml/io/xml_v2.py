@@ -101,11 +101,26 @@ parameters and unlike chunk positions: :class:`~mesh_xml.core.terrain.Terrain`
 stores ``float64`` (it is the solver's collision oracle, not just the
 renderer's), so :func:`_fmt`'s float32 shortening would quietly move the world
 by an ulp on every save.
+
+``<doors>``: additive in v3, absent means none
+----------------------------------------------
+Where the room leads (``docs/ROOMS.md`` package 5) is a ``<doors>`` section
+beside ``<terrain>``, on exactly its terms: one ``<door>`` per exit — a name,
+a world point, the destination room and door by name, an arrival radius —
+written only when there is at least one door, and absent meaning none, which
+is the truth about every document written before doors existed. No version
+bump. Door records are order-independent like chunks and links: unlike
+controllers and terrain primitives, nothing about a doorway depends on the
+doorway before it. Floats are full ``float64`` precision (``repr``, not
+:func:`_fmt`) for the terrain section's reason — the point and radius are the
+scene's arrival test, and a float32 shortening would nudge the doorway on
+every save.
 """
 
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -115,6 +130,7 @@ from mesh_xml.anim.controller import Controller, ControllerStack
 from mesh_xml.anim.serialize import decode_controller, encode_controller
 from mesh_xml.core.body import Body, LinkType
 from mesh_xml.core.terrain import Terrain
+from mesh_xml.scene.door import Door
 
 __all__ = [
     "FORMAT_VERSION",
@@ -151,12 +167,14 @@ class Rig:
     has no use for controllers is not made to know they exist. This is the
     richer record, mirroring :class:`~mesh_xml.io.xml_legacy.LegacyImport`.
     ``terrain`` is ``None`` for every document without a ``<terrain>`` section,
-    which is all of them written before it existed.
+    which is all of them written before it existed; ``doors`` is empty on the
+    same terms for every document without a ``<doors>`` section.
     """
 
     body: Body
     controllers: ControllerStack
     terrain: Terrain | None = None
+    doors: tuple[Door, ...] = ()
 
 
 def save(
@@ -164,8 +182,9 @@ def save(
     path: str | Path,
     controllers: ControllerStack | None = None,
     terrain: Terrain | None = None,
+    doors: Sequence[Door] = (),
 ) -> None:
-    """Write ``body``, any gait driving it, and any world it stands in.
+    """Write ``body``, any gait driving it, any world it stands in, its doors.
 
     Every field :func:`read` needs is written explicitly; nothing is inferred from
     element nesting, and nothing but the controller and terrain-primitive order
@@ -246,6 +265,25 @@ def save(
                     "ra": repr(float(cone[3])),
                     "b": " ".join(repr(float(v)) for v in cone[4:7]),
                     "rb": repr(float(cone[7])),
+                },
+            )
+
+    # Written only when there is something to say, so a doorless document has
+    # no section and keeps meaning what every older document meant. Floats at
+    # full precision on the terrain section's terms: the point and radius are
+    # the scene's arrival test, not a rendering hint.
+    if doors:
+        doors_el = ET.SubElement(root, "doors")
+        for door in doors:
+            ET.SubElement(
+                doors_el,
+                "door",
+                {
+                    "name": door.name,
+                    "at": " ".join(repr(float(v)) for v in door.at),
+                    "to_room": door.to_room,
+                    "to_door": door.to_door,
+                    "radius": repr(float(door.radius)),
                 },
             )
 
@@ -353,6 +391,7 @@ def read(path: str | Path) -> Rig:
         body=body,
         controllers=_read_controllers(root, body),
         terrain=_read_terrain(root),
+        doors=_read_doors(root),
     )
 
 
@@ -423,6 +462,40 @@ def _read_terrain(root: ET.Element) -> Terrain | None:
     return terrain
 
 
+def _read_doors(root: ET.Element) -> tuple[Door, ...]:
+    """Rebuild the room's exits. Absent means none, like ``<terrain>``.
+
+    Records rebuild through :class:`~mesh_xml.scene.door.Door` itself, so a
+    hand-edited empty name or negative radius is refused here, by the same
+    validation authoring gets, rather than becoming a doorway the scene can
+    never route. Order is preserved because everything else here preserves
+    it, but nothing may depend on it: doors address each other by name.
+    """
+    element = root.find("doors")
+    if element is None:
+        return ()
+
+    doors: list[Door] = []
+    for child in element:
+        if child.tag != "door":
+            raise SchemaError(f"unexpected <{child.tag}> inside <doors>")
+        try:
+            doors.append(
+                Door(
+                    name=_required_str(child, "name"),
+                    at=tuple(_float_list(child, "at")),
+                    to_room=_required_str(child, "to_room"),
+                    to_door=_required_str(child, "to_door"),
+                    radius=_float_attr(child, "radius", default=0.9),
+                )
+            )
+        except SchemaError:
+            raise
+        except ValueError as exc:
+            raise SchemaError(f"door {child.get('name', '')!r}: {exc}") from None
+    return tuple(doors)
+
+
 def _fmt(value: float) -> str:
     """Shortest decimal that reloads to the same ``float32`` the body stores."""
     return str(np.float32(value))
@@ -465,6 +538,17 @@ def _required_float(el: ET.Element, name: str) -> float:
     if value is None:
         raise SchemaError(f"<{el.tag}> is missing required attribute {name!r}")
     return value
+
+
+def _required_str(el: ET.Element, name: str) -> str:
+    """A string attribute that must be present. Empty is allowed through:
+    whether ``""`` is a legal value is the record's own ruling — a chunk name
+    may be empty, a door name may not — and the record is where that lives.
+    """
+    raw = el.get(name)
+    if raw is None:
+        raise SchemaError(f"<{el.tag}> is missing required attribute {name!r}")
+    return raw
 
 
 def _float_list(el: ET.Element, name: str) -> list[float]:
