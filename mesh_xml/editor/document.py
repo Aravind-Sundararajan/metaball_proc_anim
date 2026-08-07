@@ -27,7 +27,7 @@ from typing import Protocol
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from mesh_xml.anim import Clock, ControllerStack, autorig
+from mesh_xml.anim import Clock, ControllerStack, autorig, tempo
 from mesh_xml.anim.controllers.drive import WaveAnchor
 from mesh_xml.core import Body, LinkType
 from mesh_xml.core.solver import SolverConfig
@@ -784,14 +784,8 @@ class Document(QObject):
         value = " ".join(f"{min(max(float(v), 0.0), 1.0):.4f}" for v in rgb)
 
         chunks: set[int] = set()
-        for selected in self.selection:
-            frontier = [selected]
-            while frontier:
-                current = frontier.pop()
-                if current in chunks:
-                    continue
-                chunks.add(current)
-                frontier.extend(self.body.neighbors(current))
+        for component in self._selected_creatures():
+            chunks |= component
 
         commands: list[Command] = [
             SetMeta(cid, sdf.COLOUR_META, value) for cid in sorted(chunks)
@@ -801,6 +795,102 @@ class Document(QObject):
         else:
             self.do(Macro(commands, text="Creature Colour"))
         self.status.emit(f"Coloured {len(chunks)} chunk(s)")
+
+    def _selected_creatures(self) -> list[set[int]]:
+        """The connected component of each selected chunk, deduplicated.
+
+        A creature has no object of its own — per-creature edits (colour,
+        tempo) resolve the selection to whole components and act on those.
+        Sorted seeds keep the component order stable for command building.
+        """
+        components: list[set[int]] = []
+        seen: set[int] = set()
+        for selected in sorted(self.selection):
+            if selected in seen:
+                continue
+            component: set[int] = set()
+            frontier = [selected]
+            while frontier:
+                current = frontier.pop()
+                if current in component:
+                    continue
+                component.add(current)
+                frontier.extend(self.body.neighbors(current))
+            seen |= component
+            components.append(component)
+        return components
+
+    def _tempo_of(self, chunks: set[int]) -> float:
+        """The authored tempo riding a creature's chunks, 1.0 when unset.
+
+        Read from the first chunk carrying a parseable value rather than the
+        selection itself, because a chunk grown onto the creature after the
+        tempo was set inherits no meta. Garbage falls back rather than
+        breaking the edit, the same stance the colour reader takes.
+        """
+        for cid in sorted(chunks):
+            raw = self.body.meta_of(cid).get(tempo.TEMPO_META)
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except ValueError:
+                continue
+            if np.isfinite(value) and value > 0.0:
+                return value
+        return 1.0
+
+    def creature_tempo(self) -> float:
+        """The tempo of the first selected creature — what the panel shows."""
+        creatures = self._selected_creatures()
+        return self._tempo_of(creatures[0]) if creatures else 1.0
+
+    def set_creature_tempo(self, value: float) -> None:
+        """Retime every creature the selection touches, as one undo step.
+
+        Two writes travel together: the authored value onto every chunk of
+        each component (meta, like colour — so it reopens with the file), and
+        the *ratio* from each creature's current tempo onto every tempo field
+        of the controllers that reference its chunks
+        (:func:`mesh_xml.anim.tempo.retime`). The ratio is per creature, so
+        selecting a herd with mixed tempos lands them all at ``value`` rather
+        than smearing one creature's ratio across the rest.
+        """
+        if not self.selection:
+            self.status.emit("Select a chunk of the creature to retime first")
+            return
+        value = float(value)
+        if not np.isfinite(value) or value <= 0.0:
+            self.status.emit("Tempo must be a positive number")
+            return
+
+        commands: list[Command] = []
+        touched = 0
+        for component in self._selected_creatures():
+            current = self._tempo_of(component)
+            factor = value / current
+            if abs(factor - 1.0) < 1e-9:
+                continue
+            touched += len(component)
+            commands += [
+                SetMeta(cid, tempo.TEMPO_META, repr(value), text="Creature Tempo")
+                for cid in sorted(component)
+            ]
+            for index, controller in enumerate(self.controllers.controllers):
+                if not (tempo.chunk_refs(controller) & component):
+                    continue
+                changes = tempo.retime(controller, factor)
+                commands += [
+                    SetControllerField(index, field, new, text="Creature Tempo")
+                    for field, new in sorted(changes.items())
+                ]
+        if not commands:
+            return
+        if len(commands) == 1:
+            self.do(commands[0])
+        else:
+            self.do(Macro(commands, text="Creature Tempo"))
+        self.status.emit(f"Tempo ×{value:g} on {touched} chunk(s)")
 
     def export_mesh(self, path, resolution: int = 96) -> Path:
         """Polygonise the surface as drawn and write it beside the document.

@@ -862,3 +862,32 @@ class TestControllerPanel:
 
         document.undo()
         assert not document.controllers.controllers
+
+    def test_the_tempo_spin_retimes_the_selected_creature(self, document):
+        document.open("examples/chubby_worm.xml")
+        panel = panels.ControllerPanel(document)
+        wave = document.controllers.controllers[0]
+        rate = wave.rate
+
+        assert not panel._tempo.isEnabled(), "no selection, nothing to retime"
+        document.set_selection([document.body.chunk_ids()[0]])
+        assert panel._tempo.isEnabled()
+
+        panel._tempo.setValue(2.0)
+        assert wave.rate == pytest.approx(rate * 2.0)
+        assert undo_depth(document) == 1
+        assert document.undo_text == "Creature Tempo"
+
+        document.undo()
+        assert wave.rate == pytest.approx(rate)
+        assert panel._tempo.value() == pytest.approx(1.0)
+
+    def test_a_tempo_pushed_by_the_document_adds_nothing(self, document):
+        document.open("examples/chubby_worm.xml")
+        document.set_selection([document.body.chunk_ids()[0]])
+        panel = panels.ControllerPanel(document)
+
+        document.set_creature_tempo(2.0)
+
+        assert undo_depth(document) == 1
+        assert panel._tempo.value() == pytest.approx(2.0)

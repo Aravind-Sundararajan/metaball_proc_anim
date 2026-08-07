@@ -197,6 +197,11 @@ class _Brain:
     think_period: float = 0.25
     enabled: bool = True
 
+    #: Tempo dimensions (:mod:`mesh_xml.anim.tempo`): travel and sway are
+    #: locomotion and scale; ``think_period`` is cognition and does not — a
+    #: fast creature is not thereby a hasty one.
+    TEMPO = {"speed": 1, "swing_rate": 1}
+
     _destination: np.ndarray | None = field(default=None, init=False, repr=False)
     _next_think: float = field(default=0.0, init=False, repr=False)
 

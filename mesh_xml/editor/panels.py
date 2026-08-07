@@ -1006,6 +1006,7 @@ class ControllerPanel(_Panel):
 
         self._autorig = QPushButton("Fit autorig")
         self._rig_legs = QPushButton("Rig legs")
+        self._tempo = _spin(0.05, 20.0, 0.25, decimals=2, suffix="×")
         self._empty = _note(
             "No controllers. Fit autorig to give this rig a spine, an idle "
             "breath, and a wave driver on its anchor — the same recipe the "
@@ -1033,8 +1034,15 @@ class ControllerPanel(_Panel):
         fitters_layout.addWidget(self._autorig)
         fitters_layout.addWidget(self._rig_legs)
 
+        tempo_row = QWidget()
+        tempo_layout = QHBoxLayout(tempo_row)
+        tempo_layout.setContentsMargins(0, 0, 0, 0)
+        tempo_layout.addWidget(QLabel("Tempo"))
+        tempo_layout.addWidget(self._tempo, 1)
+
         layout = QVBoxLayout(self)
         layout.addWidget(fitters)
+        layout.addWidget(tempo_row)
         layout.addWidget(self._empty)
         layout.addWidget(scroll, 1)
 
@@ -1050,9 +1058,21 @@ class ControllerPanel(_Panel):
             "pressing on the feet, a hip truss, and no pins. One undo step. "
             "The creature walks the way its spine points."
         )
+        self._tempo.setToolTip(
+            "The selected creature's gait clock. Rates and speeds multiply "
+            "by this, periods and durations divide, so ×2 is the same "
+            "strides twice as often. Applies to every creature the selection "
+            "touches, one undo step; saved with the file."
+        )
         self._autorig.clicked.connect(self._on_autorig)
         self._rig_legs.clicked.connect(self._on_rig_legs)
-        self._follow(document.controllers_changed, document.body_replaced)
+        self._tempo.valueChanged.connect(self._on_tempo_changed)
+        self._follow(
+            document.controllers_changed,
+            document.body_replaced,
+            document.selection_changed,
+            document.topology_changed,
+        )
 
         self.refresh()
 
@@ -1063,6 +1083,12 @@ class ControllerPanel(_Panel):
     @_user_edit
     def _on_rig_legs(self) -> None:
         self._document.rig_legs()
+
+    @_user_edit
+    def _on_tempo_changed(self, value: float) -> None:
+        if abs(float(value) - self._document.creature_tempo()) < 1e-9:
+            return
+        self._document.set_creature_tempo(float(value))
 
     def _submit_field(self, index: int, field: str, value: object) -> None:
         if self.syncing:
@@ -1091,6 +1117,9 @@ class ControllerPanel(_Panel):
         already exist, and only a change in the stack's composition — remove,
         replace, open — rebuilds them.
         """
+        self._tempo.setEnabled(bool(self._document.selection))
+        self._tempo.setValue(self._document.creature_tempo())
+
         controllers = self._document.controllers.controllers
         self._empty.setVisible(not controllers)
         if [type(c) for c in controllers] != [t for t, _, _ in self._groups]:

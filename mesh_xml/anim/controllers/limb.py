@@ -452,6 +452,14 @@ class FootholdPicker:
     mode: LimbMode = field(init=False, default=LimbMode.DANGLING)
     foothold: np.ndarray | None = field(init=False, default=None)
 
+    #: Tempo dimensions (:mod:`mesh_xml.anim.tempo`). Durations divide and the
+    #: drive velocity multiplies, so a faster walk is the same strides more
+    #: often: the spatial trigger (``step_threshold``) never moves, and the
+    #: shrunken ``lead_time`` times the grown velocities predicts the same
+    #: distance ahead. ``phase`` and ``duty`` are fractions of the period and
+    #: are dimensionless.
+    TEMPO = {"step_duration": -1, "lead_time": -1, "period": -1, "drive": 1}
+
     def __post_init__(self) -> None:
         if self.step_duration <= 0.0:
             raise ValueError(

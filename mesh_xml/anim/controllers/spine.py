@@ -118,6 +118,10 @@ class SpineFollow:
     max_force: float | None = 200.0
     enabled: bool = True
 
+    #: Tempo dimensions (:mod:`mesh_xml.anim.tempo`): a faster creature turns
+    #: its heading faster; the gains are muscle, not clock, and stay authored.
+    TEMPO = {"heading_speed": 1}
+
     @property
     def min_joint_degrees(self) -> float:
         """The tightest interior angle the joints are allowed to settle at."""
@@ -244,6 +248,10 @@ class Breathe:
     axis: tuple[float, ...] | None = None
     enabled: bool = True
     _phase: np.ndarray | None = field(default=None, init=False, repr=False)
+
+    #: Tempo dimensions (:mod:`mesh_xml.anim.tempo`): breath keeps time with
+    #: the gait; its depth (``amplitude``) is a force and stays.
+    TEMPO = {"frequency": 1}
 
     def update(self, ctx: ControlContext) -> None:
         if self._phase is None or self._phase.size != len(self.chunks):

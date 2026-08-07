@@ -489,6 +489,25 @@ Landed after Phase 5, in one fan-out:
   object list. ``examples/hunt.xml`` is the proof: a predator and prey saved
   as one ordinary v3 document, and the faster hunter feeds within thirty
   simulated seconds from any seeded start (the integration test's claim).
+* **Creature tempo: one clock for the whole gait.** A creature's pace was
+  smeared across its stack — trot ``period``, ``step_duration``, ``lead_time``
+  and ``drive`` on every picker, the brain's travel ``speed`` above them — so
+  speeding one up by hand meant five coherent edits or an incoherent creature.
+  Each controller now declares its tempo-dimensioned fields in a ``TEMPO``
+  attribute beside the fields themselves (rates and speeds multiply by the
+  factor, periods and durations divide; ``anim/tempo.py`` intersects that with
+  the registry's persisted list, so a knob the file cannot carry can never be
+  silently rescaled, and recurses into the picker nested in a limb).
+  ``Document.set_creature_tempo`` lands the rescale and the authored value —
+  chunk meta, the colour mechanism — as one undo step, with the ratio taken
+  per creature so a mixed-tempo herd lands together. Shape survives speed by
+  construction: spatial triggers never move, and the shrunken lead times
+  times the grown velocities predict the same distance ahead. Cognition
+  (``think_period``) and muscle (strengths, dampings) deliberately keep their
+  values — a fast creature is neither hasty nor propped up, and a gait pushed
+  past its own muscles fails honestly in the solver. The Controllers panel
+  carries the spin; the money test opens the shipped worm at tempo 2 and it
+  sweeps the same anchor figure in half the ticks — a clock, not a new gait.
 * **Controllers in the GUI, and grabs that win.** A Controllers panel: one
   group per controller on the stack, an enabled switch, spins for every
   numeric field the v3 registry persists — the widget list *is* the format's

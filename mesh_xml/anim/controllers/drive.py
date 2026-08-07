@@ -51,6 +51,10 @@ class WaveAnchor:
     rate: float = 0.6
     enabled: bool = True
 
+    #: Tempo dimensions (:mod:`mesh_xml.anim.tempo`): the figure runs faster,
+    #: its size (``amplitude``) is shape and stays.
+    TEMPO = {"rate": 1}
+
     def swing(self, time: float) -> np.ndarray:
         """The wave's offset from ``origin`` at ``time``, sized to ``origin``.
 
