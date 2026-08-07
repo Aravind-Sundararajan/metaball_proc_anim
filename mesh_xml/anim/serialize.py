@@ -84,6 +84,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from mesh_xml.anim.controller import Controller
+from mesh_xml.anim.controllers.drive import WaveAnchor
 from mesh_xml.anim.controllers.limb import FootholdPicker, LimbIK, TipTarget
 from mesh_xml.anim.controllers.spine import Breathe, LookAt, SpineFollow
 
@@ -93,6 +94,7 @@ __all__ = [
     "Persisted",
     "decode_controller",
     "encode_controller",
+    "fields_of",
     "register",
     "registered",
 ]
@@ -167,6 +169,22 @@ def register(
 def registered() -> dict[str, type]:
     """Every registered name and the class it names, as a copy."""
     return {name: entry.cls for name, entry in _BY_NAME.items()}
+
+
+def fields_of(cls: type) -> tuple[str, ...]:
+    """The field names the registry persists for ``cls``.
+
+    The editor's controller panel builds its widgets from this, which is what
+    keeps "what the panel can edit" and "what the file can carry" the same
+    list by construction — a knob the format cannot save would be a lie that
+    survives exactly one session.
+    """
+    entry = _BY_CLASS.get(cls)
+    if entry is None:
+        raise ControllerFormatError(
+            f"{cls.__name__} is not a registered controller"
+        )
+    return entry.fields
 
 
 def encode_controller(controller: Persisted, name: str | None = None) -> ET.Element:
@@ -385,3 +403,4 @@ register("look_at", LookAt)
 register("breathe", Breathe)
 register("limb_ik", LimbIK)
 register("foothold_picker", FootholdPicker)
+register("wave_anchor", WaveAnchor)

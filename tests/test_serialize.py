@@ -17,14 +17,13 @@ from mesh_xml.core.terrain import Terrain
 from mesh_xml.io import xml_legacy, xml_v2
 
 DATA = Path(__file__).parent / "data"
-EXAMPLES = Path(__file__).parent.parent / "examples"
 
 ABSOLUTE_SPLINE = DATA / "legacy_v1_absolute_spline.xml"
 
 RELATIVE_ERA_FIXTURES = [
-    (EXAMPLES / "chubby_worm.xml", 10),
-    (EXAMPLES / "character_armature.xml", 7),
-    (EXAMPLES / "branching_armature.xml", 2),
+    (DATA / "legacy_v1_chubby_worm.xml", 10),
+    (DATA / "legacy_v1_character_armature.xml", 7),
+    (DATA / "legacy_v1_branching_armature.xml", 2),
     (DATA / "test_export.xml", 4),
     (DATA / "test_export_multiple_apendages.xml", 6),
 ]
@@ -504,7 +503,7 @@ def test_forcing_relative_reproduces_the_old_bug() -> None:
 
 
 def test_forcing_absolute_skips_detection() -> None:
-    result = xml_legacy.read_legacy(EXAMPLES / "chubby_worm.xml", coords="absolute")
+    result = xml_legacy.read_legacy(DATA / "legacy_v1_chubby_worm.xml", coords="absolute")
 
     assert result.coords == "absolute"
     assert result.body.chunk(result.body.chunk_ids()[-1]).pos[0] == pytest.approx(0.556)
@@ -527,7 +526,7 @@ def test_unknown_coords_mode_is_rejected() -> None:
 
 
 def test_capsule_type_and_height_survive_the_import() -> None:
-    result = xml_legacy.read_legacy(EXAMPLES / "character_armature.xml")
+    result = xml_legacy.read_legacy(DATA / "legacy_v1_character_armature.xml")
     by_name = {result.body.name_of(cid): cid for cid in result.body.chunk_ids()}
 
     segment = result.meta[by_name["Segment1"]]
@@ -545,7 +544,7 @@ def test_capsule_type_and_height_survive_the_import() -> None:
 
 
 def test_rotation_and_scale_survive_the_import() -> None:
-    result = xml_legacy.read_legacy(EXAMPLES / "character_armature.xml")
+    result = xml_legacy.read_legacy(DATA / "legacy_v1_character_armature.xml")
     by_name = {result.body.name_of(cid): cid for cid in result.body.chunk_ids()}
 
     assert result.meta[by_name["Head"]].scale == pytest.approx((1.2, 1.2, 1.2))
@@ -554,7 +553,7 @@ def test_rotation_and_scale_survive_the_import() -> None:
 
 
 def test_a_bone_without_a_mesh_is_reported_not_silently_defaulted() -> None:
-    result = xml_legacy.read_legacy(EXAMPLES / "character_armature.xml")
+    result = xml_legacy.read_legacy(DATA / "legacy_v1_character_armature.xml")
     by_name = {result.body.name_of(cid): cid for cid in result.body.chunk_ids()}
     root = by_name["Root"]
 
@@ -571,7 +570,7 @@ def test_a_bone_without_a_mesh_is_reported_not_silently_defaulted() -> None:
 
 def test_the_missing_mesh_default_is_the_callers_choice() -> None:
     result = xml_legacy.read_legacy(
-        EXAMPLES / "character_armature.xml", default_radius=0.9
+        DATA / "legacy_v1_character_armature.xml", default_radius=0.9
     )
     root = next(
         cid for cid in result.body.chunk_ids() if result.body.name_of(cid) == "Root"
@@ -582,7 +581,7 @@ def test_the_missing_mesh_default_is_the_callers_choice() -> None:
 
 def test_refusing_the_default_raises_instead_of_inventing_a_radius() -> None:
     with pytest.raises(xml_legacy.LegacyFormatError, match="'Root' has no <mesh>"):
-        xml_legacy.read_legacy(EXAMPLES / "character_armature.xml", default_radius=None)
+        xml_legacy.read_legacy(DATA / "legacy_v1_character_armature.xml", default_radius=None)
 
 
 def test_legacy_reader_refuses_a_v2_document(tmp_path: Path) -> None:

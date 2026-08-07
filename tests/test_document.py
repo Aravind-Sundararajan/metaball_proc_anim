@@ -17,8 +17,10 @@ from mesh_xml.editor.document import (
     Macro,
     MoveChunk,
     RemoveChunk,
+    RemoveController,
     RemoveLink,
     Rename,
+    SetControllerField,
     SetPinned,
     SetRadius,
 )
@@ -405,7 +407,7 @@ class TestFiles:
         assert reopened.body.name_of(reopened.body.chunk_ids()[0]) == "head"
 
     def test_opening_a_legacy_file_falls_back(self, document):
-        document.open("examples/chubby_worm.xml")
+        document.open("tests/data/legacy_v1_chubby_worm.xml")
         assert document.body.n_chunks == 10
         assert document.body.n_links == 9
 
@@ -423,3 +425,92 @@ class TestFiles:
     def test_title_marks_unsaved_changes(self, document):
         document.do(SetRadius(ids_of(document)[0], 0.4))
         assert document.title.startswith("*")
+
+
+class TestControllerCommands:
+    """The gait is document state: edits arrive as commands and undo whole."""
+
+    @staticmethod
+    def _with_wave(document: Document) -> tuple[int, object]:
+        from mesh_xml.anim.controllers.drive import WaveAnchor
+
+        anchor = ids_of(document)[0]
+        document.body.set_pinned(anchor, True)
+        origin = document.body.chunk(anchor).pos
+        wave = document.controllers.add(WaveAnchor(anchor, origin))
+        return anchor, wave
+
+    def test_set_controller_field_round_trips(self, document):
+        _anchor, wave = self._with_wave(document)
+        heard: list[int] = []
+        document.controllers_changed.connect(lambda: heard.append(1))
+
+        document.do(SetControllerField(0, "amplitude", 2.5))
+        assert wave.amplitude == pytest.approx(2.5)
+        assert heard
+
+        document.undo()
+        assert wave.amplitude == pytest.approx(0.8)
+        document.redo()
+        assert wave.amplitude == pytest.approx(2.5)
+
+    def test_remove_controller_restores_the_same_object(self, document):
+        _anchor, wave = self._with_wave(document)
+
+        document.do(RemoveController(0))
+        assert document.controllers.controllers == []
+
+        document.undo()
+        assert document.controllers.controllers[0] is wave
+
+    def test_commit_drag_on_a_plain_chunk_is_a_move(self, document):
+        target = ids_of(document)[1]
+
+        document.commit_drag(target, (9.0, 8.0, 7.0))
+        assert document.body.chunk(target).pos == pytest.approx((9.0, 8.0, 7.0))
+
+        document.undo()
+        assert document.body.chunk(target).pos == pytest.approx((1.0, 0.0, 0.0))
+
+    def test_commit_drag_on_a_driven_anchor_reauthors_the_origin(self, document):
+        """The gesture means "the motion's home is now here" — and the next
+        tick must keep the chunk exactly under where the hand let go."""
+        anchor, wave = self._with_wave(document)
+        document.controllers.time = 3.7
+        old_origin = tuple(wave.origin)
+
+        final = (4.0, 1.0, -2.0)
+        document.commit_drag(anchor, final)
+
+        assert document.body.chunk(anchor).pos == pytest.approx(final)
+        expected = np.asarray(final, dtype=np.float64) - wave.swing(3.7)
+        assert wave.origin == pytest.approx(tuple(expected))
+
+        document.step_once()
+        assert document.body.chunk(anchor).pos == pytest.approx(final, abs=1e-5)
+
+        document.undo()
+        assert tuple(wave.origin) == pytest.approx(old_origin)
+
+    def test_fit_autorig_is_one_undo_step(self, document):
+        from mesh_xml.anim.controllers.drive import WaveAnchor
+
+        anchor_mass = 4.0
+        first = ids_of(document)[0]
+        document.body.set_pinned(first, False, mass=anchor_mass)
+
+        document.fit_autorig()
+        names = [type(c).__name__ for c in document.controllers.controllers]
+        assert names[0] == "WaveAnchor"
+        assert "SpineFollow" in names
+        wave = document.controllers.controllers[0]
+        assert isinstance(wave, WaveAnchor)
+        assert document.body.inv_mass[document.body.slot(wave.anchor)] == 0.0
+
+        document.undo()
+        assert document.controllers.controllers == []
+        for chunk in document.body.chunks():
+            assert not chunk.pinned
+        if wave.anchor == first:
+            assert document.body.chunk(first).mass == pytest.approx(anchor_mass)
+        assert not document.can_undo

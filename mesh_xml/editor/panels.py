@@ -56,11 +56,13 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSlider,
     QSpinBox,
     QTableWidget,
@@ -69,6 +71,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from mesh_xml.anim import serialize
 from mesh_xml.core import solver
 from mesh_xml.editor.document import (
     AddLink,
@@ -76,8 +79,10 @@ from mesh_xml.editor.document import (
     Document,
     Macro,
     RemoveChunk,
+    RemoveController,
     RemoveLink,
     Rename,
+    SetControllerField,
     SetPinned,
     SetRadius,
 )
@@ -88,6 +93,7 @@ __all__ = [
     "SolverPanel",
     "SmoothingPanel",
     "ChunkPanel",
+    "ControllerPanel",
     "build_panels",
 ]
 
@@ -394,6 +400,7 @@ class SurfacePanel(_Panel):
         self._show_rig_overlay = False
         self._ortho = QCheckBox("Orthographic")
         self._orthographic = False
+        self._floor = QCheckBox("Show floor")
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_blend())
@@ -407,6 +414,7 @@ class SurfacePanel(_Panel):
         self._background_colour.clicked.connect(self._on_pick_background_colour)
         self._debug.currentIndexChanged.connect(self._on_debug_changed)
         self._max_steps.valueChanged.connect(self._on_max_steps_changed)
+        self._floor.toggled.connect(self._on_floor_toggled)
         self._overlay.toggled.connect(self._on_overlay_toggled)
         self._ortho.toggled.connect(self._on_ortho_toggled)
         self._follow(document.settings_changed, document.body_replaced)
@@ -481,6 +489,7 @@ class SurfacePanel(_Panel):
         layout.addRow("Background", self._background_colour)
         layout.addRow(self._overlay)
         layout.addRow(self._ortho)
+        layout.addRow(self._floor)
         layout.addRow(
             _note(
                 "Orthographic keeps the subject about the same size on screen: "
@@ -498,6 +507,12 @@ class SurfacePanel(_Panel):
             "Drop perspective. Parallel edges stay parallel, so relative chunk "
             "sizes down a chain can be compared by eye instead of being "
             "confounded by depth."
+        )
+        self._floor.setToolTip(
+            "Draw the reference grid at the solver's floor height, with the "
+            "creature's shadow on it. Stands down on its own when a terrain "
+            "is loaded — the terrain is the world, and two floors would "
+            "contradict each other."
         )
         return box
 
@@ -544,6 +559,11 @@ class SurfacePanel(_Panel):
         self.set_orthographic(orthographic)
 
     @_user_edit
+    def _on_floor_toggled(self, show: bool) -> None:
+        self._document.metaball.show_floor = bool(show)
+        self._document.settings_changed.emit()
+
+    @_user_edit
     def _on_pick_surface_colour(self) -> None:
         picked = self._pick(self._document.metaball.surface_colour, "Surface colour")
         if picked is not None:
@@ -581,6 +601,7 @@ class SurfacePanel(_Panel):
         self._max_steps.setValue(int(settings.max_steps))
         self._overlay.setChecked(self._show_rig_overlay)
         self._ortho.setChecked(self._orthographic)
+        self._floor.setChecked(bool(settings.show_floor))
 
 
 class SolverPanel(_Panel):
@@ -952,6 +973,198 @@ class SmoothingPanel(_Panel):
         )
 
 
+class ControllerPanel(_Panel):
+    """The gait, editable: every controller on the stack, its knobs, its switch.
+
+    Widget rows are generated from the serialization registry's field list
+    (:func:`mesh_xml.anim.serialize.fields_of`), so the panel edits exactly
+    what the file can carry: a controller registered for v3 grows a UI here
+    without this module changing, and a knob the format cannot save never
+    appears. Numbers and booleans are editable; id lists and vectors show as
+    read-only summaries, because editing those is rig surgery the viewport
+    and the autorig do better.
+    """
+
+    def __init__(self, document: Document, parent: QWidget | None = None) -> None:
+        super().__init__(document, parent)
+
+        self._autorig = QPushButton("Fit autorig")
+        self._empty = _note(
+            "No controllers. Fit autorig to give this rig a spine, an idle "
+            "breath, and a wave driver on its anchor — the same recipe the "
+            "shipped examples carry."
+        )
+
+        #: One entry per built group: the controller type it was built for,
+        #: its enabled checkbox, and the value widget per field. What lets a
+        #: value edit refresh in place — see :meth:`_refresh`.
+        self._groups: list[tuple[type, QCheckBox, dict[str, QWidget]]] = []
+
+        self._list_host = QWidget()
+        self._list_layout = QVBoxLayout(self._list_host)
+        self._list_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(self._list_host)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self._autorig)
+        layout.addWidget(self._empty)
+        layout.addWidget(scroll, 1)
+
+        self._autorig.setToolTip(
+            "Replace the stack with controllers fitted to the body's shape, "
+            "plus a wave driver leading its anchor. One undo step, pin "
+            "included."
+        )
+        self._autorig.clicked.connect(self._on_autorig)
+        self._follow(document.controllers_changed, document.body_replaced)
+
+        self.refresh()
+
+    @_user_edit
+    def _on_autorig(self) -> None:
+        self._document.fit_autorig()
+
+    def _submit_field(self, index: int, field: str, value: object) -> None:
+        if self.syncing:
+            return
+        stack = self._document.controllers.controllers
+        if not 0 <= index < len(stack):
+            return
+        if getattr(stack[index], field) == value:
+            return
+        self._document.do(SetControllerField(index, field, value))
+
+    def _remove(self, index: int) -> None:
+        if self.syncing:
+            return
+        if 0 <= index < len(self._document.controllers.controllers):
+            self._document.do(RemoveController(index))
+
+    def _refresh(self) -> None:
+        """Update in place when the stack's shape is unchanged; rebuild otherwise.
+
+        The split is the same one :class:`ChunkPanel` documents for its table:
+        a value edit arrives back as ``controllers_changed`` while Qt is still
+        inside the spin's own change signal, and tearing the widget out from
+        under that is a use-after-free with extra steps. So a
+        :class:`SetControllerField` refreshes values into the widgets that
+        already exist, and only a change in the stack's composition — remove,
+        replace, open — rebuilds them.
+        """
+        controllers = self._document.controllers.controllers
+        self._empty.setVisible(not controllers)
+        if [type(c) for c in controllers] != [t for t, _, _ in self._groups]:
+            self._rebuild(controllers)
+            return
+
+        for (_cls, enabled, widgets), controller in zip(self._groups, controllers):
+            enabled.setChecked(bool(getattr(controller, "enabled", True)))
+            for field, widget in widgets.items():
+                value = getattr(controller, field)
+                if isinstance(widget, QCheckBox):
+                    widget.setChecked(bool(value))
+                elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                    widget.setValue(value)
+                elif isinstance(widget, QLabel):
+                    widget.setText(_summarise(value))
+
+    def _rebuild(self, controllers: list[object]) -> None:
+        self._groups.clear()
+        while self._list_layout.count():
+            item = self._list_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                # Unparented immediately, deleted later. deleteLater alone
+                # leaves the widget parented until the event loop collects it,
+                # and in that window the old group renders on top of the new
+                # one — visible any time a rebuild lands between two paints.
+                widget.setParent(None)
+                widget.deleteLater()
+        for index, controller in enumerate(controllers):
+            self._list_layout.addWidget(self._build_group(index, controller))
+        self._list_layout.addStretch(1)
+
+    def _build_group(self, index: int, controller: object) -> QGroupBox:
+        box = QGroupBox(type(controller).__name__)
+        form = _form()
+        box.setLayout(form)
+
+        enabled = QCheckBox("Enabled")
+        enabled.setChecked(bool(getattr(controller, "enabled", True)))
+        enabled.toggled.connect(
+            lambda on, i=index: self._submit_field(i, "enabled", bool(on))
+        )
+        remove = QPushButton("Remove")
+        remove.clicked.connect(lambda _=False, i=index: self._remove(i))
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.addWidget(enabled)
+        header_layout.addStretch(1)
+        header_layout.addWidget(remove)
+        form.addRow(header)
+
+        widgets: dict[str, QWidget] = {}
+        try:
+            fields = serialize.fields_of(type(controller))
+        except serialize.ControllerFormatError:
+            form.addRow(_note("Not registered for saving; enabled only."))
+            self._groups.append((type(controller), enabled, widgets))
+            return box
+
+        for field in fields:
+            if field == "enabled":
+                continue
+            widget = self._field_widget(index, field, getattr(controller, field))
+            widgets[field] = widget
+            form.addRow(field, widget)
+        self._groups.append((type(controller), enabled, widgets))
+        return box
+
+    def _field_widget(self, index: int, field: str, value: object) -> QWidget:
+        if isinstance(value, bool):
+            check = QCheckBox()
+            check.setChecked(value)
+            check.toggled.connect(
+                lambda on, i=index, f=field: self._submit_field(i, f, bool(on))
+            )
+            return check
+        if isinstance(value, int):
+            spin = QSpinBox()
+            spin.setRange(-1_000_000, 1_000_000)
+            spin.setValue(int(value))
+            spin.valueChanged.connect(
+                lambda v, i=index, f=field: self._submit_field(i, f, int(v))
+            )
+            return spin
+        if isinstance(value, float):
+            spin = _spin(-100_000.0, 100_000.0, 0.1, decimals=3)
+            spin.setValue(float(value))
+            spin.valueChanged.connect(
+                lambda v, i=index, f=field: self._submit_field(i, f, float(v))
+            )
+            return spin
+        return QLabel(_summarise(value))
+
+
+def _summarise(value: object) -> str:
+    """A compact read-only rendering for non-scalar controller fields."""
+    if value is None:
+        return "—"
+    if isinstance(value, (list, tuple)):
+        if len(value) > 4:
+            return f"{len(value)} value(s)"
+        parts = [
+            f"{v:.2f}" if isinstance(v, float) else str(v) for v in value
+        ]
+        return "(" + ", ".join(parts) + ")"
+    return str(value)
+
+
 class ChunkPanel(_Panel):
     """The chunk table, bound to the selection.
 
@@ -1200,6 +1413,7 @@ def build_panels(document: Document) -> dict[str, QWidget]:
     return {
         "Playback": PlaybackPanel(document),
         "Chunks": ChunkPanel(document),
+        "Controllers": ControllerPanel(document),
         "Surface": SurfacePanel(document),
         "Solver": SolverPanel(document),
         "Smoothing": SmoothingPanel(document),

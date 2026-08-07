@@ -43,7 +43,7 @@ except Exception as exc:  # pragma: no cover - headless box with no platform plu
 
 from mesh_xml.editor import curve_panel  # noqa: E402 - needs the QApplication above
 
-LEGACY_RIG = "examples/chubby_worm.xml"
+LEGACY_RIG = "tests/data/legacy_v1_chubby_worm.xml"
 
 #: A y a three-decimal spin box cannot hold. Every echo test in this file turns
 #: on the panel refusing to write its own rounded rendering back into the model.

@@ -1,33 +1,80 @@
-<?xml version="1.0" ?>
-<armature>
-    <bone name="Spline_1" position="0.000,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
-        <mesh type="sphere" radius="0.193" material="body"/>
-        <bone name="Spline_2" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
-            <mesh type="sphere" radius="0.389" material="body"/>
-            <bone name="Spline_3" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
-                <mesh type="sphere" radius="0.534" material="body"/>
-                <bone name="Spline_4" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
-                    <mesh type="sphere" radius="0.630" material="body"/>
-                    <bone name="Spline_5" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
-                        <mesh type="sphere" radius="0.677" material="body"/>
-                        <bone name="Spline_6" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
-                            <mesh type="sphere" radius="0.667" material="body"/>
-                            <bone name="Spline_7" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
-                                <mesh type="sphere" radius="0.559" material="body"/>
-                                <bone name="Spline_8" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
-                                    <mesh type="sphere" radius="0.403" material="body"/>
-                                    <bone name="Spline_9" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
-                                        <mesh type="sphere" radius="0.264" material="body"/>
-                                        <bone name="Spline_10" position="0.556,0.000,0.000" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
-                                            <mesh type="sphere" radius="0.203" material="body"/>
-                                        </bone>
-                                    </bone>
-                                </bone>
-                            </bone>
-                        </bone>
-                    </bone>
-                </bone>
-            </bone>
-        </bone>
-    </bone>
-</armature>
+<?xml version='1.0' encoding='utf-8'?>
+<body version="3" name="chubby_worm" dim="3">
+    <chunks>
+        <chunk id="0" name="Spline_1" pos="0.0 0.0 0.0" radius="0.193" mass="1.0" />
+        <chunk id="1" name="Spline_2" pos="0.556 0.0 0.0" radius="0.389" mass="1.0" />
+        <chunk id="2" name="Spline_3" pos="1.112 0.0 0.0" radius="0.534" mass="1.0" />
+        <chunk id="3" name="Spline_4" pos="1.668 0.0 0.0" radius="0.63" mass="1.0" />
+        <chunk id="4" name="Spline_5" pos="2.224 0.0 0.0" radius="0.677" mass="1.0" />
+        <chunk id="5" name="Spline_6" pos="2.78 0.0 0.0" radius="0.667" mass="1.0" />
+        <chunk id="6" name="Spline_7" pos="3.336 0.0 0.0" radius="0.559" mass="1.0" />
+        <chunk id="7" name="Spline_8" pos="3.892 0.0 0.0" radius="0.403" mass="1.0" />
+        <chunk id="8" name="Spline_9" pos="4.448 0.0 0.0" radius="0.264" mass="1.0" />
+        <chunk id="9" name="Spline_10" pos="5.004 0.0 0.0" radius="0.203" pinned="true" />
+    </chunks>
+    <links>
+        <link a="0" b="1" rest="0.556" type="NORMAL" elasticity="1.0" />
+        <link a="1" b="2" rest="0.556" type="NORMAL" elasticity="1.0" />
+        <link a="2" b="3" rest="0.556" type="NORMAL" elasticity="1.0" />
+        <link a="3" b="4" rest="0.556" type="NORMAL" elasticity="1.0" />
+        <link a="4" b="5" rest="0.556" type="NORMAL" elasticity="1.0" />
+        <link a="5" b="6" rest="0.556" type="NORMAL" elasticity="1.0" />
+        <link a="6" b="7" rest="0.556" type="NORMAL" elasticity="1.0" />
+        <link a="7" b="8" rest="0.556" type="NORMAL" elasticity="1.0" />
+        <link a="8" b="9" rest="0.55600023" type="NORMAL" elasticity="1.0" />
+    </links>
+    <controllers seed="5">
+        <controller type="wave_anchor">
+            <int name="anchor" value="9" />
+            <tuple name="origin">
+                <float value="5.004000186920166" />
+                <float value="0.0" />
+                <float value="0.0" />
+            </tuple>
+            <float name="amplitude" value="0.8" />
+            <float name="rate" value="0.6" />
+            <bool name="enabled" value="true" />
+        </controller>
+        <controller type="spine_follow">
+            <list name="chain">
+                <int value="9" />
+                <int value="8" />
+                <int value="7" />
+                <int value="6" />
+                <int value="5" />
+                <int value="4" />
+                <int value="3" />
+                <int value="2" />
+                <int value="1" />
+                <int value="0" />
+            </list>
+            <float name="strength" value="16.0" />
+            <float name="damping" value="3.0" />
+            <float name="max_bend_degrees" value="38.0" />
+            <float name="bend_strength" value="800.0" />
+            <none name="lead" />
+            <none name="lead_strength" />
+            <none name="spacing" />
+            <float name="heading_speed" value="2.0" />
+            <float name="max_force" value="200.0" />
+            <bool name="enabled" value="true" />
+        </controller>
+        <controller type="breathe">
+            <list name="chunks">
+                <int value="0" />
+                <int value="1" />
+                <int value="2" />
+                <int value="3" />
+                <int value="4" />
+                <int value="5" />
+                <int value="6" />
+                <int value="7" />
+                <int value="8" />
+            </list>
+            <float name="amplitude" value="1.8" />
+            <float name="frequency" value="0.35" />
+            <none name="axis" />
+            <bool name="enabled" value="true" />
+        </controller>
+    </controllers>
+</body>

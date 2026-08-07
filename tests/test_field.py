@@ -40,8 +40,7 @@ from mesh_xml.render.field import (
 
 pytestmark = pytest.mark.filterwarnings("error::RuntimeWarning")
 
-EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
-WORM = EXAMPLES / "chubby_worm.xml"
+WORM = Path(__file__).resolve().parent / "data" / "legacy_v1_chubby_worm.xml"
 
 
 # ----------------------------------------------------------------------

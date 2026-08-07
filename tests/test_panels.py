@@ -20,7 +20,14 @@ also what a panel that was never wired up would prove.
 import numpy as np
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDoubleSpinBox,
+    QGroupBox,
+    QLabel,
+    QPushButton,
+    QWidget,
+)
 
 from mesh_xml.core import Body
 from mesh_xml.editor.document import (
@@ -42,7 +49,7 @@ from mesh_xml.editor import panels  # noqa: E402 - needs the QApplication above
 
 _NAME, _RADIUS, _PINNED = 0, 1, 2
 
-LEGACY_RIG = "examples/chubby_worm.xml"
+LEGACY_RIG = "tests/data/legacy_v1_chubby_worm.xml"
 
 
 class _UnguardedChunkPanel(panels.ChunkPanel):
@@ -113,6 +120,7 @@ class TestBuildPanels:
         assert list(built) == [
             "Playback",
             "Chunks",
+            "Controllers",
             "Surface",
             "Solver",
             "Smoothing",
@@ -289,6 +297,14 @@ class TestSurfacePanel:
         """Nobody tuning radii finds this in sdf.py before they lose an hour to it."""
         panel = panels.SurfacePanel(document)
         assert any("k/4" in text for text in label_texts(panel))
+
+    def test_show_floor_reaches_the_settings(self, document):
+        panel = panels.SurfacePanel(document)
+        assert document.metaball.show_floor
+        assert panel._floor.isChecked()
+
+        panel._floor.setChecked(False)
+        assert not document.metaball.show_floor
 
 
 class TestSolverPanel:
@@ -784,3 +800,65 @@ class TestReentrancy:
 
         for panel in built.values():
             assert not panel.syncing
+
+
+class TestControllerPanel:
+    def test_lists_the_shipped_worms_gait(self, document):
+        document.open("examples/chubby_worm.xml")
+        panel = panels.ControllerPanel(document)
+
+        titles = [box.title() for box in panel.findChildren(QGroupBox)]
+        assert titles == ["WaveAnchor", "SpineFollow", "Breathe"]
+
+    def test_editing_a_float_field_is_undoable(self, document):
+        document.open("examples/chubby_worm.xml")
+        panel = panels.ControllerPanel(document)
+        wave = document.controllers.controllers[0]
+        box = panel.findChildren(QGroupBox)[0]
+        amplitude = box.findChildren(QDoubleSpinBox)[0]
+        assert amplitude.value() == pytest.approx(wave.amplitude)
+
+        amplitude.setValue(1.5)
+        assert wave.amplitude == pytest.approx(1.5)
+
+        document.undo()
+        assert wave.amplitude == pytest.approx(0.8)
+
+    def test_the_enabled_toggle_reaches_the_controller(self, document):
+        document.open("examples/chubby_worm.xml")
+        panel = panels.ControllerPanel(document)
+        breathe = document.controllers.controllers[2]
+        box = panel.findChildren(QGroupBox)[2]
+        enabled = box.findChildren(QCheckBox)[0]
+
+        enabled.setChecked(False)
+        assert breathe.enabled is False
+
+        document.undo()
+        assert breathe.enabled is True
+
+    def test_remove_is_undoable(self, document):
+        document.open("examples/chubby_worm.xml")
+        panel = panels.ControllerPanel(document)
+        wave = document.controllers.controllers[0]
+        box = panel.findChildren(QGroupBox)[0]
+        remove = next(
+            b for b in box.findChildren(QPushButton) if b.text() == "Remove"
+        )
+
+        remove.click()
+        assert len(document.controllers.controllers) == 2
+
+        document.undo()
+        assert document.controllers.controllers[0] is wave
+
+    def test_autorig_fits_a_bare_rig(self, document):
+        panel = panels.ControllerPanel(document)
+        assert not document.controllers.controllers
+
+        panel._autorig.click()
+        names = [type(c).__name__ for c in document.controllers.controllers]
+        assert names[0] == "WaveAnchor"
+
+        document.undo()
+        assert not document.controllers.controllers

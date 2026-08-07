@@ -406,3 +406,43 @@ class TestOrthographic:
         camera = OrbitCamera(orthographic=True)
         origin, directions = camera.ray_directions(0, 0)
         assert directions.size == 0
+
+
+class TestSnapView:
+    """Named axis views land the eye exactly on the axis, framing untouched."""
+
+    VIEWS = [
+        ("front", (0.0, 0.0, 1.0)),
+        ("back", (0.0, 0.0, -1.0)),
+        ("right", (1.0, 0.0, 0.0)),
+        ("left", (-1.0, 0.0, 0.0)),
+        ("top", (0.0, 1.0, 0.0)),
+        ("bottom", (0.0, -1.0, 0.0)),
+    ]
+
+    @pytest.mark.parametrize("view, axis", VIEWS)
+    def test_the_eye_lands_on_the_named_axis(self, view, axis):
+        camera = OrbitCamera(distance=5.0, yaw=33.0, pitch=21.0, target=(1.0, 2.0, 3.0))
+        camera.snap_view(view)
+
+        expected = np.asarray((1.0, 2.0, 3.0)) + np.asarray(axis) * 5.0
+        assert camera.position == pytest.approx(expected, abs=1e-5)
+
+    @pytest.mark.parametrize("view, axis", VIEWS)
+    def test_the_view_looks_back_at_the_target(self, view, axis):
+        camera = OrbitCamera(distance=5.0, yaw=-70.0, pitch=-45.0, target=(0.5, -1.0, 2.0))
+        camera.snap_view(view)
+
+        _right, _up, forward = camera.basis()
+        assert forward == pytest.approx(-np.asarray(axis), abs=1e-6)
+
+    def test_framing_is_kept(self):
+        camera = OrbitCamera(distance=7.5, target=(4.0, 5.0, 6.0))
+        camera.snap_view("top")
+
+        assert camera.distance == pytest.approx(7.5)
+        assert camera.target == pytest.approx((4.0, 5.0, 6.0))
+
+    def test_an_unknown_view_raises(self):
+        with pytest.raises(ValueError, match="unknown view"):
+            OrbitCamera().snap_view("isometric")

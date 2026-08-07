@@ -331,3 +331,26 @@ class TestStack:
 
     def test_pusher_satisfies_the_protocol(self):
         assert isinstance(Pusher(0), Controller)
+
+
+class TestHeld:
+    """A grab is authority, not force: held chunks reach every controller."""
+
+    def test_held_chunks_flow_into_the_context(self):
+        body = Body()
+        a = body.add_chunk("a", (0.0, 0.0, 0.0))
+        stack = ControllerStack(body)
+        seen: list[frozenset[int]] = []
+
+        class Probe:
+            enabled = True
+
+            def update(self, ctx: ControlContext) -> None:
+                seen.append(ctx.held)
+
+        stack.add(Probe())
+        stack.accumulate(body, 0.025, SolverConfig())
+        stack.held.add(a)
+        stack.accumulate(body, 0.025, SolverConfig())
+
+        assert seen == [frozenset(), frozenset({a})]

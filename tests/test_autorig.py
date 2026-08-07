@@ -193,13 +193,24 @@ class TestItActuallyAnimates:
         assert body.chunk(rig.anchor).pos == pytest.approx(anchored)
 
     def test_every_shipped_rig_animates(self):
-        from mesh_xml.io import xml_legacy
+        """The examples carry their gaits: open one, tick it, it moves.
+
+        This is the promise the editor's Open Example menu makes. The rigs
+        were upgraded from bare v1 armatures to v3 documents with an autorig
+        plus a WaveAnchor driver baked in, precisely because a shipped example
+        that hangs motionless under Play reads as a broken app.
+        """
+        from mesh_xml.io import xml_v2
 
         for name in ("chubby_worm", "character_armature", "simple_armature"):
-            body = xml_legacy.read_legacy(f"examples/{name}.xml").body
-            rig = autorig.auto_controllers(body, ground_y=0.0)
+            rig = xml_v2.read(f"examples/{name}.xml")
+            body = rig.body
+            assert rig.controllers.controllers, name
+            start = body.pos.copy()
             for _ in range(300):
-                rig.stack.tick(body, 1 / 40, SolverConfig(ground_y=0.0, iterations=10))
+                rig.controllers.tick(
+                    body, 1 / 40, SolverConfig(ground_y=0.0, iterations=10)
+                )
 
             assert np.isfinite(body.pos).all(), name
-            assert rig.topology.trunk is not None, name
+            assert float(np.abs(body.pos - start).max()) > 0.3, name

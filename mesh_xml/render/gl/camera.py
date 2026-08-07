@@ -67,6 +67,20 @@ DEFAULT_DISTANCE = 10.0
 PITCH_LIMIT = 90.0
 
 
+#: Named axis views as ``(yaw, pitch)``, keyed by where the eye goes. The
+#: angles fall out of ``_rotation``'s convention — its third row is
+#: ``backward``, the direction from target to eye — and ``snap_view`` trusts
+#: this table rather than re-deriving them.
+AXIS_VIEWS = {
+    "front": (0.0, 0.0),
+    "back": (180.0, 0.0),
+    "right": (270.0, 0.0),
+    "left": (90.0, 0.0),
+    "top": (0.0, 90.0),
+    "bottom": (0.0, -90.0),
+}
+
+
 def viewport_aspect(width: int, height: int) -> float:
     """Width over height, falling back to 1.0 for a degenerate viewport.
 
@@ -285,6 +299,25 @@ class OrbitCamera:
         )
         directions /= np.linalg.norm(directions, axis=2, keepdims=True)
         return self.position, directions.astype(np.float32)
+
+    def snap_view(self, view: str) -> None:
+        """Jump to a named axis view, keeping target and distance.
+
+        Views are named for where the eye goes, matching every DCC: ``front``
+        is the eye on +Z looking back at the target, ``right`` the eye on +X,
+        ``top`` the eye straight above. The angles come from the rotation
+        convention :meth:`_rotation` documents — ``backward`` is its third row,
+        so each view is exactly the yaw/pitch that puts that row on the axis.
+        Only yaw and pitch change; framing is the user's and stays put.
+        """
+        try:
+            yaw, pitch = AXIS_VIEWS[view]
+        except KeyError:
+            raise ValueError(
+                f"unknown view {view!r}, expected one of {sorted(AXIS_VIEWS)}"
+            ) from None
+        self.yaw = yaw
+        self.pitch = pitch
 
     def orbit(self, dx: float, dy: float) -> None:
         """Apply a mouse drag in pixels.

@@ -21,8 +21,13 @@ from PySide6.QtGui import QMouseEvent
 from mesh_xml.core import Body
 from mesh_xml.editor.document import Document, MoveChunk
 from mesh_xml.editor.viewport import (
+    GIZMO_HANDLE_PX,
+    GIZMO_MARGIN_PX,
+    GIZMO_RADIUS_PX,
     MetaballViewport,
     chunk_centres,
+    gizmo_handles,
+    gizmo_hit,
     nearest_hit,
     plane_hit,
     project,
@@ -229,6 +234,67 @@ class TestOverlayProjection:
         points = np.array([[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]])
         screen, _ = project(camera.view_projection_matrix(*SIZE), points, *SIZE)
         assert screen[1, 1] < screen[0, 1]
+
+
+class TestGizmo:
+    """The orientation triad is pure geometry: camera basis in, pixels out."""
+
+    @staticmethod
+    def _centre(width: int, height: int) -> tuple[float, float]:
+        return (
+            width - GIZMO_MARGIN_PX - GIZMO_RADIUS_PX,
+            GIZMO_MARGIN_PX + GIZMO_RADIUS_PX,
+        )
+
+    def test_at_the_front_view_the_axes_land_where_convention_says(self):
+        """+X right of centre, +Y above it, +Z pointing at the viewer."""
+        camera = OrbitCamera()
+        width, height = SIZE
+        cx, cy = self._centre(width, height)
+        handles = {view: (x, y, depth) for view, x, y, depth in gizmo_handles(camera, width, height)}
+
+        assert handles["right"][0] > cx + 10.0
+        assert handles["top"][1] < cy - 10.0
+        assert handles["front"][2] < 0.0
+        assert handles["back"][2] > 0.0
+
+    def test_paint_order_is_back_to_front(self):
+        camera = OrbitCamera(yaw=41.0, pitch=-17.0)
+        depths = [depth for _, _, _, depth in gizmo_handles(camera, *SIZE)]
+        assert depths == sorted(depths, reverse=True)
+
+    def test_a_click_on_a_handle_names_its_view(self):
+        camera = OrbitCamera(yaw=28.0, pitch=13.0)
+        width, height = SIZE
+        for view, x, y, _depth in gizmo_handles(camera, width, height):
+            assert gizmo_hit(camera, width, height, x, y) == view
+
+    def test_a_click_between_handles_is_nobody(self):
+        """Off-axis so no handle sits at the centre — at the front view the
+        z pair projects exactly there, which is its own test below."""
+        camera = OrbitCamera(yaw=45.0, pitch=30.0)
+        width, height = SIZE
+        cx, cy = self._centre(width, height)
+        assert gizmo_hit(camera, width, height, cx, cy) is None
+        assert gizmo_hit(camera, width, height, 5.0, height - 5.0) is None
+
+    def test_opposed_handles_resolve_to_the_visible_one(self):
+        """At the front view +Z and -Z project to the same pixel; the click
+        must go to the one on top of the paint order, which is the near one."""
+        camera = OrbitCamera()
+        width, height = SIZE
+        handles = {view: (x, y) for view, x, y, _ in gizmo_handles(camera, width, height)}
+        x, y = handles["front"]
+        assert handles["back"] == pytest.approx((x, y), abs=1e-6)
+        assert gizmo_hit(camera, width, height, x, y) == "front"
+
+    def test_the_hit_test_respects_the_handle_radius(self):
+        camera = OrbitCamera()
+        width, height = SIZE
+        view, x, y, _depth = gizmo_handles(camera, width, height)[-1]
+        reach = GIZMO_HANDLE_PX + 2.0
+        assert gizmo_hit(camera, width, height, x + reach - 0.5, y) == view
+        assert gizmo_hit(camera, width, height, x + reach + 4.0, y) is None
 
 
 class TestDragPlane:

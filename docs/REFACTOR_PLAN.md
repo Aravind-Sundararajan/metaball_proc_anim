@@ -351,6 +351,33 @@ Landed after Phase 5, in one fan-out:
   body. One add is one undo step (chunk and links arrive and leave together),
   and the new chunk takes the selection, so repeated Add extrudes a limb —
   the composing gesture the legacy create-at-origin button never had.
+* **Viewport orientation.** A reference grid floor in the raymarcher — an
+  analytic plane at the solver's floor height, screen-space anti-aliased
+  lines, distance fade, and a penumbra-marched shadow of the creature, which
+  is what visually grounds it. Never part of ``sd_scene``, so the CPU-oracle
+  comparisons stay exact; stands down when a terrain is loaded, because two
+  floors contradict each other. Plus a clickable axis gizmo in the overlay
+  and named view snaps (``OrbitCamera.snap_view``, View menu, Blender's
+  1/3/7 keys).
+* **Examples carry their gaits.** The shipped armatures were bare v1 relics:
+  opened in the editor, Play just dropped them, which read as a broken app.
+  ``WaveAnchor`` — the drive that made ``animate_rig.py`` wriggle, previously
+  script-local and unsaveable — is now a registered controller
+  (``anim/controllers/drive.py``), and every ``examples/*.xml`` is a v3
+  document with autorig plus that driver baked in: open the chubby worm,
+  press Play, it swims. The v1 originals moved to ``tests/data/legacy_v1_*``
+  where the legacy-reader tests always wanted them.
+* **Controllers in the GUI, and grabs that win.** A Controllers panel: one
+  group per controller on the stack, an enabled switch, spins for every
+  numeric field the v3 registry persists — the widget list *is* the format's
+  field list (``serialize.fields_of``), so a knob the file cannot save never
+  appears — plus per-controller Remove and one-click Fit Autorig, all
+  undoable. And the grab standoff is settled the way Rain World settles it,
+  by authority rather than force: a pinned anchor is infinitely massive, so
+  the hand cannot out-pull its driver — instead ``ControllerStack.held``
+  marks hand-owned chunks, drivers stand down for them, and releasing the
+  drag re-authors the driver's ``origin`` minus its current swing, one undo
+  step, so the worm keeps swimming from exactly where you dropped it.
 
 **Terrain is landed** (`docs/TERRAIN.md`). The two contact-model limits that gated it are
 closed — position-level Coulomb friction (grip scales with load, zero creep

@@ -137,7 +137,7 @@ class TestRealRig:
     def test_the_chubby_worm_packs_without_double_counting(self):
         from mesh_xml.io import xml_legacy
 
-        body = xml_legacy.read_legacy("examples/chubby_worm.xml").body
+        body = xml_legacy.read_legacy("tests/data/legacy_v1_chubby_worm.xml").body
         packed = sdf.pack(body)
 
         assert body.n_chunks == 10

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<armature>
+    <bone name="Root" position="0,0,0" rotation="0,0,0" scale="1,1,1">
+        <bone name="Segment1" position="0,1,0" rotation="0,0,0" scale="1,1,1">
+            <mesh type="capsule" radius="0.15" height="0.6" material="body" />
+            <bone name="Segment2" position="0,1,0" rotation="0,0,0" scale="1,1,1">
+                <mesh type="capsule" radius="0.15" height="0.6" material="body" />
+                <bone name="Segment3" position="0,1,0" rotation="0,0,0" scale="1,1,1">
+                    <mesh type="capsule" radius="0.15" height="0.6" material="body" />
+                    <bone name="Segment4" position="0,1,0" rotation="0,0,0" scale="1,1,1">
+                        <mesh type="capsule" radius="0.15" height="0.6" material="body" />
+                        <bone name="Segment5" position="0,01,0" rotation="0,0,0" scale="1,1,1">
+                            <mesh type="capsule" radius="0.15" height="0.6" material="body" />
+                            <bone name="Head" position="0,1,0" rotation="0,0,0" scale="1.2,1.2,1.2">
+                                <mesh type="sphere" radius="0.2" height="0.4" material="head" />
+                            </bone>
+                        </bone>
+                    </bone>
+                </bone>
+            </bone>
+        </bone>
+    </bone>
+</armature> 

@@ -1,9 +1,48 @@
-<?xml version="1.0" ?>
-<armature>
-    <bone name="Sphere_0" position="0.164,0.000,0.964" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
-        <mesh type="sphere" radius="0.500" material="body"/>
-        <bone name="Sphere_1" position="2.030,0.000,-0.701" rotation="0.000,0.000,0.000" scale="1.000,1.000,1.000">
-            <mesh type="sphere" radius="0.500" material="body"/>
-        </bone>
-    </bone>
-</armature>
+<?xml version='1.0' encoding='utf-8'?>
+<body version="3" name="armature" dim="3">
+    <chunks>
+        <chunk id="0" name="Sphere_0" pos="0.164 0.0 0.964" radius="0.5" mass="1.0" />
+        <chunk id="1" name="Sphere_1" pos="2.194 0.0 0.263" radius="0.5" pinned="true" />
+    </chunks>
+    <links>
+        <link a="0" b="1" rest="2.1476269" type="NORMAL" elasticity="1.0" />
+    </links>
+    <controllers seed="5">
+        <controller type="wave_anchor">
+            <int name="anchor" value="1" />
+            <tuple name="origin">
+                <float value="2.194000005722046" />
+                <float value="0.0" />
+                <float value="0.2630000114440918" />
+            </tuple>
+            <float name="amplitude" value="0.8" />
+            <float name="rate" value="0.6" />
+            <bool name="enabled" value="true" />
+        </controller>
+        <controller type="spine_follow">
+            <list name="chain">
+                <int value="1" />
+                <int value="0" />
+            </list>
+            <float name="strength" value="16.0" />
+            <float name="damping" value="3.0" />
+            <float name="max_bend_degrees" value="38.0" />
+            <float name="bend_strength" value="800.0" />
+            <none name="lead" />
+            <none name="lead_strength" />
+            <none name="spacing" />
+            <float name="heading_speed" value="2.0" />
+            <float name="max_force" value="200.0" />
+            <bool name="enabled" value="true" />
+        </controller>
+        <controller type="breathe">
+            <list name="chunks">
+                <int value="0" />
+            </list>
+            <float name="amplitude" value="1.8" />
+            <float name="frequency" value="0.35" />
+            <none name="axis" />
+            <bool name="enabled" value="true" />
+        </controller>
+    </controllers>
+</body>

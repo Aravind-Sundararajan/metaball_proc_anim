@@ -43,8 +43,7 @@ from mesh_xml.render.meshing import Mesh, polygonise
 
 pytestmark = pytest.mark.filterwarnings("error::RuntimeWarning")
 
-EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
-WORM = EXAMPLES / "chubby_worm.xml"
+WORM = Path(__file__).resolve().parent / "data" / "legacy_v1_chubby_worm.xml"
 
 #: Blend radius the worm is meshed at throughout. Large enough that the chunks
 #: fuse into one surface rather than reading as beads, which is the case the

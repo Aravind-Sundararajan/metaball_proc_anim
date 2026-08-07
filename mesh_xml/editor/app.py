@@ -66,7 +66,7 @@ class MainWindow(QMainWindow):
         # them too short to use.
         tabbed = [
             self._docks[t]
-            for t in ("Chunks", "Surface", "Solver", "Smoothing", "Curve")
+            for t in ("Chunks", "Controllers", "Surface", "Solver", "Smoothing", "Curve")
             if t in self._docks
         ]
         for previous, dock in zip(tabbed, tabbed[1:]):
@@ -133,6 +133,19 @@ class MainWindow(QMainWindow):
         self._action(view_menu, "&Orthographic", QKeySequence("O"), self.toggle_orthographic)
         self._action(view_menu, "&Play / Pause", QKeySequence(Qt.Key.Key_Space), self.toggle_running)
         view_menu.addSeparator()
+        # Blender's numbers: 1/3/7 for front/right/top, Ctrl for the opposite.
+        for label, key, view in (
+            ("Front", "1", "front"),
+            ("Back", "Ctrl+1", "back"),
+            ("Right", "3", "right"),
+            ("Left", "Ctrl+3", "left"),
+            ("Top", "7", "top"),
+            ("Bottom", "Ctrl+7", "bottom"),
+        ):
+            self._action(
+                view_menu, label, QKeySequence(key), lambda v=view: self.snap_view(v)
+            )
+        view_menu.addSeparator()
         for title, dock in self._docks.items():
             view_menu.addAction(dock.toggleViewAction())
             dock.toggleViewAction().setText(title)
@@ -162,6 +175,10 @@ class MainWindow(QMainWindow):
 
     def toggle_running(self) -> None:
         self.document.set_running(not self.document.running)
+
+    def snap_view(self, view: str) -> None:
+        self.viewport.camera.snap_view(view)
+        self.viewport.camera_changed.emit()
 
     def toggle_rig(self) -> None:
         visible = not self.viewport.show_rig

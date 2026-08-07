@@ -59,7 +59,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
-from PySide6.QtCore import QElapsedTimer, QPointF, QTimer, Qt, Signal
+from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, QTimer, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QHideEvent,
@@ -70,7 +70,7 @@ from PySide6.QtGui import (
 )
 
 from mesh_xml.core import Body
-from mesh_xml.editor.document import Document, MoveChunk
+from mesh_xml.editor.document import Document
 from mesh_xml.render import field
 from mesh_xml.render.gl.camera import OrbitCamera, viewport_aspect
 from mesh_xml.render.gl.context import RaymarchView
@@ -83,6 +83,8 @@ __all__ = [
     "FRAME_INTERVAL_MS",
     "MetaballViewport",
     "chunk_centres",
+    "gizmo_handles",
+    "gizmo_hit",
     "nearest_hit",
     "plane_hit",
     "project",
@@ -114,6 +116,80 @@ SELECTED_COLOUR = QColor(255, 186, 72, 255)
 LINK_WIDTH = 1.4
 CHUNK_RADIUS_PX = 3.0
 SELECTED_RADIUS_PX = 6.5
+
+#: Orientation gizmo layout, in device-independent pixels from the top-right
+#: corner. The handle radius doubles as the click target's core; the hit test
+#: pads it slightly.
+GIZMO_RADIUS_PX = 40.0
+GIZMO_MARGIN_PX = 16.0
+GIZMO_HANDLE_PX = 8.0
+
+#: The gizmo's handles as ``(snap view, world axis)``. Named by view rather
+#: than by axis because clicking the handle at +axis puts the eye there, which
+#: is exactly what :meth:`OrbitCamera.snap_view` of that name does.
+GIZMO_AXES = (
+    ("right", (1.0, 0.0, 0.0)),
+    ("left", (-1.0, 0.0, 0.0)),
+    ("top", (0.0, 1.0, 0.0)),
+    ("bottom", (0.0, -1.0, 0.0)),
+    ("front", (0.0, 0.0, 1.0)),
+    ("back", (0.0, 0.0, -1.0)),
+)
+
+_GIZMO_COLOUR = {
+    "right": QColor(213, 92, 82),
+    "left": QColor(213, 92, 82),
+    "top": QColor(112, 189, 96),
+    "bottom": QColor(112, 189, 96),
+    "front": QColor(94, 138, 219),
+    "back": QColor(94, 138, 219),
+}
+_GIZMO_LABEL = {"right": "X", "top": "Y", "front": "Z"}
+
+
+def gizmo_handles(
+    camera: OrbitCamera, width: int, height: int
+) -> list[tuple[str, float, float, float]]:
+    """Screen layout of the orientation gizmo: ``(view, x, y, depth)`` handles.
+
+    Pure geometry, so the tests need no widget. Each world axis lands at the
+    gizmo centre plus ``(axis . right, -axis . up)`` arms — the same projection
+    the camera applies to everything, minus the perspective it does not need —
+    and ``depth`` is ``axis . forward``: positive points into the screen.
+    Sorted by descending depth, which is back-to-front paint order.
+    """
+    right, up, forward = camera.basis()
+    cx = width - GIZMO_MARGIN_PX - GIZMO_RADIUS_PX
+    cy = GIZMO_MARGIN_PX + GIZMO_RADIUS_PX
+    arm = GIZMO_RADIUS_PX - GIZMO_HANDLE_PX * 0.5
+    handles = []
+    for view, axis in GIZMO_AXES:
+        a = np.asarray(axis, dtype=np.float64)
+        handles.append(
+            (
+                view,
+                cx + float(a @ right) * arm,
+                cy - float(a @ up) * arm,
+                float(a @ forward),
+            )
+        )
+    handles.sort(key=lambda handle: handle[3], reverse=True)
+    return handles
+
+
+def gizmo_hit(
+    camera: OrbitCamera, width: int, height: int, x: float, y: float
+) -> str | None:
+    """The snap view under a click, nearest handle first, or ``None``.
+
+    Walks the paint order backwards so an overlapping pair resolves to the
+    handle the user can actually see.
+    """
+    reach = (GIZMO_HANDLE_PX + 2.0) ** 2
+    for view, hx, hy, _depth in reversed(gizmo_handles(camera, width, height)):
+        if (hx - x) ** 2 + (hy - y) ** 2 <= reach:
+            return view
+    return None
 
 
 def ray_through(
@@ -464,11 +540,29 @@ class MetaballViewport(RaymarchView):
         self.uniforms.update(self._document.metaball.uniforms())
         self.uniforms.update(self._texture.uniforms())
         self.uniforms.update(self._terrain.uniforms())
+        self.uniforms.update(self._floor_uniforms())
         self._texture.bind()
         self._terrain.bind()
         super().paintGL()
-        if self._show_rig:
-            self._paint_rig()
+        self._paint_overlay()
+
+    def _floor_uniforms(self) -> dict[str, object]:
+        """The reference grid's uniforms, owned here rather than by settings.
+
+        The floor needs two things only the document can supply: the solver's
+        floor height, and a veto when a terrain is loaded — the terrain *is*
+        the world, and a grid plane slicing through its hills would read as a
+        second, contradictory floor.
+        """
+        terrain = self._document.terrain
+        enabled = self._document.metaball.show_floor and (
+            terrain is None or terrain.is_empty
+        )
+        height = self._document.solver_config.ground_y
+        return {
+            "u_floor_enabled": int(enabled),
+            "u_floor_height": float(height if height is not None else 0.0),
+        }
 
     def _flush_upload(self) -> None:
         """Push queued primitives to the GPU. Requires the context current.
@@ -503,8 +597,8 @@ class MetaballViewport(RaymarchView):
         self._terrain.upload_terrain(terrain)
         self._terrain_source = terrain
 
-    def _paint_rig(self) -> None:
-        """Draw links and chunks over the surface, then put GL back as it was.
+    def _paint_overlay(self) -> None:
+        """Draw the rig and the gizmo over the surface, then put GL back as it was.
 
         ``QPainter`` on a ``QOpenGLWidget`` renders through GL into the same
         framebuffer, and the ordering is not a style preference: begun before
@@ -524,15 +618,64 @@ class MetaballViewport(RaymarchView):
         """
         body = self._document.body
         width, height = max(self.width(), 1), max(self.height(), 1)
-        if body.n_chunks:
-            matrix = self.camera.view_projection_matrix(width, height)
-            screen, visible = project(matrix, chunk_centres(body), width, height)
-            painter = QPainter(self)
-            try:
+        painter = QPainter(self)
+        try:
+            if self._show_rig and body.n_chunks:
+                matrix = self.camera.view_projection_matrix(width, height)
+                screen, visible = project(matrix, chunk_centres(body), width, height)
                 self._stroke_rig(painter, body, screen, visible)
-            finally:
-                painter.end()
+            self._stroke_gizmo(painter, width, height)
+        finally:
+            painter.end()
         self._restore_gl_state()
+
+    def _stroke_gizmo(self, painter: QPainter, width: int, height: int) -> None:
+        """The orientation triad: axis handles around a disc, click-to-snap.
+
+        Painted in :func:`gizmo_handles`' back-to-front order so the handle a
+        click resolves to is the one on top. Handles pointing at the viewer are
+        full strength and the positive three carry their axis letter; handles
+        pointing away dim, which is what makes the third dimension legible on
+        a flat disc.
+        """
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        cx = width - GIZMO_MARGIN_PX - GIZMO_RADIUS_PX
+        cy = GIZMO_MARGIN_PX + GIZMO_RADIUS_PX
+        centre = QPointF(cx, cy)
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(8, 9, 11, 60))
+        pad = GIZMO_HANDLE_PX + 6.0
+        painter.drawEllipse(centre, GIZMO_RADIUS_PX + pad, GIZMO_RADIUS_PX + pad)
+
+        for view, x, y, depth in gizmo_handles(self.camera, width, height):
+            colour = QColor(_GIZMO_COLOUR[view])
+            colour.setAlpha(255 if depth <= 0.0 else 120)
+            point = QPointF(x, y)
+
+            if view in _GIZMO_LABEL:
+                painter.setPen(QPen(colour, 1.8))
+                painter.drawLine(centre, point)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(colour)
+                painter.drawEllipse(point, GIZMO_HANDLE_PX, GIZMO_HANDLE_PX)
+                painter.setPen(QPen(QColor(12, 13, 16, colour.alpha())))
+                painter.drawText(
+                    QRectF(
+                        x - GIZMO_HANDLE_PX,
+                        y - GIZMO_HANDLE_PX,
+                        GIZMO_HANDLE_PX * 2.0,
+                        GIZMO_HANDLE_PX * 2.0,
+                    ),
+                    Qt.AlignmentFlag.AlignCenter,
+                    _GIZMO_LABEL[view],
+                )
+            else:
+                painter.setPen(QPen(colour, 1.6))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(
+                    point, GIZMO_HANDLE_PX - 1.5, GIZMO_HANDLE_PX - 1.5
+                )
 
     def _stroke_rig(
         self,
@@ -661,6 +804,19 @@ class MetaballViewport(RaymarchView):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             position = event.position()
+            view = gizmo_hit(
+                self.camera,
+                max(self.width(), 1),
+                max(self.height(), 1),
+                position.x(),
+                position.y(),
+            )
+            if view is not None:
+                self.camera.snap_view(view)
+                self.camera_changed.emit()
+                self.update()
+                return
+
             chunk_id = self.pick(position.x(), position.y())
             shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
 
@@ -727,6 +883,9 @@ class MetaballViewport(RaymarchView):
             normal=normal,
             offset=anchor - grabbed,
         )
+        # The hand owns the chunk for the duration: kinematic drivers stand
+        # down for held chunks instead of overwriting the drag every tick.
+        self._document.controllers.held.add(chunk_id)
 
     def _drag_to(self, x: float, y: float) -> None:
         """Preview the move by writing the body directly — the one place that happens.
@@ -756,6 +915,7 @@ class MetaballViewport(RaymarchView):
         self._drag = None
         if drag is None:
             return
+        self._document.controllers.held.discard(drag.chunk_id)
 
         body = self._document.body
         if not drag.moved or not body.has_chunk(drag.chunk_id):
@@ -766,7 +926,7 @@ class MetaballViewport(RaymarchView):
             return
 
         body.set_pos(drag.chunk_id, drag.start)
-        self._document.do(MoveChunk(drag.chunk_id, final))
+        self._document.commit_drag(drag.chunk_id, final)
 
     # ------------------------------------------------------------------
     # lifecycle

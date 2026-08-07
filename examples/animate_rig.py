@@ -21,7 +21,8 @@ from pathlib import Path
 
 import numpy as np
 
-from mesh_xml.anim import ControlContext, autorig
+from mesh_xml.anim import autorig
+from mesh_xml.anim.controllers.drive import WaveAnchor
 from mesh_xml.core.solver import SolverConfig
 from mesh_xml.io import xml_legacy, xml_v2
 from mesh_xml.render import DrawPoints
@@ -29,58 +30,37 @@ from mesh_xml.render import DrawPoints
 GROUND = 0.0
 
 
-class WaveAnchor:
-    """Moves the anchor on a slow lissajous so the body has something to chase.
-
-    Writes a position, which controllers otherwise must not do. Legitimate here
-    for the same reason as in the quadruped: the anchor is pinned, so the solver
-    has no authority over it and there is nothing to fight.
-    """
-
-    def __init__(self, anchor: int, origin, amplitude: float = 0.8, rate: float = 0.6) -> None:
-        self.enabled = True
-        self.anchor = anchor
-        self.origin = np.asarray(origin, dtype=np.float64)
-        self.amplitude = amplitude
-        self.rate = rate
-
-    def update(self, ctx: ControlContext) -> None:
-        if not ctx.has(self.anchor):
-            return
-        t = ctx.time * self.rate
-        offset = np.array(
-            [np.sin(t * 2.0) * self.amplitude, np.sin(t * 1.3) * self.amplitude * 0.35, np.cos(t) * self.amplitude],
-            dtype=np.float64,
-        )
-        ctx.body.set_pos(self.anchor, self.origin + offset)
-
-
-def load(path: Path):
-    try:
-        return xml_v2.load(path)
-    except Exception:
-        return xml_legacy.read_legacy(path).body
-
-
 def prepare(path: Path):
-    body = load(path)
-    rig = autorig.auto_controllers(body, ground_y=GROUND, seed=5)
-    if rig.anchor is not None:
-        origin = body.chunk(rig.anchor).pos
+    """A body and the stack driving it — the file's own gait when it has one.
+
+    A v3 document carries its controllers, so re-rigging it here would stack a
+    second spine on top of the shipped one and the two would fight. Only a
+    gait-less file (v2, or a v1 legacy armature) gets the autorig treatment.
+    """
+    try:
+        rig = xml_v2.read(path)
+        if rig.controllers.controllers:
+            count = len(rig.controllers.controllers)
+            return rig.body, rig.controllers, f"shipped gait ({count} controller(s))"
+        body = rig.body
+    except Exception:
+        body = xml_legacy.read_legacy(path).body
+
+    fitted = autorig.auto_controllers(body, ground_y=GROUND, seed=5)
+    if fitted.anchor is not None:
+        origin = body.chunk(fitted.anchor).pos
         # First, so the followers chase an anchor already at this tick's position.
-        rig.stack.controllers.insert(0, WaveAnchor(rig.anchor, origin))
-    return body, rig
+        fitted.stack.controllers.insert(0, WaveAnchor(fitted.anchor, origin))
+    return body, fitted.stack, f"autorigged: {fitted.description}"
 
 
 def main(argv: list[str]) -> int:
     args = [a for a in argv[1:] if not a.startswith("--")]
     path = Path(args[0]) if args else Path("examples/chubby_worm.xml")
-    body, rig = prepare(path)
+    body, stack, description = prepare(path)
 
     print(f"{path.name}: {body.n_chunks} chunks, {body.n_links} links")
-    print(f"  topology: {rig.description}")
-    if rig.anchor is not None:
-        print(f"  anchored at {body.name_of(rig.anchor)!r}")
+    print(f"  {description}")
 
     if "--gui" in argv:
         from mesh_xml.editor.app import MainWindow
@@ -90,7 +70,7 @@ def main(argv: list[str]) -> int:
         configure_surface_format()
         app = ensure_application(argv)
         document = Document()
-        document.adopt(body, controllers=rig.stack, path=path)
+        document.adopt(body, controllers=stack, path=path)
         document.solver_config = SolverConfig(ground_y=GROUND, iterations=10)
         document.metaball.blend = 0.18
         window = MainWindow(document)
@@ -104,7 +84,7 @@ def main(argv: list[str]) -> int:
     draw = DrawPoints(body, stiffness=0.30, damping=0.82)
     start = body.pos.copy()
     for _ in range(600):
-        rig.stack.tick(body, 1 / 40, config)
+        stack.tick(body, 1 / 40, config)
         draw.update(body)
 
     print(f"  moved {float(np.abs(body.pos - start).max()):.3f} units over 15s")

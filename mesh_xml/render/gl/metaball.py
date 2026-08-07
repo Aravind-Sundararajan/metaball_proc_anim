@@ -109,6 +109,13 @@ class MetaballSettings:
     #: data and travels with the upload instead (:class:`TerrainTexture`).
     terrain_colour: tuple[float, float, float] = (0.36, 0.44, 0.31)
     background_colour: tuple[float, float, float] = (0.11, 0.12, 0.14)
+    #: Whether the editor draws its reference grid floor. Deliberately absent
+    #: from :meth:`uniforms`: the shader's floor also needs a height and a
+    #: terrain veto that only the document knows, so the viewport owns the
+    #: ``u_floor_*`` uniforms and a standalone view (the test harness) never
+    #: sets them — GL's zero default keeps the floor off and the CPU-oracle
+    #: comparisons exact.
+    show_floor: bool = True
 
     def uniforms(self) -> dict[str, object]:
         """Uniform values for :attr:`RaymarchView.uniforms`."""

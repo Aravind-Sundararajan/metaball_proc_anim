@@ -59,6 +59,15 @@ class ControlContext:
     time: float
     rng: np.random.Generator
     config: SolverConfig | None = None
+    held: frozenset[int] = frozenset()
+    """Chunks a hand currently owns — the editor's drag, a game's grab.
+
+    Authority, not force. A pinned anchor has infinite mass, so no force a
+    grab could apply would ever move it; Rain World resolves the same standoff
+    by re-balancing the grasp's authority over the chunk, and this is that
+    mechanism's smallest form. Kinematic drivers must stand down for held
+    chunks; force controllers may keep contributing, because forces reconcile
+    and writes fight."""
 
     def slot(self, chunk_id: int) -> int:
         return self.body.slot(chunk_id)
@@ -178,6 +187,10 @@ class ControllerStack:
         self.seed = seed
         self.time = 0.0
         self.rng = np.random.default_rng(seed)
+        #: Chunks a hand owns right now; see :attr:`ControlContext.held`.
+        #: Plain mutable state rather than a tick argument because a grab
+        #: outlives any one tick and belongs to whoever owns the stack.
+        self.held: set[int] = set()
         self._forces = np.zeros((body.n_chunks, body.dim), dtype=np.float32)
 
     @property
@@ -234,6 +247,7 @@ class ControllerStack:
             time=self.time,
             rng=self.rng,
             config=config,
+            held=frozenset(self.held),
         )
         for controller in self.controllers:
             if getattr(controller, "enabled", True):

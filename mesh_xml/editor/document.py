@@ -27,7 +27,8 @@ from typing import Protocol
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from mesh_xml.anim import Clock, ControllerStack
+from mesh_xml.anim import Clock, ControllerStack, autorig
+from mesh_xml.anim.controllers.drive import WaveAnchor
 from mesh_xml.core import Body, LinkType
 from mesh_xml.core.solver import SolverConfig
 from mesh_xml.core.terrain import Terrain
@@ -46,6 +47,9 @@ __all__ = [
     "Rename",
     "AddLink",
     "RemoveLink",
+    "SetControllerField",
+    "RemoveController",
+    "ReplaceControllers",
     "Macro",
 ]
 
@@ -228,6 +232,60 @@ class RemoveLink:
 
 
 @dataclass
+class SetControllerField:
+    """Assign one field on one controller of the document's stack.
+
+    Indexed by stack position rather than holding the controller object, so a
+    redo after the stack was replaced and restored still lands on the right
+    controller — the same reason :class:`AddChunk` re-applies its id.
+    """
+
+    index: int
+    field: str
+    value: object
+    text: str = "Edit Controller"
+    _previous: object = None
+
+    def apply(self, document: Document) -> None:
+        controller = document.controllers.controllers[self.index]
+        self._previous = getattr(controller, self.field)
+        setattr(controller, self.field, self.value)
+
+    def revert(self, document: Document) -> None:
+        controller = document.controllers.controllers[self.index]
+        setattr(controller, self.field, self._previous)
+
+
+@dataclass
+class RemoveController:
+    index: int
+    text: str = "Remove Controller"
+    _controller: object = None
+
+    def apply(self, document: Document) -> None:
+        self._controller = document.controllers.controllers.pop(self.index)
+
+    def revert(self, document: Document) -> None:
+        document.controllers.controllers.insert(self.index, self._controller)
+
+
+@dataclass
+class ReplaceControllers:
+    """Swap the whole stack, keeping the old one for undo."""
+
+    stack: ControllerStack
+    text: str = "Replace Controllers"
+    _previous: ControllerStack | None = None
+
+    def apply(self, document: Document) -> None:
+        self._previous = document.controllers
+        document.controllers = self.stack
+
+    def revert(self, document: Document) -> None:
+        document.controllers = self._previous
+
+
+@dataclass
 class Macro:
     """Several commands undone and redone as one. Reverts in reverse order."""
 
@@ -246,6 +304,11 @@ class Macro:
 #: Commands that change the chunk or link set, as opposed to only their values.
 _STRUCTURAL = (AddChunk, RemoveChunk, AddLink, RemoveLink, Macro)
 
+#: Commands after which the controller panel must re-read the stack. Macro is
+#: included because a compound edit may carry controller commands inside it;
+#: a spurious refresh is cheap and a missed one is a stale panel.
+_CONTROLLER = (SetControllerField, RemoveController, ReplaceControllers, Macro)
+
 
 class Document(QObject):
     """Owns the rig, the simulation state, and the undo stack."""
@@ -256,6 +319,7 @@ class Document(QObject):
     selection_changed = Signal()
     settings_changed = Signal()
     terrain_changed = Signal()
+    controllers_changed = Signal()
     running_changed = Signal(bool)
     dirty_changed = Signal(bool)
     history_changed = Signal()
@@ -448,6 +512,8 @@ class Document(QObject):
         else:
             chunk_id = getattr(command, "chunk_id", -1)
             self.chunk_changed.emit(chunk_id)
+        if isinstance(command, _CONTROLLER):
+            self.controllers_changed.emit()
         self.history_changed.emit()
 
     # ------------------------------------------------------------------
@@ -550,6 +616,74 @@ class Document(QObject):
         self.set_selection((new_id,))
         return new_id
 
+    def commit_drag(self, chunk_id: int, final: tuple[float, ...]) -> None:
+        """Record a finished viewport drag as the edit the gesture meant.
+
+        For an ordinary chunk that is a move. For a chunk a driver leads — any
+        controller claiming it as ``anchor`` with an authored ``origin`` — the
+        gesture means "the motion's home is now here": the origin is
+        re-authored, minus the swing the next tick will add so the chunk stays
+        exactly under the hand, and the move rides in the same undo step for
+        the paused case, where no driver is running to make it moot. Without
+        this, dragging the worm's head was a fight the hand lost one tick
+        after letting go.
+
+        The caller has already rewound its preview; every position this
+        records arrives through the command stack.
+        """
+        commands: list[Command] = [MoveChunk(chunk_id, tuple(final))]
+        for index, controller in enumerate(self.controllers.controllers):
+            if getattr(controller, "anchor", None) != chunk_id:
+                continue
+            if not hasattr(controller, "origin"):
+                continue
+            origin = np.asarray(final, dtype=np.float64)
+            swing = getattr(controller, "swing", None)
+            if callable(swing):
+                origin = origin - np.asarray(swing(self.controllers.time))[: origin.size]
+            commands.append(
+                SetControllerField(
+                    index, "origin", tuple(float(v) for v in origin)
+                )
+            )
+        if len(commands) == 1:
+            self.do(commands[0])
+        else:
+            self.do(Macro(commands, text="Move Anchor"))
+
+    def fit_autorig(self) -> None:
+        """Fit an autorig plus wave driver to the body, as one undo step.
+
+        The same recipe the shipped examples were upgraded with:
+        :func:`~mesh_xml.anim.autorig.auto_controllers` for the shape, a
+        :class:`~mesh_xml.anim.controllers.drive.WaveAnchor` at the front so
+        the anchor leads. ``auto_controllers`` pins the anchor directly while
+        fitting; that pin is rewound here and re-applied through a command, so
+        undo takes the whole thing back out — stack, pin, and all.
+        """
+        body = self.body
+        if body.n_chunks == 0:
+            return
+        inv_before = body.inv_mass.copy()
+        fitted = autorig.auto_controllers(
+            body, ground_y=self.solver_config.ground_y, seed=5
+        )
+        commands: list[Command] = []
+        if fitted.anchor is not None:
+            origin = body.chunk(fitted.anchor).pos
+            fitted.stack.controllers.insert(0, WaveAnchor(fitted.anchor, origin))
+            previous = float(inv_before[body.slot(fitted.anchor)])
+            if previous > 0.0:
+                # Rewind the fitter's direct pin to the exact prior mass, so
+                # the SetPinned command both records it and re-applies the pin.
+                body.set_pinned(fitted.anchor, False, mass=1.0 / previous)
+                commands.append(SetPinned(fitted.anchor, True))
+        commands.append(ReplaceControllers(fitted.stack))
+        if len(commands) == 1:
+            self.do(commands[0])
+        else:
+            self.do(Macro(commands, text="Fit Autorig"))
+
     # ------------------------------------------------------------------
     # files
     # ------------------------------------------------------------------
@@ -613,6 +747,7 @@ class Document(QObject):
         self._replace(body, Path(path) if path else None)
         if controllers is not None:
             self.controllers = controllers
+            self.controllers_changed.emit()
         self.set_terrain(terrain)
 
     def save(self, path) -> None:
@@ -645,6 +780,7 @@ class Document(QObject):
         self.body_replaced.emit()
         self.topology_changed.emit()
         self.selection_changed.emit()
+        self.controllers_changed.emit()
         self.history_changed.emit()
 
     @property

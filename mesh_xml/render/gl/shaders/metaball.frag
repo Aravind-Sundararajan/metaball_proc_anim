@@ -27,6 +27,19 @@ uniform vec3  u_terrain_colour;
 uniform vec3  u_background_colour;
 uniform float u_normal_epsilon;
 
+// The reference floor: an analytic plane the editor draws when no terrain is
+// loaded. Never part of sd_scene — the march, the packed-depth debug output and
+// the CPU comparison are all unaware of it, which is what keeps the oracle
+// tests exact. Both uniforms default to 0, so a view that never sets them (the
+// test harness, any standalone RaymarchView) renders exactly as before.
+uniform int   u_floor_enabled;
+uniform float u_floor_height;
+
+const float GRID_CELL       = 1.0;   // world units per minor cell
+const float GRID_MAJOR      = 5.0;   // minor cells per major line
+const float GRID_FADE_START = 18.0;  // eye distance where the grid starts to go
+const float GRID_FADE_END   = 55.0;  // ... and where it has fully gone
+
 in  vec2 v_uv;
 out vec4 frag_colour;
 
@@ -71,6 +84,33 @@ vec3 pack_depth(float t) {
     return channels;
 }
 
+// How much creature light reaches a floor point: a march toward the light
+// through sd_field alone, so the world (absent when the floor draws) can never
+// double-shadow. The running min of d/t is the classic penumbra estimate —
+// distance the occluder clears the ray by, over how far along it sits.
+float floor_shadow(vec3 point, vec3 light) {
+    float t = 0.05;
+    float shade = 1.0;
+    for (int i = 0; i < 48; ++i) {
+        float d = sd_field(point + light * t);
+        if (d < 1e-3) return 0.0;
+        shade = min(shade, 8.0 * d / t);
+        t += clamp(d, 0.02, 0.5);
+        if (t > 20.0) break;
+    }
+    return clamp(shade, 0.0, 1.0);
+}
+
+// Anti-aliased grid coverage at a floor point, in [0, 1]. Screen-space
+// derivatives turn the line width into pixels, so lines stay one line wide at
+// any distance and dissolve on their own where a cell is thinner than a pixel.
+float grid_line(vec2 p, float cell) {
+    vec2 coord = p / cell;
+    vec2 pixels = fwidth(coord);
+    vec2 dist = abs(fract(coord - 0.5) - 0.5) / max(pixels, vec2(1e-6));
+    return 1.0 - smoothstep(0.6, 1.4, min(dist.x, dist.y));
+}
+
 void main() {
     vec3 direction = camera_ray(v_uv);
     vec3 origin = camera_origin(v_uv);
@@ -83,6 +123,33 @@ void main() {
     if (u_debug_mode == 3) {
         frag_colour = vec4(vec3(float(result.steps) / float(u_max_steps)), 1.0);
         return;
+    }
+
+    // The reference floor draws only in the shaded mode: the debug modes are
+    // the CPU oracle's view and the oracle marches sd_scene alone. The outer
+    // branch is uniform, which is what keeps grid_line's derivatives defined.
+    if (u_floor_enabled != 0 && u_debug_mode == 0) {
+        float slope = direction.y;
+        float floor_t = abs(slope) > 1e-6 ? (u_floor_height - origin.y) / slope : -1.0;
+        vec3 point = origin + direction * max(floor_t, 0.0);
+
+        float minor = grid_line(point.xz, GRID_CELL);
+        float major = grid_line(point.xz, GRID_CELL * GRID_MAJOR);
+        float fade = 1.0 - smoothstep(GRID_FADE_START, GRID_FADE_END, floor_t);
+
+        bool wins = floor_t > 0.0
+            && floor_t < u_max_distance
+            && (!result.hit || floor_t < result.t);
+        if (wins) {
+            vec3 light = normalize(u_light_direction);
+            float lit = mix(0.45, 1.0, floor_shadow(point, light));
+            vec3 base = mix(u_background_colour, vec3(1.0), 0.05);
+            vec3 lined = base + vec3(0.06) * minor + vec3(0.10) * major;
+            frag_colour = vec4(
+                mix(u_background_colour, lined * lit, fade), 1.0
+            );
+            return;
+        }
     }
 
     if (!result.hit) {
