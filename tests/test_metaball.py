@@ -107,6 +107,9 @@ class TestSourceAssembly:
         supplied = set(metaball.MetaballSettings().uniforms())
         supplied |= set(metaball.PrimitiveTexture().uniforms())
         supplied |= set(metaball.TerrainTexture().uniforms())
+        supplied |= set(metaball.GroupTexture().uniforms())
+        supplied |= set(metaball.BoundsTexture().uniforms())
+        supplied |= set(metaball.TileTexture().uniforms())
 
         for name in supplied:
             assert f" {name};" in text, f"{name} is set but not declared in the shader"
@@ -201,7 +204,16 @@ class TestAgainstTheCpuReference:
     """The shader is only trustworthy where it agrees with field.py."""
 
     @staticmethod
-    def render(primitives, camera, settings, size, terrain=None):
+    def render(
+        primitives,
+        camera,
+        settings,
+        size,
+        terrain=None,
+        groups=None,
+        bounds=None,
+        tiles=None,
+    ):
         from PySide6.QtGui import QImage
 
         width, height = size
@@ -222,6 +234,30 @@ class TestAgainstTheCpuReference:
         texture.upload(primitives)
         view.doneCurrent()
         view.uniforms.update(texture.uniforms())
+
+        if groups is not None:
+            table = metaball.GroupTexture()
+            view.makeCurrent()
+            table.upload(groups)
+            view.doneCurrent()
+            view.uniforms.update(table.uniforms())
+
+        if bounds is not None:
+            spheres = metaball.BoundsTexture()
+            view.makeCurrent()
+            spheres.upload(bounds)
+            view.doneCurrent()
+            view.uniforms.update(spheres.uniforms())
+
+        if tiles is not None:
+            from mesh_xml.render.tiles import TILE_SIZE
+
+            grid = metaball.TileTexture()
+            view.makeCurrent()
+            grid.upload(tiles)
+            view.doneCurrent()
+            view.uniforms.update(grid.uniforms())
+            view.uniforms.update({"u_tile_size": TILE_SIZE})
 
         # terrain=None sets no terrain uniform at all — the shader's zero
         # defaults — which is exactly the path every terrain-unaware caller
@@ -275,6 +311,219 @@ class TestAgainstTheCpuReference:
         error = np.abs(t_gpu[shared] - t_cpu[shared])
         assert np.percentile(error, 99) < 0.05
         assert error.mean() < 0.01
+
+    def test_grouped_depth_matches_the_oracle(self):
+        """Two creatures with hard skins: the grouped fold agrees CPU/GPU.
+
+        The pair sits close enough that the global smooth minimum would weld
+        them, so this exercises the path where grouping actually changes the
+        surface — and asserts it did, against the ungrouped render.
+        """
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = Body()
+        for creature, y in enumerate((0.0, 1.1)):
+            ids = [
+                body.add_chunk(f"w{creature}c{i}", [i * 0.8 - 1.6, y, 0.0], radius=0.45)
+                for i in range(4)
+            ]
+            for a, b in zip(ids, ids[1:]):
+                body.add_link(a, b)
+
+        primitives = sdf.pack(body)
+        groups = sdf.group_table(body)
+        blend = 0.35
+        size = (160, 120)
+        camera = OrbitCamera(distance=8.0, yaw=20.0, pitch=12.0)
+        settings = metaball.MetaballSettings(blend=blend, debug_mode=2, max_distance=20.0)
+
+        rgb = self.render(primitives, camera, settings, size, groups=groups)
+        t_gpu, hit_gpu = metaball.unpack_depth(rgb, settings.max_distance)
+
+        origin, directions = camera.ray_directions(*size)
+        t_cpu, hit_cpu = field.raymarch(
+            origin,
+            directions,
+            primitives,
+            blend,
+            max_distance=settings.max_distance,
+            max_steps=settings.max_steps,
+            surface_epsilon=settings.surface_epsilon,
+            step_relaxation=settings.step_relaxation,
+            groups=groups[:, :2],
+        )
+
+        assert hit_gpu.sum() > 500
+        agreement = (hit_gpu == hit_cpu).mean()
+        assert agreement > 0.99, f"hit masks agree on only {agreement:.3%}"
+        shared = hit_gpu & hit_cpu
+        error = np.abs(t_gpu[shared] - t_cpu[shared])
+        assert np.percentile(error, 99) < 0.05
+
+        ungrouped = self.render(primitives, camera, settings, size)
+        assert not np.array_equal(rgb, ungrouped), "grouping should remove the weld"
+
+    def test_the_bounds_cull_changes_nothing_at_all(self):
+        """The whole justification for the cull is that it is invisible.
+
+        A skipped group's true distance is at least its lower bound, which is
+        at least the running minimum, so the survivors' arithmetic — and
+        therefore the image — must be identical byte for byte. Checked in the
+        shaded mode, where colour lookup runs the culled path too, and in the
+        packed-depth mode, where a single ulp of drift would show.
+        """
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = Body()
+        for creature, (x0, y) in enumerate(((0.0, 0.0), (0.5, 1.1), (-4.0, 0.3))):
+            ids = [
+                body.add_chunk(f"w{creature}c{i}", [x0 + i * 0.8, y, 0.0], radius=0.4)
+                for i in range(3)
+            ]
+            for a, b in zip(ids, ids[1:]):
+                body.add_link(a, b)
+
+        primitives = sdf.pack(body)
+        groups = sdf.group_table(body)
+        blend = 0.3
+        bounds = sdf.group_bounds(primitives, groups, k=blend)
+        size = (160, 120)
+        camera = OrbitCamera(distance=9.0, yaw=25.0, pitch=18.0)
+
+        for mode in (0, 2):
+            settings = metaball.MetaballSettings(
+                blend=blend, debug_mode=mode, max_distance=20.0
+            )
+            plain = self.render(primitives, camera, settings, size, groups=groups)
+            culled = self.render(
+                primitives, camera, settings, size, groups=groups, bounds=bounds
+            )
+            assert np.array_equal(culled, plain), f"cull changed mode {mode}"
+
+    def test_the_cull_is_invisible_under_the_floor_shadow_too(self):
+        """The shadow march's bounds early-out must also change nothing.
+
+        The floor path exercises floor_shadow's skip: pixels far from every
+        creature return full light without marching, and the claim is that the
+        march would have said the same. Byte equality over a frame that is
+        mostly floor is the strongest form of that claim on offer.
+        """
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = Body()
+        for creature, (x0, y) in enumerate(((0.0, 0.6), (1.2, 1.6))):
+            ids = [
+                body.add_chunk(f"w{creature}c{i}", [x0 + i * 0.8, y, 0.0], radius=0.4)
+                for i in range(3)
+            ]
+            for a, b in zip(ids, ids[1:]):
+                body.add_link(a, b)
+
+        primitives = sdf.pack(body)
+        groups = sdf.group_table(body)
+        blend = 0.3
+        bounds = sdf.group_bounds(primitives, groups, k=blend)
+        size = (160, 120)
+        camera = OrbitCamera(distance=10.0, yaw=25.0, pitch=30.0)
+        settings = metaball.MetaballSettings(blend=blend, max_distance=60.0)
+
+        def with_floor(bounds_rows):
+            view_kwargs = dict(groups=groups)
+            if bounds_rows is not None:
+                view_kwargs["bounds"] = bounds_rows
+            return self.render(
+                primitives, camera, settings, size, **view_kwargs
+            )
+
+        # The render helper never sets floor uniforms, so patch them through
+        # settings' uniform dict: MetaballSettings does not own the floor, the
+        # caller does — exactly as the viewport does it.
+        original = metaball.MetaballSettings.uniforms
+        def floored(self_settings):
+            values = original(self_settings)
+            values["u_floor_enabled"] = 1
+            values["u_floor_height"] = 0.0
+            return values
+        metaball.MetaballSettings.uniforms = floored
+        try:
+            plain = with_floor(None)
+            culled = with_floor(bounds)
+        finally:
+            metaball.MetaballSettings.uniforms = original
+
+        assert np.array_equal(culled, plain), "the shadow early-out changed pixels"
+
+    @pytest.mark.parametrize("orthographic", [False, True])
+    def test_tiles_are_surface_exact(self, orthographic):
+        """The tile shortlist's stated contract, held to on real GL.
+
+        Tiling is the one optimisation that is not byte-exact — field values
+        far from surfaces are legitimately global, so empty-space step sizes
+        drift — but the *surface* must be untouched: hits land on the same
+        creatures at the same depth to within the march's own tolerance, and
+        the only pixels allowed to flip hit/miss are silhouette-grazers on
+        the hit boundary, whose status was already decided by sample
+        placement inside the march's epsilon.
+        """
+        from mesh_xml.render.gl.camera import OrbitCamera
+        from mesh_xml.render.tiles import tile_masks
+
+        body = Body()
+        for creature, (x0, y, z) in enumerate(
+            ((-2.5, 0.0, 0.0), (0.5, 1.2, 0.4), (2.0, -0.8, -0.6))
+        ):
+            ids = [
+                body.add_chunk(f"w{creature}c{i}", [x0 + i * 0.8, y, z], radius=0.4)
+                for i in range(3)
+            ]
+            for a, b in zip(ids, ids[1:]):
+                body.add_link(a, b)
+
+        primitives = sdf.pack(body)
+        groups = sdf.group_table(body)
+        blend = 0.3
+        bounds = sdf.group_bounds(primitives, groups, k=blend)
+        size = (160, 112)
+        camera = OrbitCamera(
+            distance=9.0, yaw=30.0, pitch=20.0, orthographic=orthographic
+        )
+        masks = tile_masks(bounds, camera, *size)
+        assert masks is not None
+        assert int(masks.sum()) > 0
+
+        depth = metaball.MetaballSettings(blend=blend, debug_mode=2, max_distance=20.0)
+        plain_rgb = self.render(primitives, camera, depth, size, groups=groups, bounds=bounds)
+        tiled_rgb = self.render(
+            primitives, camera, depth, size, groups=groups, bounds=bounds, tiles=masks
+        )
+        t_plain, hit_plain = metaball.unpack_depth(plain_rgb, depth.max_distance)
+        t_tiled, hit_tiled = metaball.unpack_depth(tiled_rgb, depth.max_distance)
+
+        assert hit_plain.sum() > 400
+        # Hit flips are legal only on the silhouette: pixels whose 3x3
+        # neighbourhood in the untiled mask contains both a hit and a miss.
+        flips = hit_tiled != hit_plain
+        if flips.any():
+            interior = np.ones_like(hit_plain)
+            pad = np.pad(hit_plain, 1, mode="edge")
+            for dy in (0, 1, 2):
+                for dx in (0, 1, 2):
+                    window = pad[dy : dy + hit_plain.shape[0], dx : dx + hit_plain.shape[1]]
+                    interior &= window == hit_plain
+            assert not (flips & interior).any(), "an interior pixel flipped hit/miss"
+            assert int(flips.sum()) < max(8, int(0.01 * hit_plain.sum()))
+        shared = hit_plain & hit_tiled
+        drift = np.abs(t_tiled[shared] - t_plain[shared])
+        assert float(drift.max()) < 5e-3, f"depth drifted {drift.max():.4f}"
+
+        shaded = metaball.MetaballSettings(blend=blend, max_distance=20.0)
+        plain_img = self.render(primitives, camera, shaded, size, groups=groups, bounds=bounds)
+        tiled_img = self.render(
+            primitives, camera, shaded, size, groups=groups, bounds=bounds, tiles=masks
+        )
+        difference = np.abs(plain_img - tiled_img)
+        assert float(difference.mean()) < 0.5, "shaded frames diverged visibly"
+        assert float(np.percentile(difference, 99.9)) <= 8.0
 
     def test_blending_thickens_the_surface(self):
         """k > 0 must move the surface outward, not merely smooth it."""

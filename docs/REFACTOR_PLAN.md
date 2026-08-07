@@ -367,6 +367,79 @@ Landed after Phase 5, in one fan-out:
   document with autorig plus that driver baked in: open the chubby worm,
   press Play, it swims. The v1 originals moved to ``tests/data/legacy_v1_*``
   where the legacy-reader tests always wanted them.
+* **Blend groups: every creature its own skin.** The SDF was one global
+  smooth minimum, so creatures within blend distance welded into shared goo —
+  the identity wall the herd benchmark named. Now ``sdf.pack`` orders rows
+  group-major by connected component (over *all* links, mechanism braces
+  included — identity is physical, not fleshly) and ``sdf.group_table`` emits
+  ``[start, count][r, g, b]`` rows that ride the existing stride-8 texture
+  machinery on a third unit. Smooth minimum within a group, hard minimum
+  across — associative, so cross-group order never becomes a contract — and
+  the winning group colours the hit: group 0 wears the authored surface
+  colour exactly, later groups rotate the hue by the golden-ratio step, so a
+  herd colours itself. CPU oracle and shader changed in lockstep; a grouped
+  parity test holds them to the same tolerances as the global fold, and a
+  document with no groups uploaded renders bit-for-bit as before.
+* **The bound cull: herd frames at less than half the cost, provably free.**
+  Each blend group carries a bounding sphere (``sdf.group_bounds``, radius
+  covering every end ball plus the smooth-min inflation ``k``, re-uploaded
+  per frame through the same stride-8 machinery on a fourth unit), making
+  ``|p - c| - r`` a true lower bound on the group's field. The fold then
+  evaluates the nearest-bound group first — a tight running minimum
+  immediately — and skips any group whose bound cannot beat it; folding in
+  table order instead leaves ~ln(G) record-setters folding per step, which
+  was most of the win left on the table. The floor's shadow march gets the
+  same treatment: a group can only dim the penumbra within ``max_t/8`` of
+  the light ray, so floor pixels no bound reaches skip the 48-step march
+  outright. Every skip is exact — a skipped fold is never evaluated, and the
+  survivors' arithmetic is untouched — enforced by byte-equality tests over
+  culled and unculled frames, shaded and packed-depth, floor on and off.
+  Measured at 1280x800: 40 worms 66.8 to 27.8 ms creature-only, and the
+  editor's default floor-on frame 104.0 to 36.9 ms — 2.8x.
+* **The tiled broad phase — the "GL 3.3 has no compute stage" blocker,
+  dissolved.** The prepass never needed one: the CPU already owns every
+  per-frame derived artefact, and ``render/tiles.py`` builds per-screen-tile
+  group bitmasks (conservative sphere projection, ~0.4 ms at 40 worms) that
+  ride an ``RGBA32UI`` texture — integer textures are core GL 3.0. The
+  fragment shader arms the mask from ``gl_FragCoord`` and iterates only the
+  groups whose bounds the tile's rays can approach; shadow rays stand the
+  mask down, since their occluders are not the camera tile's business. This
+  is the one optimisation that is *surface-exact rather than byte-exact* —
+  field values far from surfaces are legitimately global, so empty-space
+  step sizes drift — and the module docstring owns that contract: same
+  surfaces hit, same colours, ``t`` within the march's tolerance, silhouette
+  flips confined to the hit boundary, and the untiled path bit-identical.
+  Measured win over the bound cull alone: 4-9%, growing with herd size
+  (24.7 vs 27.6 ms at 40 worms) — modest because nearest-first already ate
+  the meal, kept because the delta grows with G and the structure is what
+  larger tile work hangs off. An adversarial review fleet (14 agents) then
+  confirmed and fixed what single-pass work missed: ``resizeGL`` receives
+  *logical* pixels (its old comment claimed the opposite) and never runs in
+  the offscreen path, so the framebuffer size is now derived fresh every
+  paint; the unset integer sampler aliased unit 0 against a float sampler —
+  a draw-time GL error on conformant drivers this machine's happened to
+  forgive; the mask's view transform used a differently-rounded float32
+  path than the shader's rays, breaking conservatism beyond |coords| ~3e6
+  (now built from the rays' own inputs, regression-tested at 1e8); a float32
+  ulp hole in the cull's byte-exactness at k = 0 (bounds now round outward
+  by 8 ulps); a one-frame group-table/primitive desync on topology edits
+  (the table now snapshots beside the primitives it describes); and the
+  tile slack now scales with the settings' own ``max_distance`` instead of
+  assuming the default.
+* **The behavior tier** (``anim/behavior.py``). Brains above controllers,
+  obeying the same law one level up: a brain writes goals — destinations,
+  choices — never forces, never positions it does not own. Two architectures
+  ship as registered controllers: ``Grazer``, a finite state machine
+  (``Fsm``: transitions settle within one think, so a creature acts on a
+  decision the moment it makes it), and ``Hunter``, goal-oriented action
+  planning (``plan``: A* over symbolic preconditions and effects, re-planned
+  whenever the world stops matching the plan's assumptions). Both think on
+  their own slow cadence, steer only their creature's pinned anchor — the
+  same authority ``WaveAnchor`` holds and the editor's hand overrides — and
+  sense each other through ``ctx.peers``, the stack as Rain World's room
+  object list. ``examples/hunt.xml`` is the proof: a predator and prey saved
+  as one ordinary v3 document, and the faster hunter feeds within thirty
+  simulated seconds from any seeded start (the integration test's claim).
 * **Controllers in the GUI, and grabs that win.** A Controllers panel: one
   group per controller on the stack, an enabled switch, spins for every
   numeric field the v3 registry persists — the widget list *is* the format's

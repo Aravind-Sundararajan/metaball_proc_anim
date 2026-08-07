@@ -423,6 +423,16 @@ class Document(QObject):
             radii=self.draw.render_radius(self.body),
         )
 
+    def group_rows(self) -> np.ndarray:
+        """The body's blend groups, coloured from the authored surface colour.
+
+        One creature per connected component: smooth-min flesh within it, a
+        hard skin against every other. Group 0 wears the Surface panel's
+        colour exactly, so a single-creature document looks precisely as
+        authored; a herd spreads itself around the hue wheel from that base.
+        """
+        return sdf.group_table(self.body, self.metaball.surface_colour)
+
     # ------------------------------------------------------------------
     # the world
     # ------------------------------------------------------------------

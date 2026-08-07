@@ -77,17 +77,162 @@ float sd_primitive(vec3 p, int index) {
     return sd_round_cone(p, head.xyz, head.w, tail.xyz, tail.w);
 }
 
-// Folded in array order and seeded with the first primitive, both of which are
-// contracts rather than incidental: smooth_min is not associative for k > 0, so
-// a different order is a different surface. Seeding with a large constant
-// instead would blend against it and inflate the whole field.
-float sd_field(vec3 p) {
-    if (u_primitive_count == 0) return SDF_FAR;
-    float d = sd_primitive(p, 0);
-    for (int i = 1; i < u_primitive_count; ++i) {
+// Blend groups: one creature per contiguous row range of the primitive
+// texture, described by sdf.group_table's stride-8 rows on a third unit —
+// texel one [start, count, 0, 0], texel two [r, g, b, 0]. Smooth minimum
+// *within* a group, hard minimum *across* groups: two creatures touching are
+// two skins, not one weld. With no groups uploaded (count 0) the fold below
+// falls back to the single global chain, bit-exact with what it always was —
+// which is what keeps the CPU-oracle comparisons running unchanged.
+uniform sampler2D u_groups;
+uniform int   u_group_count;
+
+// One group's fold: array order, seeded with its first primitive — the same
+// two contracts as the global fold, scoped to the group's rows. An empty
+// group answers SDF_FAR so the hard min ignores it.
+float sd_group(vec3 p, int group) {
+    vec4 span = texelFetch(u_groups, ivec2(0, group), 0);
+    int start = int(span.x);
+    int last = start + int(span.y);
+    if (last <= start) return SDF_FAR;
+    float d = sd_primitive(p, start);
+    for (int i = start + 1; i < last; ++i) {
         d = sdf_smooth_min(d, sd_primitive(p, i), u_blend);
     }
     return d;
+}
+
+// Per-group bounding spheres, [cx, cy, cz, r] in texel one of each stride-8
+// row, recomputed by the CPU every frame the creatures move. r already covers
+// the smooth-min inflation, so |p - c| - r is a true lower bound on the
+// group's field, and a group whose lower bound cannot beat the running
+// minimum is skipped without evaluating its fold — the skip changes nothing,
+// not even a ulp, because the survivors' arithmetic is untouched. Culling
+// arms only when the bounds table matches the group table row for row; a
+// view that never uploads bounds folds every group, exactly as before.
+uniform sampler2D u_group_bounds;
+uniform int   u_group_bounds_count;
+
+float sd_group_lower_bound(vec3 p, int group) {
+    vec4 sphere = texelFetch(u_group_bounds, ivec2(0, group), 0);
+    return length(p - sphere.xyz) - sphere.w;
+}
+
+// The broad phase: per-screen-tile group bitmasks built on the CPU
+// (mesh_xml/render/tiles.py owns the geometry and the exactness contract —
+// surface-exact, not byte-exact, and why that is fundamental). The root
+// shader arms sdf_tile_mask from gl_FragCoord before tracing; the shadow
+// march stands the mask down, because shadow rays leave the camera ray's
+// cone and their occluders are not this tile's business. A fragment that
+// never arms the mask folds every group, which is the always-correct path
+// every test that wants bit-exactness renders through.
+uniform usampler2D u_tiles;
+uniform int u_tiles_on;
+uniform int u_tile_size;
+
+uvec4 sdf_tile_mask = uvec4(0xFFFFFFFFu);
+bool  sdf_tiled = false;
+
+void sdf_arm_tiles(vec2 frag_coord) {
+    sdf_tiled = u_tiles_on != 0
+        && u_tile_size > 0
+        && u_group_count > 0
+        && u_group_bounds_count == u_group_count;
+    if (!sdf_tiled) return;
+    ivec2 tile = ivec2(frag_coord) / u_tile_size;
+    ivec2 grid = textureSize(u_tiles, 0);
+    tile = clamp(tile, ivec2(0), grid - ivec2(1));
+    sdf_tile_mask = texelFetch(u_tiles, tile, 0);
+}
+
+bool sdf_tile_has(int group) {
+    return !sdf_tiled
+        || (sdf_tile_mask[group >> 5] & (1u << uint(group & 31))) != 0u;
+}
+
+// Folded in array order and seeded with the first primitive, both of which are
+// contracts rather than incidental: smooth_min is not associative for k > 0, so
+// a different order is a different surface. Seeding with a large constant
+// instead would blend against it and inflate the whole field. Across groups
+// the hard min carries no such contract — it is associative.
+float sd_field(vec3 p) {
+    if (u_primitive_count == 0) return SDF_FAR;
+    if (u_group_count <= 0) {
+        float d = sd_primitive(p, 0);
+        for (int i = 1; i < u_primitive_count; ++i) {
+            d = sdf_smooth_min(d, sd_primitive(p, i), u_blend);
+        }
+        return d;
+    }
+    if (u_group_bounds_count != u_group_count) {
+        float d = SDF_FAR;
+        for (int g = 0; g < u_group_count; ++g) {
+            d = min(d, sd_group(p, g));
+        }
+        return d;
+    }
+
+    // Nearest bound folds first, so the running minimum is tight before any
+    // other group is considered and nearly everything else culls. Folding in
+    // table order instead leaves the minimum loose while roughly ln(G)
+    // record-setting groups fold — measured as most of the cull's win left
+    // on the table. Order is free to choose: the cross-group hard minimum is
+    // exact float min, associative and commutative, so any order is the same
+    // image bit for bit.
+    int first = -1;
+    float nearest = SDF_FAR;
+    for (int g = 0; g < u_group_count; ++g) {
+        if (!sdf_tile_has(g)) continue;
+        float lower = sd_group_lower_bound(p, g);
+        if (lower < nearest) {
+            nearest = lower;
+            first = g;
+        }
+    }
+    if (first < 0) return SDF_FAR;
+    float d = sd_group(p, first);
+    for (int g = 0; g < u_group_count; ++g) {
+        if (g == first || !sdf_tile_has(g)) continue;
+        if (sd_group_lower_bound(p, g) >= d) continue;
+        d = min(d, sd_group(p, g));
+    }
+    return d;
+}
+
+// Which group's skin a point is nearest — what the shading looks up a colour
+// by. Only meaningful at a hit, where exactly one group is at the surface.
+// The same cull applies: a group that cannot beat the best cannot win it.
+int sd_nearest_group(vec3 p) {
+    bool cull = u_group_bounds_count == u_group_count;
+    int first = 0;
+    if (cull) {
+        float nearest = SDF_FAR;
+        for (int g = 0; g < u_group_count; ++g) {
+            if (!sdf_tile_has(g)) continue;
+            float lower = sd_group_lower_bound(p, g);
+            if (lower < nearest) {
+                nearest = lower;
+                first = g;
+            }
+        }
+    }
+    int winner = first;
+    float best = sd_group(p, first);
+    for (int g = 0; g < u_group_count; ++g) {
+        if (g == first) continue;
+        if (!sdf_tile_has(g)) continue;
+        if (cull && sd_group_lower_bound(p, g) >= best) continue;
+        float d = sd_group(p, g);
+        if (d < best) {
+            best = d;
+            winner = g;
+        }
+    }
+    return winner;
+}
+
+vec3 sd_group_colour(int group) {
+    return texelFetch(u_groups, ivec2(1, group), 0).rgb;
 }
 
 // Central differences on a tetrahedron: four field taps instead of the six a

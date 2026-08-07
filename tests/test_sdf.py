@@ -188,3 +188,108 @@ class TestMechanismLinks:
 
         after = sdf.pack(body)
         assert np.array_equal(np.sort(before, axis=0), np.sort(after, axis=0))
+
+
+class TestBlendGroups:
+    """One creature per connected component; the table describes the packing."""
+
+    @staticmethod
+    def _herd() -> Body:
+        """Two linked worms with the link build order deliberately interleaved,
+        so the group-major sort in pack() has real work to do."""
+        body = Body()
+        a = [body.add_chunk(f"a{i}", (i * 1.0, 0.0, 0.0), radius=0.4) for i in range(3)]
+        b = [body.add_chunk(f"b{i}", (i * 1.0, 3.0, 0.0), radius=0.3) for i in range(2)]
+        body.add_link(b[0], b[1])
+        body.add_link(a[0], a[1])
+        body.add_link(a[1], a[2])
+        return body
+
+    def test_pack_is_group_major(self):
+        body = self._herd()
+        packed = sdf.pack(body)
+
+        assert len(packed) == 3
+        # Creature A owns the first-seen slot, so its two cones come first
+        # even though its links were added after B's.
+        assert packed[0, 1] == pytest.approx(0.0)  # a-row y
+        assert packed[1, 1] == pytest.approx(0.0)
+        assert packed[2, 1] == pytest.approx(3.0)  # b-row y
+
+    def test_the_table_describes_the_packing(self):
+        body = self._herd()
+        table = sdf.group_table(body)
+
+        assert table.shape == (2, 8)
+        assert table[:, 0].tolist() == [0.0, 2.0]  # starts
+        assert table[:, 1].tolist() == [2.0, 1.0]  # counts
+        assert table[:, 1].sum() == len(sdf.pack(body))
+
+    def test_group_zero_wears_the_authored_colour(self):
+        table = sdf.group_table(self._herd(), base_colour=(0.2, 0.5, 0.8))
+        assert table[0, 4:7] == pytest.approx((0.2, 0.5, 0.8))
+        assert not np.allclose(table[1, 4:7], table[0, 4:7])
+
+    def test_a_mechanism_link_joins_identity_without_joining_flesh(self):
+        """A knee brace is part of the creature it stops: one group, and the
+        brace still emits no primitive."""
+        body = self._herd()
+        body.add_link(0, 3, render=False)
+
+        table = sdf.group_table(body)
+        assert table.shape == (1, 8)
+        assert len(sdf.pack(body)) == 3
+
+    def test_a_lone_chunk_is_its_own_creature(self):
+        body = self._herd()
+        body.add_chunk("pebble", (5.0, 5.0, 0.0), radius=0.2)
+
+        table = sdf.group_table(body)
+        assert table.shape == (3, 8)
+        assert table[2, 1] == pytest.approx(1.0)
+
+    def test_an_empty_body_has_an_empty_table(self):
+        assert sdf.group_table(Body()).shape == (0, 8)
+
+
+class TestGroupBounds:
+    """The sphere must cover the group's whole surface, or the cull lies."""
+
+    def test_the_sphere_covers_every_end_ball_plus_blend(self):
+        body = TestBlendGroups._herd()
+        primitives = sdf.pack(body)
+        table = sdf.group_table(body)
+        k = 0.35
+        bounds = sdf.group_bounds(primitives, table, k=k)
+
+        for group, row in enumerate(table):
+            start, count = int(row[0]), int(row[1])
+            centre, radius = bounds[group, 0:3], float(bounds[group, 3])
+            for prim in primitives[start : start + count]:
+                for end, r in ((prim[0:3], prim[3]), (prim[4:7], prim[7])):
+                    reach = float(np.linalg.norm(end - centre)) + float(r)
+                    assert reach + k <= radius + 1e-5
+
+    def test_the_lower_bound_never_exceeds_the_field(self):
+        """|p - c| - r <= field everywhere is the cull's entire correctness."""
+        from mesh_xml.render.field import field as cpu_field
+
+        body = TestBlendGroups._herd()
+        primitives = sdf.pack(body)
+        table = sdf.group_table(body)
+        k = 0.4
+        bounds = sdf.group_bounds(primitives, table, k=k)
+        points = np.random.default_rng(11).uniform(-4.0, 7.0, size=(200, 3))
+
+        for group, row in enumerate(table):
+            start, count = int(row[0]), int(row[1])
+            rows = primitives[start : start + count]
+            d = cpu_field(points, rows, k)
+            lower = np.linalg.norm(points - bounds[group, 0:3], axis=1) - bounds[group, 3]
+            assert (lower <= d + 1e-5).all()
+
+    def test_an_empty_group_gets_a_zero_sphere(self):
+        table = np.array([[0.0, 0.0, 0, 0, 0, 0, 0, 0]], dtype=np.float32)
+        bounds = sdf.group_bounds(np.zeros((0, 8), dtype=np.float32), table)
+        assert bounds.shape == (1, 8)
+        assert bounds[0, 3] == 0.0

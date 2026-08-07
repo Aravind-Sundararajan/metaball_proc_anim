@@ -1008,3 +1008,62 @@ def test_points_exactly_on_the_primitive_data_are_finite():
     assert got[1] == pytest.approx(-0.25)
     assert got[3] == pytest.approx(0.0, abs=1e-12)
     assert got[4] == pytest.approx(0.0, abs=1e-12)
+
+
+class TestBlendGroups:
+    """Smooth minimum within a group, hard minimum across; grouping is exact."""
+
+    @staticmethod
+    def _sphere(centre, radius) -> list[float]:
+        x, y, z = centre
+        return [x, y, z, radius, x, y, z, radius]
+
+    def test_one_group_is_the_global_fold_bit_for_bit(self):
+        prims = np.array(
+            [self._sphere((i * 0.8, 0.0, 0.0), 0.5) for i in range(4)],
+            dtype=np.float32,
+        )
+        points = np.random.default_rng(4).uniform(-2.0, 5.0, size=(64, 3))
+
+        whole = field(points, prims, 0.3)
+        grouped = field(points, prims, 0.3, groups=np.array([[0, 4]]))
+
+        assert np.array_equal(grouped, whole)
+
+    def test_groups_compose_by_hard_min_of_their_own_folds(self):
+        prims = np.array(
+            [self._sphere((i * 0.8, 0.0, 0.0), 0.5) for i in range(5)],
+            dtype=np.float32,
+        )
+        points = np.random.default_rng(5).uniform(-2.0, 6.0, size=(64, 3))
+        split = 2
+
+        grouped = field(points, prims, 0.3, groups=np.array([[0, split], [split, 5 - split]]))
+        manual = np.minimum(
+            field(points, prims[:split], 0.3), field(points, prims[split:], 0.3)
+        )
+
+        assert np.array_equal(grouped, manual)
+
+    def test_two_creatures_touching_stay_two_skins(self):
+        """The weld is the artifact this exists to remove: at the midpoint of
+        a near-touching pair, the global smooth minimum digs a connecting
+        neck; grouped, the field is the honest hard minimum."""
+        prims = np.array(
+            [self._sphere((0.0, 0.0, 0.0), 0.5), self._sphere((1.05, 0.0, 0.0), 0.5)],
+            dtype=np.float32,
+        )
+        midpoint = np.array([[0.525, 0.0, 0.0]])
+
+        welded = float(field(midpoint, prims, 0.4)[0])
+        skinned = float(field(midpoint, prims, 0.4, groups=np.array([[0, 1], [1, 1]]))[0])
+
+        assert skinned == pytest.approx(0.025, abs=1e-6)
+        assert welded < skinned - 0.05
+
+    def test_an_empty_group_is_ignored(self):
+        prims = np.array([self._sphere((0.0, 0.0, 0.0), 0.5)], dtype=np.float32)
+        point = np.array([[2.0, 0.0, 0.0]])
+
+        d = field(point, prims, 0.2, groups=np.array([[0, 1], [1, 0]]))
+        assert float(d[0]) == pytest.approx(1.5, abs=1e-6)

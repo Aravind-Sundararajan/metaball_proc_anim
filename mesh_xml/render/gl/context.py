@@ -283,18 +283,34 @@ class RaymarchView(QOpenGLWidget):
         if context is not None:
             context.aboutToBeDestroyed.connect(self._release)
 
+    def _device_size(self) -> tuple[int, int]:
+        """The framebuffer's size in device pixels — the ``gl_FragCoord`` domain.
+
+        Derived from the widget size and the device pixel ratio the same way
+        Qt sizes the backing FBO, because nothing else is trustworthy:
+        ``resizeGL``'s arguments were measured to arrive in *logical* pixels
+        on this platform (an earlier comment here claimed the opposite), and
+        in the never-shown ``grabFramebuffer`` path ``resizeGL`` never runs
+        at all, leaving any cached size at its constructor-time snapshot.
+        """
+        ratio = self.devicePixelRatioF() or 1.0
+        return (
+            max(1, int(round(self.width() * ratio))),
+            max(1, int(round(self.height() * ratio))),
+        )
+
     def resizeGL(self, width: int, height: int) -> None:
         from OpenGL.GL import glViewport
 
-        # Qt reports device pixels here and logical pixels from width()/height().
-        # Uniforms must use these, or every ray is off by the device pixel ratio
-        # on a HiDPI display.
-        self._framebuffer = (width, height)
-        glViewport(0, 0, max(width, 0), max(height, 0))
+        self._framebuffer = self._device_size()
+        glViewport(0, 0, *self._framebuffer)
 
     def paintGL(self) -> None:
         from OpenGL.GL import GL_COLOR_BUFFER_BIT, glClear
 
+        # Refreshed every paint rather than trusted from resize events: see
+        # _device_size for the two ways a cached size goes stale.
+        self._framebuffer = self._device_size()
         if self._dirty:
             self._rebuild()
 

@@ -84,20 +84,53 @@ vec3 pack_depth(float t) {
     return channels;
 }
 
+// The shadow march's reach: it walks at most this far toward the light, and
+// with penumbra factor 8 a surface farther than SHADOW_MAX_T / 8 from every
+// point of the ray cannot bring the running min below one. Those two numbers
+// are what make the early-out below exact rather than approximate.
+const float SHADOW_MAX_T = 20.0;
+const float SHADOW_REACH = SHADOW_MAX_T / 8.0;
+
+// Whether any creature's bounding sphere, inflated by the penumbra reach,
+// crosses the shadow ray. If none does, every field value along the march
+// exceeds t/8, the running min never drops below one, and the march would
+// return full light — so returning it without marching changes nothing.
+// Without a valid bounds table the answer is "maybe", and the march runs.
+bool floor_maybe_shadowed(vec3 point, vec3 light) {
+    if (u_group_count <= 0 || u_group_bounds_count != u_group_count) return true;
+    for (int g = 0; g < u_group_count; ++g) {
+        vec4 sphere = texelFetch(u_group_bounds, ivec2(0, g), 0);
+        float reach = sphere.w + SHADOW_REACH;
+        vec3 to = sphere.xyz - point;
+        float along = dot(to, light);
+        if (along < -reach || along > SHADOW_MAX_T + reach) continue;
+        if (dot(to, to) - along * along <= reach * reach) return true;
+    }
+    return false;
+}
+
 // How much creature light reaches a floor point: a march toward the light
 // through sd_field alone, so the world (absent when the floor draws) can never
 // double-shadow. The running min of d/t is the classic penumbra estimate —
 // distance the occluder clears the ray by, over how far along it sits.
 float floor_shadow(vec3 point, vec3 light) {
+    if (!floor_maybe_shadowed(point, light)) return 1.0;
+    // Shadow rays head for the light, not the camera, so this tile's mask
+    // says nothing about their occluders. The mask stands down for the march
+    // and is restored after — a shadow must be castable by a creature whose
+    // body the camera ray's tile never sees.
+    bool was_tiled = sdf_tiled;
+    sdf_tiled = false;
     float t = 0.05;
     float shade = 1.0;
     for (int i = 0; i < 48; ++i) {
         float d = sd_field(point + light * t);
-        if (d < 1e-3) return 0.0;
+        if (d < 1e-3) { shade = 0.0; break; }
         shade = min(shade, 8.0 * d / t);
         t += clamp(d, 0.02, 0.5);
-        if (t > 20.0) break;
+        if (t > SHADOW_MAX_T) break;
     }
+    sdf_tiled = was_tiled;
     return clamp(shade, 0.0, 1.0);
 }
 
@@ -112,6 +145,7 @@ float grid_line(vec2 p, float cell) {
 }
 
 void main() {
+    sdf_arm_tiles(gl_FragCoord.xy);
     vec3 direction = camera_ray(v_uv);
     vec3 origin = camera_origin(v_uv);
     Hit result = trace(origin, direction);
@@ -168,10 +202,15 @@ void main() {
     // The hard min has no blend weight to interpolate colour by, so the hit
     // belongs entirely to whichever field is closer at the landing point —
     // the same comparison min() made when the ray stopped. Absent terrain sits
-    // at SDF_FAR and can never win, so the creature keeps its colour.
+    // at SDF_FAR and can never win, so the creature keeps its colour. With
+    // blend groups uploaded the creature's colour is its group's; without
+    // them it is the single authored surface colour, exactly as before.
+    vec3 creature = u_group_count > 0
+        ? sd_group_colour(sd_nearest_group(position))
+        : u_surface_colour;
     vec3 albedo = sd_terrain(position) < sd_field(position)
         ? u_terrain_colour
-        : u_surface_colour;
+        : creature;
 
     vec3 light = normalize(u_light_direction);
     float lambert = max(dot(normal, light), 0.0);

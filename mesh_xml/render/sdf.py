@@ -38,12 +38,26 @@ importer threw that away.
 
 from __future__ import annotations
 
+import colorsys
+
 import numpy as np
 
 from mesh_xml.core.body import Body
 from mesh_xml.core.distance import DEGENERATE_EPSILON, PRIMITIVE_STRIDE
 
-__all__ = ["DEGENERATE_EPSILON", "PRIMITIVE_STRIDE", "pack", "primitive_count"]
+__all__ = [
+    "DEGENERATE_EPSILON",
+    "PRIMITIVE_STRIDE",
+    "group_bounds",
+    "group_table",
+    "pack",
+    "primitive_count",
+]
+
+#: Hue step between blend groups, as a fraction of the wheel: the golden-ratio
+#: conjugate, which is what keeps any number of groups maximally spread without
+#: knowing the count in advance.
+_GOLDEN_HUE = 0.61803398875
 
 # Canonical home of the record format and its two degeneracies is
 # core/distance.py, since the world's terrain shares the same primitives.
@@ -131,7 +145,142 @@ def pack(
         out[row, 7] = rad[slot]
         row += 1
 
+    # Rows sort group-major so :func:`group_table` can describe each creature
+    # as one contiguous range. The sort is stable, so within a group the order
+    # stays links-then-lonely-chunks exactly as built — and a single-component
+    # body sorts to the identity, byte for byte the array this function has
+    # always produced. Cross-group order was never a contract: groups combine
+    # by the hard minimum, which is associative.
+    return out[np.argsort(_row_groups(body), kind="stable")]
+
+
+def group_table(
+    body: Body,
+    base_colour: tuple[float, float, float] = (0.82, 0.55, 0.42),
+) -> np.ndarray:
+    """The blend groups of a packed body: ``(G, 8) float32``, one creature each.
+
+    Row layout mirrors the primitive record so the same texture machinery
+    carries it: texel one is ``[start, count, 0, 0]`` — the contiguous range of
+    :func:`pack` rows belonging to the group — and texel two is
+    ``[r, g, b, 0]``, the group's surface colour. Group 0 wears ``base_colour``
+    exactly, so a single-creature document keeps the colour its author picked;
+    later groups rotate the hue by the golden-ratio step, which spreads any
+    number of creatures without a palette being authored anywhere.
+
+    Groups are connected components over *all* links, mechanism braces
+    included: a knee stop is part of the creature it stops, even though it
+    carries no flesh.
+    """
+    rows = _row_groups(body)
+    if rows.size == 0:
+        return np.zeros((0, PRIMITIVE_STRIDE), dtype=np.float32)
+
+    counts = np.bincount(rows)
+    starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    out = np.zeros((len(counts), PRIMITIVE_STRIDE), dtype=np.float32)
+    out[:, 0] = starts
+    out[:, 1] = counts
+
+    hue, saturation, value = colorsys.rgb_to_hsv(*base_colour)
+    for group in range(len(counts)):
+        shifted = colorsys.hsv_to_rgb(
+            (hue + group * _GOLDEN_HUE) % 1.0, saturation, value
+        )
+        out[group, 4:7] = shifted
     return out
+
+
+def group_bounds(
+    primitives: np.ndarray, table: np.ndarray, k: float = 0.0
+) -> np.ndarray:
+    """A bounding sphere per blend group: ``(G, 8) float32``, ``[cx,cy,cz,r]``.
+
+    The sphere covers every end ball of the group's primitives — a round cone
+    is the convex hull of its end balls — inflated by ``k``, which
+    :func:`~mesh_xml.render.field.bounds` proves covers the smooth-min
+    inflation for any primitive count. That makes ``|p - c| - r`` a true lower
+    bound on the group's field everywhere, which is the property the shader's
+    cull rests on: a group whose lower bound cannot beat the running minimum
+    can be skipped without changing the result by even a ulp, because the
+    skipped fold is never evaluated at all.
+
+    Recomputed per frame from the packed positions — creatures move — and
+    padded to the stride-8 record so the same texture machinery carries it.
+    """
+    prims = np.asarray(primitives, dtype=np.float32)
+    out = np.zeros((len(table), PRIMITIVE_STRIDE), dtype=np.float32)
+    for group, row in enumerate(np.asarray(table)):
+        start, count = int(row[0]), int(row[1])
+        rows = prims[start : start + count]
+        if len(rows) == 0:
+            continue
+        ends = np.vstack((rows[:, 0:3], rows[:, 4:7]))
+        radii = np.concatenate((rows[:, 3], rows[:, 7]))
+        lo = (ends - radii[:, None]).min(axis=0)
+        hi = (ends + radii[:, None]).max(axis=0)
+        centre = (lo + hi) * 0.5
+        reach = np.linalg.norm(ends - centre, axis=1) + radii
+        out[group, 0:3] = centre
+        # Rounded outward by a handful of float32 ulps, because the cull's
+        # byte-exactness claim is about *computed* values: at k = 0 the
+        # shader's length()-based lower bound can land a few ulps above the
+        # group's computed field, and a bound that overstates by even one ulp
+        # can cull a group that would have lowered the running minimum. The
+        # padding is ~1e-6 relative — invisible to cull effectiveness.
+        radius = np.float32(float(reach.max()) + float(k))
+        out[group, 3] = radius * np.float32(1.0 + 8.0 * np.finfo(np.float32).eps)
+    return out
+
+
+def _row_groups(body: Body) -> np.ndarray:
+    """The component index of each :func:`pack` row, in the pre-sort build order.
+
+    Components are found over every link — mechanism included — because
+    identity is physical connectivity, not flesh. Component numbering is by
+    first-seen slot, which makes the labels deterministic for a given body.
+    """
+    labels = _component_labels(body)
+    rendered = body.link_render
+    link_groups = labels[body.link_a[rendered]]
+
+    linked = set()
+    for link in body.links():
+        if not link.render:
+            continue
+        linked.add(body.slot(link.a))
+        linked.add(body.slot(link.b))
+    lonely_groups = [
+        labels[slot] for slot in range(body.n_chunks) if slot not in linked
+    ]
+    return np.concatenate(
+        (link_groups, np.asarray(lonely_groups, dtype=np.int64))
+    ).astype(np.int64)
+
+
+def _component_labels(body: Body) -> np.ndarray:
+    """``(N,) int64`` component index per slot, numbered by first-seen slot."""
+    n = body.n_chunks
+    labels = np.full(n, -1, dtype=np.int64)
+    adjacency: list[list[int]] = [[] for _ in range(n)]
+    for a, b in zip(body.link_a, body.link_b):
+        adjacency[int(a)].append(int(b))
+        adjacency[int(b)].append(int(a))
+
+    group = 0
+    for seed in range(n):
+        if labels[seed] >= 0:
+            continue
+        stack = [seed]
+        labels[seed] = group
+        while stack:
+            node = stack.pop()
+            for neighbour in adjacency[node]:
+                if labels[neighbour] < 0:
+                    labels[neighbour] = group
+                    stack.append(neighbour)
+        group += 1
+    return labels
 
 
 def _to_vec3(points: np.ndarray, dim: int) -> np.ndarray:

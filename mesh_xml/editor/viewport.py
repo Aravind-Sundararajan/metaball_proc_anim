@@ -71,13 +71,17 @@ from PySide6.QtGui import (
 
 from mesh_xml.core import Body
 from mesh_xml.editor.document import Document
-from mesh_xml.render import field
+from mesh_xml.render import field, sdf, tiles
 from mesh_xml.render.gl.camera import OrbitCamera, viewport_aspect
 from mesh_xml.render.gl.context import RaymarchView
 
 if TYPE_CHECKING:
     from mesh_xml.core.terrain import Terrain
-    from mesh_xml.render.gl.metaball import PrimitiveTexture, TerrainTexture
+    from mesh_xml.render.gl.metaball import (
+        GroupTexture,
+        PrimitiveTexture,
+        TerrainTexture,
+    )
 
 __all__ = [
     "FRAME_INTERVAL_MS",
@@ -332,8 +336,11 @@ class MetaballViewport(RaymarchView):
     ) -> None:
         from mesh_xml.render.gl.metaball import (
             SHADER_NAME,
+            BoundsTexture,
+            GroupTexture,
             PrimitiveTexture,
             TerrainTexture,
+            TileTexture,
             fragment_source,
         )
 
@@ -343,6 +350,11 @@ class MetaballViewport(RaymarchView):
         self._document = document
         self._texture: PrimitiveTexture = PrimitiveTexture()
         self._terrain: TerrainTexture = TerrainTexture()
+        self._groups: GroupTexture = GroupTexture()
+        self._group_rows: np.ndarray | None = None
+        self._pending_rows: np.ndarray | None = None
+        self._bounds: BoundsTexture = BoundsTexture()
+        self._tiles: TileTexture = TileTexture()
         # The Terrain object last sent to the GPU. Identity, not equality:
         # a world does not move per tick, so the only re-upload trigger is the
         # document swapping the object itself (Document.set_terrain says so).
@@ -499,6 +511,15 @@ class MetaballViewport(RaymarchView):
         """
         self._needs_upload = False
         primitives = self._document.primitives()
+        # The group table snapshots here, beside the primitives it describes,
+        # so the two travel to the GPU as one coherent frame — _flush_groups
+        # says what reading the document at paint time instead used to break.
+        rows = self._document.group_rows()
+        latest_rows = (
+            self._pending_rows if self._pending_rows is not None else self._group_rows
+        )
+        if latest_rows is None or not np.array_equal(rows, latest_rows):
+            self._pending_rows = rows
         latest = self._pending if self._pending is not None else self._uploaded
         if latest is not None and np.array_equal(primitives, latest):
             return
@@ -537,14 +558,74 @@ class MetaballViewport(RaymarchView):
     def paintGL(self) -> None:
         self._flush_upload()
         self._flush_terrain()
+        self._flush_groups()
+        self._flush_bounds()
         self.uniforms.update(self._document.metaball.uniforms())
         self.uniforms.update(self._texture.uniforms())
         self.uniforms.update(self._terrain.uniforms())
+        self.uniforms.update(self._groups.uniforms())
+        self.uniforms.update(self._bounds.uniforms())
+        self.uniforms.update(self._tiles.uniforms())
+        self.uniforms.update({"u_tile_size": tiles.TILE_SIZE})
         self.uniforms.update(self._floor_uniforms())
         self._texture.bind()
         self._terrain.bind()
+        self._groups.bind()
+        self._bounds.bind()
+        self._tiles.bind()
         super().paintGL()
         self._paint_overlay()
+
+    def _flush_bounds(self) -> None:
+        """Upload per-group bounding spheres for this frame's positions.
+
+        Runs after :meth:`_flush_upload` and :meth:`_flush_groups` because the
+        spheres must describe exactly the primitive rows on the GPU — bounds
+        for last frame's positions could under-cover this frame's and cull a
+        group that mattered. Recomputed every paint: it is G rows of numpy
+        over the already-packed array, cheaper than deciding whether to skip.
+        """
+        if self._uploaded is None or self._group_rows is None:
+            self._tiles.upload(None)
+            return
+        settings = self._document.metaball
+        rows = sdf.group_bounds(self._uploaded, self._group_rows, k=settings.blend)
+        self._bounds.upload(rows)
+        # The broad phase rides the same bounds: per-tile group masks at the
+        # framebuffer's device-pixel size — asked for live rather than read
+        # from a cache, so gl_FragCoord and the grid agree on the first paint
+        # of a never-shown widget and on a HiDPI display alike. The slack must
+        # cover the march's growing surface tolerance, which scales with the
+        # settings' own max_distance; the default constant assumes the default
+        # settings, and a caller who raised max_distance would silently
+        # shrink the safety margin if this did not grow with it.
+        width, height = self._device_size()
+        slack = max(
+            tiles.SLACK,
+            2.0 * settings.surface_epsilon * max(1.0, settings.max_distance),
+        )
+        self._tiles.upload(
+            tiles.tile_masks(rows, self.camera, width, height, slack=slack)
+        )
+
+    def _flush_groups(self) -> None:
+        """Upload the blend-group table when it changes. Context must be current.
+
+        Uploads the snapshot :meth:`_repack` captured beside the primitives —
+        never the live document — so the table on the GPU always describes the
+        primitive rows that travelled with it. Reading the document here
+        instead opened a one-frame desync: a Qt expose landing between a
+        topology edit and its tick would pair the post-edit table with the
+        pre-edit primitives, and the mismatched ``[start, count]`` ranges
+        would fold the wrong rows into the wrong creatures for a frame.
+        """
+        if self._pending_rows is None:
+            if self._group_rows is not None:
+                return
+            self._pending_rows = self._document.group_rows()
+        self._groups.upload(self._pending_rows)
+        self._group_rows = self._pending_rows
+        self._pending_rows = None
 
     def _floor_uniforms(self) -> dict[str, object]:
         """The reference grid's uniforms, owned here rather than by settings.
@@ -731,11 +812,16 @@ class MetaballViewport(RaymarchView):
         self.makeCurrent()
         self._texture.dispose()
         self._terrain.dispose()
+        self._groups.dispose()
+        self._bounds.dispose()
+        self._tiles.dispose()
         self.doneCurrent()
         self._uploaded = None
         self._pending = None
         # Forget what was uploaded so a fresh context gets a fresh upload.
         self._terrain_source = None
+        self._group_rows = None
+        self._pending_rows = None
 
     # ------------------------------------------------------------------
     # camera

@@ -113,7 +113,12 @@ SURFACE_EPSILON = 1e-4
 STEP_RELAXATION = 0.95
 
 
-def field(points: np.ndarray, primitives: np.ndarray, k: float = 0.0) -> np.ndarray:
+def field(
+    points: np.ndarray,
+    primitives: np.ndarray,
+    k: float = 0.0,
+    groups: np.ndarray | None = None,
+) -> np.ndarray:
     """Signed distance to the blended surface of a ``(P, 8)`` primitive array.
 
     The fold runs in array order, seeded with the first primitive; see the module
@@ -122,6 +127,15 @@ def field(points: np.ndarray, primitives: np.ndarray, k: float = 0.0) -> np.ndar
     replaced by a reduction for ``k > 0`` because the fold is not associative,
     and writing the ``k == 0`` case as a separate ``min`` reduction would give
     the oracle a code path the shader does not have.
+
+    ``groups`` is a ``(G, 2)`` array of ``(start, count)`` row ranges — the
+    blend groups :func:`~mesh_xml.render.sdf.group_table` describes. Each group
+    folds with the smooth minimum *within* itself and the groups combine by the
+    hard minimum, so two creatures touching stay two skins instead of welding
+    into one. Hard min is associative, which is why cross-group order is not a
+    contract the way in-group order is. ``None`` keeps the single global fold,
+    and one group covering every row computes exactly the same chain, so the
+    grouped path is a strict generalisation.
 
     An empty primitive array yields ``+inf`` everywhere: the union of nothing is
     infinitely far away, which is the only answer that keeps
@@ -135,10 +149,24 @@ def field(points: np.ndarray, primitives: np.ndarray, k: float = 0.0) -> np.ndar
     if len(prims) == 0:
         return np.full(p.shape[:-1], np.inf)
 
-    d = round_cone(p, prims[0])
-    for prim in prims[1:]:
-        d = smooth_min(d, round_cone(p, prim), blend)
-    return d
+    if groups is None:
+        d = round_cone(p, prims[0])
+        for prim in prims[1:]:
+            d = smooth_min(d, round_cone(p, prim), blend)
+        return d
+
+    composite: np.ndarray | None = None
+    for start, count in np.asarray(groups, dtype=np.int64):
+        rows = prims[start : start + count]
+        if len(rows) == 0:
+            continue
+        d = round_cone(p, rows[0])
+        for prim in rows[1:]:
+            d = smooth_min(d, round_cone(p, prim), blend)
+        composite = d if composite is None else np.minimum(composite, d)
+    if composite is None:
+        return np.full(p.shape[:-1], np.inf)
+    return composite
 
 
 def normal(
@@ -146,6 +174,7 @@ def normal(
     primitives: np.ndarray,
     k: float = 0.0,
     eps: float = NORMAL_EPSILON,
+    groups: np.ndarray | None = None,
 ) -> np.ndarray:
     """Unit outward normals, by central differences on the tetrahedron.
 
@@ -171,7 +200,7 @@ def normal(
     flat = p.reshape(-1, 3)
     gradient = np.zeros_like(flat)
     for offset in _TETRAHEDRON:
-        gradient += offset * field(flat + offset * eps, prims, blend)[:, None]
+        gradient += offset * field(flat + offset * eps, prims, blend, groups)[:, None]
 
     length = np.linalg.norm(gradient, axis=1)
     scale = np.where(length > 0.0, length, 1.0)
@@ -188,6 +217,7 @@ def raymarch(
     max_distance: float = 100.0,
     surface_epsilon: float = SURFACE_EPSILON,
     step_relaxation: float = STEP_RELAXATION,
+    groups: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Sphere-trace rays against the field. Returns ``(t, hit)``.
 
@@ -237,7 +267,12 @@ def raymarch(
     for _ in range(max_steps):
         if active.size == 0:
             break
-        d = field(origin[active] + direction[active] * t[active, None], prims, blend)
+        d = field(
+            origin[active] + direction[active] * t[active, None],
+            prims,
+            blend,
+            groups,
+        )
         landed = d < surface_epsilon
         hit[active[landed]] = True
         t[active] += np.where(landed, 0.0, d * step_relaxation)

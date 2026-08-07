@@ -39,12 +39,15 @@ from OpenGL.GL import (
     GL_NEAREST,
     GL_RGBA,
     GL_RGBA32F,
+    GL_RGBA32UI,
+    GL_RGBA_INTEGER,
     GL_TEXTURE0,
     GL_TEXTURE_2D,
     GL_TEXTURE_MAG_FILTER,
     GL_TEXTURE_MIN_FILTER,
     GL_TEXTURE_WRAP_S,
     GL_TEXTURE_WRAP_T,
+    GL_UNSIGNED_INT,
     glActiveTexture,
     glBindTexture,
     glDeleteTextures,
@@ -61,6 +64,9 @@ __all__ = [
     "MetaballSettings",
     "PrimitiveTexture",
     "TerrainTexture",
+    "GroupTexture",
+    "BoundsTexture",
+    "TileTexture",
     "fragment_source",
     "pack_terrain",
     "SHADER_NAME",
@@ -79,6 +85,15 @@ PRIMITIVE_TEXTURE_UNIT = 0
 #: Texture unit the terrain texture is bound to. Its own unit so creature and
 #: world can both stay bound across a frame.
 TERRAIN_TEXTURE_UNIT = 1
+
+#: Texture unit the blend-group table is bound to.
+GROUP_TEXTURE_UNIT = 2
+
+#: Texture unit the per-group bounding spheres are bound to.
+BOUNDS_TEXTURE_UNIT = 3
+
+#: Texture unit the per-tile group masks are bound to.
+TILE_TEXTURE_UNIT = 4
 
 
 @dataclass
@@ -132,6 +147,13 @@ class MetaballSettings:
             "u_terrain_colour": tuple(float(v) for v in self.terrain_colour),
             "u_background_colour": tuple(float(v) for v in self.background_colour),
             "u_primitives": PRIMITIVE_TEXTURE_UNIT,
+            # The integer sampler must be pointed off unit 0 even when no tile
+            # texture exists: an unset usampler2D defaults to unit 0, where it
+            # aliases the float u_primitives sampler, and GL 3.3 forbids two
+            # differently-typed samplers on one unit as *draw-time program
+            # state* — no fetch has to execute for a conformant driver to
+            # refuse the draw. A sampler aimed at an unbound unit is legal.
+            "u_tiles": TILE_TEXTURE_UNIT,
         }
 
 
@@ -294,6 +316,116 @@ class TerrainTexture(PrimitiveTexture):
         self.plane_count = 0
         self.cone_count = 0
         self.blend = 0.0
+
+
+@dataclass
+class GroupTexture(PrimitiveTexture):
+    """The blend-group table, on its own unit.
+
+    :func:`mesh_xml.render.sdf.group_table` deliberately emits the same
+    stride-8 rows as the primitives — ``[start, count, 0, 0][r, g, b, 0]`` —
+    so this is a :class:`PrimitiveTexture` with different uniform names and
+    nothing else, the same trick :class:`TerrainTexture` pulls. A view that
+    never uploads one leaves ``u_group_count`` at GL's zero default, and the
+    shader's fold falls back to the single global chain bit-for-bit.
+    """
+
+    _unit: int = dataclass_field(default=GROUP_TEXTURE_UNIT, repr=False)
+
+    def uniforms(self) -> dict[str, object]:
+        return {
+            "u_groups": self._unit,
+            "u_group_count": int(self.count),
+        }
+
+
+@dataclass
+class BoundsTexture(PrimitiveTexture):
+    """Per-group bounding spheres, on their own unit.
+
+    :func:`mesh_xml.render.sdf.group_bounds` rows — ``[cx, cy, cz, r]`` padded
+    to stride 8 — re-uploaded every frame the creatures move, which the
+    allocate-once/subimage path was built for. The shader arms its cull only
+    when this count matches the group table's, so a stale or absent bounds
+    texture degrades to folding everything rather than to a wrong image.
+    """
+
+    _unit: int = dataclass_field(default=BOUNDS_TEXTURE_UNIT, repr=False)
+
+    def uniforms(self) -> dict[str, object]:
+        return {
+            "u_group_bounds": self._unit,
+            "u_group_bounds_count": int(self.count),
+        }
+
+
+@dataclass
+class TileTexture:
+    """Per-tile group bitmasks as an ``RGBA32UI`` texture — the broad phase.
+
+    Not a :class:`PrimitiveTexture`: the payload is integer bitmasks, not
+    float records, so it needs the integer internal format and the integer
+    pixel-transfer format, and a ``usampler2D`` on the shader side. The
+    allocate-once/subimage discipline is the same — the grid reallocates only
+    when the framebuffer's tile dimensions change, which is a resize, not a
+    frame.
+
+    ``upload(None)`` clears: the shader's ``u_tiles_on`` goes to zero and the
+    trace falls back to the untiled fold, which is always correct.
+    """
+
+    handle: int = 0
+    shape: tuple[int, int] = (0, 0)
+    _unit: int = dataclass_field(default=TILE_TEXTURE_UNIT, repr=False)
+
+    def upload(self, masks: np.ndarray | None) -> None:
+        if masks is None:
+            self.shape = (0, 0)
+            return
+        data = np.ascontiguousarray(masks, dtype=np.uint32)
+        if data.ndim != 3 or data.shape[2] != 4:
+            raise ValueError(f"masks must have shape (rows, cols, 4), got {data.shape}")
+
+        if self.handle == 0:
+            self.handle = int(glGenTextures(1))
+            glActiveTexture(GL_TEXTURE0 + self._unit)
+            glBindTexture(GL_TEXTURE_2D, self.handle)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+
+        rows, cols = data.shape[0], data.shape[1]
+        glActiveTexture(GL_TEXTURE0 + self._unit)
+        glBindTexture(GL_TEXTURE_2D, self.handle)
+        if (rows, cols) != self.shape:
+            glTexImage2D(
+                GL_TEXTURE_2D, 0, GL_RGBA32UI, cols, rows, 0,
+                GL_RGBA_INTEGER, GL_UNSIGNED_INT, data,
+            )
+            self.shape = (rows, cols)
+        else:
+            glTexSubImage2D(
+                GL_TEXTURE_2D, 0, 0, 0, cols, rows,
+                GL_RGBA_INTEGER, GL_UNSIGNED_INT, data,
+            )
+
+    def bind(self) -> None:
+        if self.handle:
+            glActiveTexture(GL_TEXTURE0 + self._unit)
+            glBindTexture(GL_TEXTURE_2D, self.handle)
+
+    def uniforms(self) -> dict[str, object]:
+        return {
+            "u_tiles": self._unit,
+            "u_tiles_on": int(self.shape != (0, 0)),
+        }
+
+    def dispose(self) -> None:
+        if self.handle:
+            glDeleteTextures([self.handle])
+            self.handle = 0
+        self.shape = (0, 0)
 
 
 def fragment_source() -> str:

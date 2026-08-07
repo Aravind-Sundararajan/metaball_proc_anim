@@ -69,6 +69,16 @@ class ControlContext:
     chunks; force controllers may keep contributing, because forces reconcile
     and writes fight."""
 
+    peers: tuple = ()
+    """Every controller on the stack this tick, in stack order, self included.
+
+    Perception, not command: this is Rain World's room object list — the
+    shared context a creature senses others through. The convention that
+    keeps it safe is the same one the whole tier runs on: read your peers,
+    write only what you own. A controller that mutates a peer mid-tick has
+    made tick order load-bearing, which is the bug the force accumulator
+    exists to prevent."""
+
     def slot(self, chunk_id: int) -> int:
         return self.body.slot(chunk_id)
 
@@ -248,6 +258,7 @@ class ControllerStack:
             rng=self.rng,
             config=config,
             held=frozenset(self.held),
+            peers=tuple(self.controllers),
         )
         for controller in self.controllers:
             if getattr(controller, "enabled", True):

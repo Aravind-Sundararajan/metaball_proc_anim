@@ -337,6 +337,28 @@ class TestViewport:
 
     # -- rendering ---------------------------------------------------
 
+    def test_the_tile_grid_matches_the_framebuffer(self):
+        """The broad phase must actually engage, sized to gl_FragCoord's domain.
+
+        Without this, the tile machinery could silently never arm — the
+        untiled fallback is correct by design, so every other test would keep
+        passing while the feature's entire win evaporated. The grid is checked
+        against the grabbed frame's own pixel size, which is the domain
+        gl_FragCoord reports, HiDPI included.
+        """
+        import math
+
+        from mesh_xml.render import tiles as tiles_mod
+
+        view = self.viewport()
+        frame = view.grabFramebuffer()
+        assert view._tiles.uniforms()["u_tiles_on"] == 1
+        expected = (
+            math.ceil(frame.height() / tiles_mod.TILE_SIZE),
+            math.ceil(frame.width() / tiles_mod.TILE_SIZE),
+        )
+        assert view._tiles.shape == expected
+
     def test_it_renders_the_document_without_a_shader_error(self):
         view = self.viewport()
         failures: list[str] = []
@@ -558,7 +580,14 @@ class TestViewport:
             view.tick()
             self.image(view)
             assert view.uploads == 3
-            assert len(allocations) == 1, "a new chunk must reallocate exactly once"
+            # Three allocations, not one: the primitive texture grows by a
+            # row, and the lone new chunk is a new creature, so the group
+            # table and its bounding spheres grow too. A move above caused
+            # none of them — bounds recompute every frame but re-use their
+            # allocation through the subimage path.
+            assert len(allocations) == 3, (
+                "a new chunk reallocates primitives, groups, and bounds"
+            )
         finally:
             metaball.glTexImage2D = real
 

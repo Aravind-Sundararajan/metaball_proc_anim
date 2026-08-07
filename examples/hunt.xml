@@ -1,0 +1,131 @@
+<?xml version='1.0' encoding='utf-8'?>
+<body version="3" name="hunt" dim="3">
+    <chunks>
+        <chunk id="0" name="hunter0" pos="-5.0 0.42 0.0" radius="0.42" pinned="true" />
+        <chunk id="1" name="hunter1" pos="-5.7 0.42 0.0" radius="0.42" mass="1.0" />
+        <chunk id="2" name="hunter2" pos="-6.4 0.42 0.0" radius="0.42" mass="1.0" />
+        <chunk id="3" name="hunter3" pos="-7.1 0.42 0.0" radius="0.42" mass="1.0" />
+        <chunk id="4" name="hunter4" pos="-7.8 0.42 0.0" radius="0.42" mass="1.0" />
+        <chunk id="5" name="hunter5" pos="-8.5 0.42 0.0" radius="0.42" mass="1.0" />
+        <chunk id="6" name="grazer0" pos="5.0 0.34 0.6" radius="0.34" pinned="true" />
+        <chunk id="7" name="grazer1" pos="5.62 0.34 0.6" radius="0.34" mass="1.0" />
+        <chunk id="8" name="grazer2" pos="6.24 0.34 0.6" radius="0.34" mass="1.0" />
+        <chunk id="9" name="grazer3" pos="6.86 0.34 0.6" radius="0.34" mass="1.0" />
+        <chunk id="10" name="grazer4" pos="7.48 0.34 0.6" radius="0.34" mass="1.0" />
+    </chunks>
+    <links>
+        <link a="0" b="1" rest="0.6999998" type="NORMAL" elasticity="1.0" />
+        <link a="1" b="2" rest="0.7000003" type="NORMAL" elasticity="1.0" />
+        <link a="2" b="3" rest="0.6999998" type="NORMAL" elasticity="1.0" />
+        <link a="3" b="4" rest="0.7000003" type="NORMAL" elasticity="1.0" />
+        <link a="4" b="5" rest="0.6999998" type="NORMAL" elasticity="1.0" />
+        <link a="6" b="7" rest="0.6199999" type="NORMAL" elasticity="1.0" />
+        <link a="7" b="8" rest="0.6199999" type="NORMAL" elasticity="1.0" />
+        <link a="8" b="9" rest="0.62000036" type="NORMAL" elasticity="1.0" />
+        <link a="9" b="10" rest="0.6199999" type="NORMAL" elasticity="1.0" />
+    </links>
+    <controllers seed="13">
+        <controller type="hunter">
+            <int name="anchor" value="0" />
+            <tuple name="home">
+                <float value="-5.0" />
+                <float value="0.42" />
+                <float value="0.0" />
+            </tuple>
+            <str name="species" value="hunter" />
+            <float name="speed" value="2.1" />
+            <float name="sway" value="0.5" />
+            <float name="swing_rate" value="3.0" />
+            <float name="wander_range" value="2.5" />
+            <float name="think_period" value="0.25" />
+            <bool name="enabled" value="true" />
+            <str name="hunts" value="grazer" />
+            <float name="sense_range" value="14.0" />
+            <float name="catch_range" value="1.15" />
+            <float name="feast_time" value="5.0" />
+        </controller>
+        <controller type="spine_follow">
+            <list name="chain">
+                <int value="0" />
+                <int value="1" />
+                <int value="2" />
+                <int value="3" />
+                <int value="4" />
+                <int value="5" />
+            </list>
+            <float name="strength" value="16.0" />
+            <float name="damping" value="3.0" />
+            <float name="max_bend_degrees" value="42.0" />
+            <float name="bend_strength" value="800.0" />
+            <none name="lead" />
+            <none name="lead_strength" />
+            <none name="spacing" />
+            <float name="heading_speed" value="2.0" />
+            <float name="max_force" value="200.0" />
+            <bool name="enabled" value="true" />
+        </controller>
+        <controller type="breathe">
+            <list name="chunks">
+                <int value="1" />
+                <int value="2" />
+                <int value="3" />
+                <int value="4" />
+                <int value="5" />
+            </list>
+            <float name="amplitude" value="1.6" />
+            <float name="frequency" value="0.4" />
+            <none name="axis" />
+            <bool name="enabled" value="true" />
+        </controller>
+        <controller type="grazer">
+            <int name="anchor" value="6" />
+            <tuple name="home">
+                <float value="5.0" />
+                <float value="0.34" />
+                <float value="0.6" />
+            </tuple>
+            <str name="species" value="grazer" />
+            <float name="speed" value="1.35" />
+            <float name="sway" value="0.5" />
+            <float name="swing_rate" value="3.0" />
+            <float name="wander_range" value="2.5" />
+            <float name="think_period" value="0.25" />
+            <bool name="enabled" value="true" />
+            <str name="fears" value="hunter" />
+            <float name="sense_range" value="4.5" />
+            <float name="flee_distance" value="4.0" />
+            <str name="state" value="wander" />
+        </controller>
+        <controller type="spine_follow">
+            <list name="chain">
+                <int value="6" />
+                <int value="7" />
+                <int value="8" />
+                <int value="9" />
+                <int value="10" />
+            </list>
+            <float name="strength" value="15.0" />
+            <float name="damping" value="3.0" />
+            <float name="max_bend_degrees" value="45.0" />
+            <float name="bend_strength" value="800.0" />
+            <none name="lead" />
+            <none name="lead_strength" />
+            <none name="spacing" />
+            <float name="heading_speed" value="2.0" />
+            <float name="max_force" value="200.0" />
+            <bool name="enabled" value="true" />
+        </controller>
+        <controller type="breathe">
+            <list name="chunks">
+                <int value="7" />
+                <int value="8" />
+                <int value="9" />
+                <int value="10" />
+            </list>
+            <float name="amplitude" value="1.6" />
+            <float name="frequency" value="0.5" />
+            <none name="axis" />
+            <bool name="enabled" value="true" />
+        </controller>
+    </controllers>
+</body>
