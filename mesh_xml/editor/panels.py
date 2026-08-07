@@ -599,6 +599,8 @@ class SolverPanel(_Panel):
         self._damping = _spin(0.0, 1.0, 0.01)
         self._max_velocity = _spin(0.1, 10_000.0, 1.0, decimals=1, suffix=" u/s")
         self._friction = _spin(0.0, 5.0, 0.05, decimals=2)
+        self._self_contact = QCheckBox("Self-contact")
+        self._contact_elasticity = _spin(0.0, 1.0, 0.05, decimals=2)
         self._gravity = tuple(_spin(-1000.0, 1000.0, 0.1, decimals=2) for _ in _AXES)
         self._zero_g = QCheckBox("Zero gravity")
 
@@ -614,6 +616,10 @@ class SolverPanel(_Panel):
         self._damping.valueChanged.connect(self._on_damping_changed)
         self._max_velocity.valueChanged.connect(self._on_max_velocity_changed)
         self._friction.valueChanged.connect(self._on_friction_changed)
+        self._self_contact.toggled.connect(self._on_self_contact_toggled)
+        self._contact_elasticity.valueChanged.connect(
+            self._on_contact_elasticity_changed
+        )
         for spin in self._gravity:
             spin.valueChanged.connect(self._on_gravity_changed)
         self._zero_g.toggled.connect(self._on_zero_g_toggled)
@@ -629,6 +635,8 @@ class SolverPanel(_Panel):
         layout.addRow("Damping", self._damping)
         layout.addRow("Max velocity", self._max_velocity)
         layout.addRow("Friction (mu)", self._friction)
+        layout.addRow(self._self_contact)
+        layout.addRow("Contact elasticity", self._contact_elasticity)
 
         self._iterations.setToolTip(
             "Relaxation passes per tick. This is a per-creature softness knob, "
@@ -651,6 +659,17 @@ class SolverPanel(_Panel):
             "load a foot carries: held outright below mu times the normal "
             "load, sliding above it. Zero is a perfectly slick floor. Values "
             "above 1 are legal and simply very grippy."
+        )
+        self._self_contact.setToolTip(
+            "Push overlapping chunks apart when they are strangers in the "
+            "graph — three or more links from each other. Neighbours are "
+            "exempt: within a limb, overlap is what makes the surface read as "
+            "one volume. Off by default because rigs overlap on purpose."
+        )
+        self._contact_elasticity.setToolTip(
+            "Fraction of an overlap closed per tick. 1.0 separates a lone "
+            "pair in one tick and reads as billiard balls; lower values let "
+            "limbs squash into each other and recover, which reads as flesh."
         )
         return box
 
@@ -690,6 +709,16 @@ class SolverPanel(_Panel):
         self._document.settings_changed.emit()
 
     @_user_edit
+    def _on_self_contact_toggled(self, on: bool) -> None:
+        self._document.solver_config.self_contact = bool(on)
+        self._document.settings_changed.emit()
+
+    @_user_edit
+    def _on_contact_elasticity_changed(self, value: float) -> None:
+        self._document.solver_config.self_contact_elasticity = float(value)
+        self._document.settings_changed.emit()
+
+    @_user_edit
     def _on_gravity_changed(self, _value: float) -> None:
         gravity = tuple(spin.value() for spin in self._gravity)
         if any(gravity):
@@ -721,6 +750,9 @@ class SolverPanel(_Panel):
         self._damping.setValue(float(config.damping))
         self._max_velocity.setValue(float(config.max_velocity))
         self._friction.setValue(float(config.ground_friction))
+        self._self_contact.setChecked(bool(config.self_contact))
+        self._contact_elasticity.setValue(float(config.self_contact_elasticity))
+        self._contact_elasticity.setEnabled(bool(config.self_contact))
         for spin, value in zip(self._gravity, gravity):
             spin.setValue(value)
             spin.setEnabled(not zero)
@@ -939,6 +971,7 @@ class ChunkPanel(_Panel):
 
         self._rows: list[int] = []
         self._table = self._build_table()
+        self._add = QPushButton("Add")
         self._connect = QPushButton("Connect")
         self._disconnect = QPushButton("Disconnect")
         self._delete = QPushButton("Delete")
@@ -948,13 +981,22 @@ class ChunkPanel(_Panel):
         layout.addWidget(self._build_actions())
         layout.addWidget(
             _note(
-                "Connect chains the selection in table order; disconnect drops "
-                "every link between selected chunks."
+                "Add grows a linked chunk out of the selection, or a free one "
+                "when nothing is selected. Connect chains the selection in "
+                "table order; disconnect drops every link between selected "
+                "chunks."
             )
         )
 
+        self._add.setToolTip(
+            "One selected chunk: a linked chunk continuing its chain, radius "
+            "inherited. Several: a chunk linked to each, placed outward — how "
+            "a girdle closes. None: a free chunk past the body's +x edge. The "
+            "new chunk becomes the selection, so repeated Add extrudes a limb."
+        )
         self._table.itemChanged.connect(self._on_item_changed)
         self._table.itemSelectionChanged.connect(self._on_table_selection_changed)
+        self._add.clicked.connect(self._on_add)
         self._connect.clicked.connect(self._on_connect)
         self._disconnect.clicked.connect(self._on_disconnect)
         self._delete.clicked.connect(self._on_delete)
@@ -991,7 +1033,7 @@ class ChunkPanel(_Panel):
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
-        for button in (self._connect, self._disconnect, self._delete):
+        for button in (self._add, self._connect, self._disconnect, self._delete):
             layout.addWidget(button)
         return row
 
@@ -1038,6 +1080,10 @@ class ChunkPanel(_Panel):
             for index in rows
             if 0 <= index.row() < len(self._rows)
         )
+
+    @_user_edit
+    def _on_add(self) -> None:
+        self._document.create_chunk()
 
     @_user_edit
     def _on_connect(self) -> None:

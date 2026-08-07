@@ -1034,3 +1034,227 @@ class TestMomentumConservation:
         com1 = (body.pos * masses).sum(axis=0) / masses.sum()
         assert np.linalg.norm(com1 - com0) < 1e-3
         assert np.linalg.norm(body.pos[1] - body.pos[0]) == pytest.approx(1.0, abs=1e-3)
+
+
+class TestSelfContact:
+    """Graph-strangers may not overlap; neighbours must be allowed to.
+
+    A limb is authored *out of* overlap — consecutive chunks interpenetrate so
+    the surface reads as one volume — so the pass is opt-in and structural:
+    only pairs at graph distance three or more collide. Elasticity is the
+    restoring-force knob: the fraction of an overlap closed per tick.
+    """
+
+    @staticmethod
+    def _strangers(
+        gap: float, radius: float = 0.5, mass_b: float = 1.0, dim: int = 3
+    ) -> Body:
+        """Two unlinked chunks on the x axis, centres ``gap`` apart."""
+        body = Body(dim=dim)
+        body.add_chunk("a", [0.0] * dim, radius=radius)
+        b = [0.0] * dim
+        b[0] = gap
+        body.add_chunk("b", b, radius=radius, mass=mass_b)
+        return body
+
+    def test_off_by_default_overlapping_strangers_stay_put(self):
+        body = self._strangers(0.4)
+        before = body.pos.copy()
+
+        run(body, 100, still())
+
+        assert (body.pos == before).all()
+
+    def test_overlapping_strangers_separate_to_touching(self):
+        """At elasticity 1 an isolated pair opens fully in a single tick."""
+        body = self._strangers(0.4)
+
+        step(body, TICK_DT, still(self_contact=True, self_contact_elasticity=1.0))
+
+        assert separation(body, 0, 1) == pytest.approx(1.0, abs=1e-5)
+
+    def test_elasticity_closes_a_fraction_per_tick(self):
+        """Overlap 0.6 at elasticity 0.5 opens by 0.3 — the knob, measured."""
+        body = self._strangers(0.4)
+
+        step(body, TICK_DT, still(self_contact=True, self_contact_elasticity=0.5))
+
+        assert separation(body, 0, 1) == pytest.approx(0.7, abs=1e-5)
+
+    def test_separation_keeps_going_like_any_push(self):
+        """The opening impulse is real velocity, and contact never brakes."""
+        body = self._strangers(0.4)
+
+        run(body, 200, still(self_contact=True))
+
+        assert separation(body, 0, 1) > 1.0
+        assert np.isfinite(body.pos).all()
+
+    def test_linked_chunks_are_exempt(self):
+        """A link at rest inside contact range must not be fought."""
+        body = self._strangers(0.4)
+        body.add_link(0, 1, rest=0.4)
+        before = body.pos.copy()
+
+        run(body, 100, still(self_contact=True))
+
+        assert (body.pos == before).all()
+
+    def test_second_neighbours_are_exempt_at_a_folded_joint(self):
+        """a-b-c folded until a and c overlap: that contact is the joint's."""
+        body = Body(dim=3)
+        a = body.add_chunk("a", (0.0, 0.0, 0.0))
+        b = body.add_chunk("b", (1.0, 0.0, 0.0))
+        c = body.add_chunk("c", (0.3, 0.0, 0.0))
+        body.add_link(a, b)
+        body.add_link(b, c)
+        before = body.pos.copy()
+
+        run(body, 50, still(self_contact=True))
+
+        assert (body.pos == before).all()
+
+    def test_third_neighbours_collide(self):
+        """A chain folded end-onto-end is two limb tips meeting, and they part."""
+        body = Body(dim=3)
+        ids = [
+            body.add_chunk(name, pos)
+            for name, pos in (
+                ("a", (0.0, 0.0, 0.0)),
+                ("b", (1.0, 0.0, 0.0)),
+                ("c", (1.0, 1.0, 0.0)),
+                ("d", (0.15, 0.05, 0.0)),
+            )
+        ]
+        for u, v in zip(ids, ids[1:]):
+            body.add_link(u, v)
+
+        step(body, TICK_DT, still(self_contact=True, self_contact_elasticity=1.0))
+        assert separation(body, ids[0], ids[3]) == pytest.approx(1.0, abs=1e-4)
+
+        run(body, 200, still(self_contact=True))
+        assert np.isfinite(body.pos).all()
+
+    def test_disconnected_components_collide(self):
+        """Two limbs of one document share no links; they must still exclude
+        nothing and pass through nothing."""
+        body = Body(dim=3)
+        lower = [body.add_chunk(f"l{i}", (i * 1.0, 0.0, 0.0)) for i in range(3)]
+        upper = [body.add_chunk(f"u{i}", (i * 1.0, 0.3, 0.0)) for i in range(3)]
+        for chain_ids in (lower, upper):
+            for u, v in zip(chain_ids, chain_ids[1:]):
+                body.add_link(u, v)
+
+        run(body, 400, still(self_contact=True))
+
+        assert np.isfinite(body.pos).all()
+        for lo in lower:
+            for up in upper:
+                assert separation(body, lo, up) > 0.9
+        for chain_ids in (lower, upper):
+            for u, v in zip(chain_ids, chain_ids[1:]):
+                assert separation(body, u, v) == pytest.approx(1.0, abs=0.05)
+
+    def test_unequal_masses_share_by_inverse_mass(self):
+        body = self._strangers(0.4, mass_b=9.0)
+        before = body.pos.copy()
+
+        step(body, TICK_DT, still(self_contact=True, self_contact_elasticity=1.0))
+        moved = np.linalg.norm(body.pos - before, axis=1)
+
+        assert moved[0] / moved[1] == pytest.approx(9.0, rel=1e-3)
+        assert moved.sum() == pytest.approx(0.6, abs=1e-4)
+
+    def test_a_free_cluster_does_not_drift(self):
+        """Uneven contact degrees — ends touch one stranger, middles two — is
+        exactly the shape that pumped momentum before the symmetric weight."""
+        body = Body(dim=3)
+        for i, x in enumerate((0.0, 0.6, 1.2, 1.8)):
+            body.add_chunk(f"c{i}", (x, 0.0, 0.0))
+        com0 = body.pos.mean(axis=0).copy()
+
+        config = still(self_contact=True, damping=1.0)
+        for _ in range(300):
+            step(body, TICK_DT, config)
+
+        assert np.isfinite(body.pos).all()
+        assert float(np.linalg.norm(body.pos.mean(axis=0) - com0)) < 1e-3
+
+    def test_a_pile_stays_finite_and_resolves(self):
+        """Eight strangers dropped nearly on one point: convexity holds."""
+        body = Body(dim=3)
+        offsets = np.array(
+            [
+                (0.01, 0.02, -0.01),
+                (-0.03, 0.01, 0.02),
+                (0.02, -0.02, 0.01),
+                (-0.01, -0.01, -0.02),
+                (0.03, 0.00, 0.02),
+                (-0.02, 0.03, 0.00),
+                (0.00, -0.03, -0.01),
+                (0.01, 0.01, 0.03),
+            ]
+        )
+        for i, offset in enumerate(offsets):
+            body.add_chunk(f"p{i}", offset)
+
+        run(body, 400, still(self_contact=True))
+
+        assert np.isfinite(body.pos).all()
+        assert float(np.abs(body.pos).max()) < 100.0
+        for i in range(8):
+            for j in range(i + 1, 8):
+                assert separation(body, i, j) > 0.5
+
+    def test_coincident_strangers_separate_without_nan(self):
+        body = Body(dim=3)
+        body.add_chunk("a", (1.0, 2.0, 3.0))
+        body.add_chunk("b", (1.0, 2.0, 3.0))
+
+        run(body, 200, still(self_contact=True))
+
+        assert np.isfinite(body.pos).all()
+        assert separation(body, 0, 1) >= 1.0 - 1e-5
+
+    def test_pinned_stranger_hands_over_the_whole_correction(self):
+        body = Body(dim=3)
+        body.add_chunk("anchor", (0.0, 0.0, 0.0), pinned=True)
+        body.add_chunk("free", (0.3, 0.0, 0.0))
+
+        step(body, TICK_DT, still(self_contact=True, self_contact_elasticity=1.0))
+
+        assert tuple(body.pos[0]) == (0.0, 0.0, 0.0)
+        assert separation(body, 0, 1) == pytest.approx(1.0, abs=1e-5)
+
+    def test_two_pinned_strangers_are_left_alone(self):
+        body = Body(dim=3)
+        body.add_chunk("a", (0.0, 0.0, 0.0), pinned=True)
+        body.add_chunk("b", (0.3, 0.0, 0.0), pinned=True)
+
+        run(body, 50, still(self_contact=True))
+
+        assert separation(body, 0, 1) == pytest.approx(0.3)
+
+    def test_contact_cannot_push_a_chunk_underground(self):
+        """The floor runs after this pass, so it keeps the last word — and the
+        payoff is that two strangers under gravity stack instead of merging."""
+        body = Body(dim=3)
+        body.add_chunk("under", (0.0, 0.3, 0.0), radius=0.2)
+        body.add_chunk("over", (0.0, 0.55, 0.0), radius=0.2)
+        config = SolverConfig(
+            ground_y=0.0, self_contact=True, self_contact_elasticity=1.0
+        )
+
+        for _ in range(300):
+            step(body, TICK_DT, config)
+            assert body.pos[:, 1].min() >= 0.2 - 1e-3
+
+        assert float(body.pos[0, 1]) == pytest.approx(0.2, abs=1e-3)
+        assert float(body.pos[1, 1]) == pytest.approx(0.6, abs=0.02)
+
+    def test_two_dimensional_strangers_collide(self):
+        body = self._strangers(0.4, dim=2)
+
+        step(body, TICK_DT, still(self_contact=True, self_contact_elasticity=1.0))
+
+        assert separation(body, 0, 1) == pytest.approx(1.0, abs=1e-5)

@@ -168,6 +168,122 @@ class TestMacro:
         assert not document.can_undo
 
 
+class TestCreateChunk:
+    """Add grows from the selection — the plan's replacement for create-at-origin.
+
+    The legacy button dropped every new sphere at the origin and left linking
+    as a second gesture; nothing about it composed. Here one call places, links,
+    and moves the selection to the new chunk, so repeated calls extrude a limb.
+    """
+
+    def test_an_empty_document_starts_at_the_origin(self):
+        document = Document()
+        new = document.create_chunk()
+
+        assert document.body.n_chunks == 1
+        assert document.body.chunk(new).pos == pytest.approx((0.0, 0.0, 0.0))
+        assert document.body.chunk(new).radius == pytest.approx(0.5)
+        assert document.selection == {new}
+
+    def test_with_nothing_selected_the_chunk_is_free_and_clear_of_the_body(
+        self, document
+    ):
+        links = document.body.n_links
+        document.set_selection(())
+        new = document.create_chunk()
+
+        assert document.body.n_links == links
+        assert document.body.chunk(new).pos[0] > 4.0
+        assert document.selection == {new}
+
+    def test_repeated_free_adds_do_not_stack(self, document):
+        """Stacking duplicates at one coordinate was a legacy defect (§2.5)."""
+        document.set_selection(())
+        first = document.create_chunk()
+        document.set_selection(())
+        second = document.create_chunk()
+
+        apart = np.linalg.norm(
+            np.subtract(
+                document.body.chunk(first).pos, document.body.chunk(second).pos
+            )
+        )
+        assert float(apart) > 0.5
+
+    def test_growing_a_chain_end_continues_its_rhythm(self, document):
+        end = ids_of(document)[-1]
+        document.set_selection((end,))
+        new = document.create_chunk()
+
+        assert document.body.has_link(new, end)
+        assert document.body.chunk(new).pos == pytest.approx((5.0, 0.0, 0.0))
+        assert document.body.chunk(new).radius == pytest.approx(0.3)
+        assert document.body.link(new, end).rest == pytest.approx(1.0)
+        assert document.selection == {new}
+
+    def test_repeated_add_extrudes_a_limb(self, document):
+        end = ids_of(document)[-1]
+        document.set_selection((end,))
+        first = document.create_chunk()
+        second = document.create_chunk()
+
+        assert document.body.has_link(first, end)
+        assert document.body.has_link(second, first)
+        assert not document.body.has_link(second, end)
+        assert document.body.chunk(second).pos == pytest.approx((6.0, 0.0, 0.0))
+
+    def test_a_lone_chunk_grows_along_x(self):
+        document = Document()
+        first = document.create_chunk()
+        second = document.create_chunk()
+
+        assert document.body.has_link(first, second)
+        assert document.body.chunk(second).pos == pytest.approx((0.8, 0.0, 0.0))
+
+    def test_a_corner_grows_away_from_its_neighbours(self):
+        document = Document()
+        body = Body()
+        hub = body.add_chunk("hub", (0.0, 0.0, 0.0), radius=0.3)
+        body.add_link(hub, body.add_chunk("nx", (1.0, 0.0, 0.0), radius=0.3))
+        body.add_link(hub, body.add_chunk("ny", (0.0, 1.0, 0.0), radius=0.3))
+        document._replace(body, None)
+
+        document.set_selection((hub,))
+        new = document.create_chunk()
+
+        pos = document.body.chunk(new).pos
+        assert document.body.has_link(new, hub)
+        assert pos[0] < 0.0 and pos[1] < 0.0
+
+    def test_multi_selection_links_to_every_member(self, document):
+        a, b = ids_of(document)[1], ids_of(document)[3]
+        document.set_selection((a, b))
+        new = document.create_chunk()
+
+        assert document.body.has_link(new, a)
+        assert document.body.has_link(new, b)
+        assert document.body.chunk(new).radius == pytest.approx(0.3)
+        assert document.selection == {new}
+
+    def test_one_add_is_one_undo_step(self, document):
+        chunks, links = document.body.n_chunks, document.body.n_links
+        end = ids_of(document)[-1]
+        document.set_selection((end,))
+        new = document.create_chunk()
+        assert (document.body.n_chunks, document.body.n_links) == (
+            chunks + 1,
+            links + 1,
+        )
+
+        document.undo()
+        assert (document.body.n_chunks, document.body.n_links) == (chunks, links)
+        assert not document.body.has_chunk(new)
+
+        document.redo()
+        assert document.body.has_chunk(new)
+        assert document.body.has_link(new, end)
+
+
 class TestHistory:
     def test_a_new_command_clears_the_redo_stack(self, document):
         target = ids_of(document)[0]

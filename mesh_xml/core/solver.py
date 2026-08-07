@@ -81,6 +81,24 @@ class SolverConfig:
     terrain simply wins. An empty terrain defers to ``ground_y`` instead: "no
     primitives yet" is an authoring state, not a request to repeal the floor.
 
+    ``self_contact`` turns on collision between a body's own chunks when they
+    are strangers in the graph — three or more links apart, or in different
+    components. Off by default for the same reason ``ground_y`` is ``None``: a
+    rig's own overlap is authored, not accidental. Chunks along a limb are
+    placed overlapping so the surface reads as one volume, and a solver that
+    silently pushed them apart would reshape every body on load. Linked pairs
+    and second neighbours stay exempt even when the pass is on — a folding
+    joint drives its second neighbours into contact by design, and the authored
+    way to govern that pair is an angle-limit brace, which is itself a link and
+    therefore already exempt.
+
+    ``self_contact_elasticity`` is the fraction of an overlap closed per tick —
+    a restoring force spelled in position-solver terms. ``1.0`` separates an
+    isolated pair in one tick and reads as billiard balls; the ``0.5`` default
+    lets limbs squash into each other and recover over a few ticks, which reads
+    as flesh. Discovery repeats every tick, so residual overlap is found again
+    until it is gone.
+
     ``ground_friction`` is the Coulomb coefficient ``mu``. Each contact tick
     the floor may undo up to ``mu`` times the chunk's penetration depth of its
     tangential travel; depth is how a position solver expresses normal force,
@@ -99,6 +117,8 @@ class SolverConfig:
     ground_y: float | None = None
     ground_friction: float = 0.35
     terrain: Terrain | None = None
+    self_contact: bool = False
+    self_contact_elasticity: float = 0.5
 
 
 def step(
@@ -120,6 +140,10 @@ def step(
         return
     _integrate(body, dt, config, forces)
     _project(body, config)
+    # Shape first, separation second, world last: self-contact may push a
+    # chunk toward the floor, and the world passes running after it is what
+    # guarantees the tick cannot end with a chunk underground.
+    _collide_self(body, config)
     # One world per tick: ``Terrain.flat`` and ``ground_y`` describe the same
     # floor, so letting both act would resolve the same contact twice. A set,
     # non-empty terrain is the world and ``ground_y`` stands down; an empty
@@ -258,6 +282,90 @@ def _collide_terrain(body: Body, config: SolverConfig) -> None:
     np.divide(grip, slid, out=scale, where=slid > 0.0)
     np.minimum(scale, 1.0, out=scale)
     pos[contact] -= slide * scale[:, None]
+
+
+def _collide_self(body: Body, config: SolverConfig) -> None:
+    """Push overlapping graph-strangers apart: the body may not pass through itself.
+
+    Contacts are discovered fresh each call — every chunk pair that overlaps in
+    space while sitting at graph distance three or more — and resolved as
+    transient PUSH constraints: corrections shared by inverse mass along the
+    pair axis, scaled by ``self_contact_elasticity``. One Jacobi pass, not
+    ``config.iterations``: discovery re-runs next tick, so a pile-up resolves
+    over ticks rather than within one, and that spread *is* the squash the
+    elasticity knob promises.
+
+    The exclusion is structural, not spatial. Distance one is the constraint
+    set itself; distance two is the pair every folding joint drives into
+    contact, whose governed form is an angle-limit brace — itself a link, and
+    so already at distance one. Exclusions and candidates are recomputed from
+    the live arrays on every call, like every other derived view of the graph:
+    the adjacency matmul is O(n^3) in chunks, microseconds at the body sizes
+    the renderer caps out at, and nothing here loops in Python.
+
+    Corrections reuse ``_project``'s symmetric per-pair weight — one over the
+    larger of the two endpoints' contact counts — for the same two reasons
+    written there: a pile-up must stay a convex combination, and the two ends
+    must move equal and opposite in mass-weighted terms or contact becomes a
+    momentum source, the artifact that once supplied a fifth of a walker's
+    thrust.
+
+    What this pass deliberately does not do is grip: strangers separate
+    without friction. A creature holding onto its own body is a controller
+    feature, not a contact one.
+    """
+    n = body.n_chunks
+    if not config.self_contact or n < 2:
+        return
+
+    pos = body.pos
+    radius = body.radius
+    inv_mass = body.inv_mass
+
+    linked = np.zeros((n, n), dtype=np.float32)
+    linked[body.link_a, body.link_b] = 1.0
+    linked[body.link_b, body.link_a] = 1.0
+    near = (linked + linked @ linked) > 0.0
+
+    delta_all = pos[:, None, :] - pos[None, :, :]
+    dist_sq = np.einsum("ijd,ijd->ij", delta_all, delta_all)
+    reach = radius[:, None] + radius[None, :]
+    overlapping = dist_sq < reach * reach
+    movable = (inv_mass[:, None] + inv_mass[None, :]) > 0.0
+
+    ai, bi = np.nonzero(np.triu(overlapping & ~near & movable, k=1))
+    if ai.size == 0:
+        return
+
+    elasticity = np.float32(min(max(config.self_contact_elasticity, 0.0), 1.0))
+    inv_a = inv_mass[ai]
+    inv_b = inv_mass[bi]
+
+    dist = np.sqrt(dist_sq[ai, bi])
+    coincident = dist < _COINCIDENT_EPS
+    axis = (pos[ai] - pos[bi]) / np.where(coincident, np.float32(1.0), dist)[:, None]
+    fallback = np.zeros(body.dim, dtype=np.float32)
+    fallback[0] = 1.0
+    axis[coincident] = fallback
+
+    # Negative by construction — the depth still to open — so the correction
+    # points the ends apart, exactly a PUSH link whose rest is the radii sum.
+    error = dist - reach[ai, bi]
+    share = elasticity * error / (inv_a + inv_b)
+
+    # Every discovered pair acts, so each endpoint's count is at least one and
+    # the weight needs no clamp.
+    hits = np.zeros(n, dtype=np.float32)
+    np.add.at(hits, ai, np.float32(1.0))
+    np.add.at(hits, bi, np.float32(1.0))
+    weight = np.float32(1.0) / np.maximum(hits[ai], hits[bi])
+
+    weighted = axis * (share * weight)[:, None]
+    correction = np.zeros_like(pos)
+    np.add.at(correction, ai, -inv_a[:, None] * weighted)
+    np.add.at(correction, bi, inv_b[:, None] * weighted)
+    free = inv_mass != 0.0
+    pos[free] += correction[free]
 
 
 def fixed_step(

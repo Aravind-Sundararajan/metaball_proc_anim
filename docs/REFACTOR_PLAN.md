@@ -267,9 +267,9 @@ constraint graph. Phase 3 is what makes the project the thing it was described a
 ## 7. Progress
 
 Branch `refactor/core-rewrite`. The legacy app (`main.py`, `opengl_widget.py`,
-`armature_manager.py`) is deliberately untouched and still runs; the new stack is being
-built alongside it rather than in place of it, so there is never a point with nothing
-working.
+`armature_manager.py`) was deliberately kept runnable while the new stack was built
+alongside it rather than in place of it, so there was never a point with nothing
+working. It was retired (`6ab81c6`) once the editor covered it.
 
 | Phase | State | Notes |
 | --- | --- | --- |
@@ -333,6 +333,24 @@ Landed after Phase 5, in one fan-out:
 * **Solver momentum conservation.** The overlap averaging pumped momentum into
   unevenly-connected pairs — a fifth of the first walker's thrust. Replaced by
   per-link symmetric weights: conserving for any masses, same hub bound.
+* **Self-contact.** Opt-in collision between a body's own chunks when they
+  are graph-strangers — three or more links apart (``docs/CONTACT_MODEL.md``
+  §7). Discovered per tick, resolved as transient PUSH contacts under the
+  link pass's momentum-conserving symmetric weights; an uneven free cluster's
+  centre of mass holds to 1e-3 over 300 ticks. Neighbours and second
+  neighbours stay exempt — authored overlap is the surface. Elasticity is the
+  restoring-force knob: 1.0 is billiards, the 0.5 default is flesh. Runs
+  before the world passes, so the floor keeps the last word: two overlapping
+  strangers dropped under gravity stack at one and three radii.
+* **Chunk creation in the editor.** The one §5 inventory item that had landed
+  nowhere: the app could open, retune, link and simulate a creature but not
+  begin one, so rigs were born in scripts. `Add` — Chunks-panel button, Edit
+  menu, shortcut `A` — grows from the selection as §5 asked: linked to it,
+  radius inherited, continuing the chain; several selected place outward and
+  link to each, which closes a girdle; none makes a free chunk clear of the
+  body. One add is one undo step (chunk and links arrive and leave together),
+  and the new chunk takes the selection, so repeated Add extrudes a limb —
+  the composing gesture the legacy create-at-origin button never had.
 
 **Terrain is landed** (`docs/TERRAIN.md`). The two contact-model limits that gated it are
 closed — position-level Coulomb friction (grip scales with load, zero creep

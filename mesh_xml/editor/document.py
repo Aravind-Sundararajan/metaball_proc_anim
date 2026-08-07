@@ -49,6 +49,10 @@ __all__ = [
     "Macro",
 ]
 
+#: Spacing of a grown chunk, in radii. Under 2.0 on purpose: neighbours must
+#: overlap for the smooth-min surface to read as one volume rather than beads.
+_GROW_SPACING = 1.6
+
 
 class Command(Protocol):
     """A reversible edit. ``text`` is what the Undo menu item says."""
@@ -462,6 +466,89 @@ class Document(QObject):
         else:
             self.selection = self.selection | {chunk_id}
         self.selection_changed.emit()
+
+    # ------------------------------------------------------------------
+    # authoring
+    # ------------------------------------------------------------------
+
+    def create_chunk(self) -> int:
+        """Add a chunk, growing from the selection. Returns the new chunk's id.
+
+        The rule, in three sentences. With exactly one chunk selected the new
+        chunk is linked to it, inherits its radius, and continues the chain —
+        along selected-minus-neighbour at the same spacing, or outward from a
+        hub's neighbours (a lone chunk grows along +x). With several selected
+        it sits outward from their centroid and links to each, which is how a
+        girdle or a palm closes. With nothing selected it is a free chunk just
+        past the body's +x extent — origin on an empty body — because a new
+        component is what an empty selection says you meant.
+
+        One call is one undo step: the chunk and its links arrive and leave
+        together, via a :class:`Macro`. The new chunk becomes the selection, so
+        repeated calls extrude a limb — the legacy editor's create-at-origin
+        button never composed like this, which is why the plan asked for
+        placement relative to the selection instead of reproducing it.
+
+        The id is chosen here rather than by :meth:`Body.add_chunk` because the
+        link commands must name their endpoint before it exists; ``AddChunk``
+        re-applies the same id on redo, so the links stay resolvable.
+        """
+        body = self.body
+        dim = body.dim
+        selected = sorted(self.selection)
+        along_x = np.zeros(dim)
+        along_x[0] = 1.0
+
+        def outward(origin: np.ndarray, away_from: np.ndarray) -> np.ndarray:
+            direction = origin - away_from
+            length = float(np.linalg.norm(direction))
+            return direction / length if length > 1e-6 else along_x
+
+        if not selected:
+            radius = 0.5
+            if body.n_chunks == 0:
+                pos = np.zeros(dim)
+            else:
+                pos = body.pos.mean(axis=0).astype(np.float64)
+                pos[0] = float(body.pos[:, 0].max()) + _GROW_SPACING * radius
+        elif len(selected) == 1:
+            anchor = np.asarray(body.chunk(selected[0]).pos)
+            radius = body.chunk(selected[0]).radius
+            neighbours = body.neighbors(selected[0])
+            if len(neighbours) == 1:
+                prev = np.asarray(body.chunk(neighbours[0]).pos)
+                step = anchor - prev
+                if float(np.linalg.norm(step)) <= 1e-6:
+                    step = along_x * _GROW_SPACING * radius
+                pos = anchor + step
+            else:
+                centre = (
+                    np.mean([body.chunk(n).pos for n in neighbours], axis=0)
+                    if neighbours
+                    else anchor
+                )
+                pos = anchor + outward(anchor, centre) * _GROW_SPACING * radius
+        else:
+            radius = float(np.mean([body.chunk(s).radius for s in selected]))
+            centre = np.mean([body.chunk(s).pos for s in selected], axis=0)
+            pos = centre + outward(centre, body.pos.mean(axis=0)) * (
+                _GROW_SPACING * radius
+            )
+
+        new_id = max(body.chunk_ids(), default=-1) + 1
+        added = AddChunk(
+            f"chunk{new_id}",
+            tuple(float(v) for v in pos),
+            radius=radius,
+            chunk_id=new_id,
+        )
+        if selected:
+            links: list[Command] = [AddLink(new_id, s) for s in selected]
+            self.do(Macro([added, *links], text="Add Chunk"))
+        else:
+            self.do(added)
+        self.set_selection((new_id,))
+        return new_id
 
     # ------------------------------------------------------------------
     # files

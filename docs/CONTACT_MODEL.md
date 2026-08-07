@@ -110,7 +110,8 @@ sphere.
 ## 5. Not in scope
 
 Terrain itself (this is its prerequisite, not it). Orientation constraints on
-single chunks. Twist along chains. Contact manifolds beyond the ground plane.
+single chunks. Twist along chains. Contact manifolds beyond the ground plane
+(the body-vs-itself part of that has since landed — §7).
 
 ## 6. What implementation taught the design
 
@@ -142,3 +143,50 @@ speed; at 150° it halves travel for about one percent of standing height. And
 stops do not replace the postural controller on a *walking* creature: with
 posture off, the collapse simply moves to the hip, the joint without a stop.
 Static structure belongs to stops; dynamic balance stays a controller job.
+
+## 7. Later addition: self-contact
+
+§5 ruled contact manifolds beyond the ground plane out of scope. The
+body-vs-itself manifold has since landed, opt-in (`SolverConfig.self_contact`,
+off by default), built from parts this document already argued for.
+
+**Discovery is per tick, and the exclusion is structural.** Every chunk pair
+that overlaps in space while sitting at graph distance three or more becomes a
+transient PUSH contact: rest at the radii sum, one Jacobi pass, corrections
+shared by inverse mass, scaled by `self_contact_elasticity`. Distance one is
+the constraint set itself; distance two is the pair every folding joint drives
+into contact, whose governed form is §3's angle-limit brace — itself a link,
+so already at distance one. Neighbours *must* stay exempt: a limb is authored
+out of overlap, or the surface would not read as one volume.
+
+**The symmetric weight carries over unchanged.** Contact corrections reuse the
+projection pass's per-pair weight for the two reasons written there: a pile-up
+must stay a convex combination, and both ends must move equal and opposite in
+mass-weighted terms or contact becomes a momentum source. Measured: a free
+cluster with contact degrees 1-2-2-1 — the smallest uneven shape — holds its
+centre of mass to 1e-3 over 300 ticks, and an eight-chunk pile dropped on one
+point resolves without a NaN.
+
+**Elasticity is the restoring force, spelled position-level.** The knob closes
+that fraction of each overlap per tick: 1.0 opens an isolated pair in one tick
+and reads as billiard balls; the 0.5 default spreads it over a few ticks and
+reads as flesh. Discovery repeats every tick, so residual overlap is found
+again until it is gone. Penalty-force repulsion was rejected for the same
+reason the velocity bleed lost §2: a force stiff enough to stop penetration at
+a fixed 40 Hz tick is a stability ceiling, while a partial position correction
+is unconditionally convex.
+
+**Ordering: shape, separation, world.** The pass runs after link projection
+and before the ground/terrain passes, so the floor keeps the last word and a
+contact push can never end a tick with a chunk underground. Measured: two
+overlapping strangers dropped under gravity stack at exactly one and three
+radii above the floor, every tick of the way down.
+
+What it deliberately is not: there is no friction between a body's own parts
+(strangers separate without grip — a creature holding onto its own body is a
+controller feature); there is no capsule-capsule test (chunk spheres only, so
+two long links can still cross between sparsely-chunked spans); and the
+surface is untouched — the SDF still smooth-mins everything, so nearby limbs
+merge visually at blend distance `k` before their chunks ever touch. Keeping
+limbs visually distinct needs margin authored into radii or blend groups in
+the field, and that is a render decision, not a contact one.

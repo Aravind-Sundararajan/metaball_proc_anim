@@ -322,6 +322,18 @@ class TestSolverPanel:
         assert document.solver_config.gravity == pytest.approx((0.0, -9.81, 0.0))
         assert panel._gravity[1].isEnabled()
 
+    def test_self_contact_reaches_the_config_and_gates_its_knob(self, document):
+        panel = panels.SolverPanel(document)
+        assert not document.solver_config.self_contact
+        assert not panel._contact_elasticity.isEnabled()
+
+        panel._self_contact.setChecked(True)
+        assert document.solver_config.self_contact
+        assert panel._contact_elasticity.isEnabled()
+
+        panel._contact_elasticity.setValue(0.8)
+        assert document.solver_config.self_contact_elasticity == pytest.approx(0.8)
+
     def test_a_config_change_reflects_into_the_controls(self, document):
         panel = panels.SolverPanel(document)
         document.solver_config.iterations = 16
@@ -516,6 +528,19 @@ class TestChunkPanel:
         assert panel._rows == document.body.chunk_ids()
         assert panel.table.item(0, _NAME).text() == "c0"
         assert panel.table.item(0, _PINNED).checkState() == Qt.CheckState.Unchecked
+
+    def test_add_button_grows_the_body_and_the_table(self, document):
+        panel = panels.ChunkPanel(document)
+        chunks = document.body.n_chunks
+        end = document.body.chunk_ids()[-1]
+        document.set_selection((end,))
+
+        panel._add.click()
+
+        assert document.body.n_chunks == chunks + 1
+        assert panel.table.rowCount() == chunks + 1
+        new = next(iter(document.selection))
+        assert document.body.has_link(new, end)
 
     def test_editing_a_radius_submits_set_radius(self, document):
         panel = panels.ChunkPanel(document)

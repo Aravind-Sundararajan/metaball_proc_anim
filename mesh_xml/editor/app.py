@@ -124,6 +124,7 @@ class MainWindow(QMainWindow):
             edit_menu, "&Redo", QKeySequence.StandardKey.Redo, self.document.redo
         )
         edit_menu.addSeparator()
+        self._action(edit_menu, "&Add Chunk", QKeySequence("A"), self.add_chunk)
         self._action(edit_menu, "&Delete Selected", QKeySequence.StandardKey.Delete, self.delete_selected)
 
         view_menu = self.menuBar().addMenu("&View")
@@ -176,6 +177,9 @@ class MainWindow(QMainWindow):
             surface.set_orthographic(not surface.orthographic)
         else:
             self._set_orthographic(not self.viewport.camera.orthographic)
+
+    def add_chunk(self) -> None:
+        self.document.create_chunk()
 
     def delete_selected(self) -> None:
         for chunk_id in sorted(self.document.selection):
