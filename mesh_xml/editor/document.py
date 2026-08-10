@@ -641,11 +641,7 @@ class Document(QObject):
         old = room.name
         room.name = name
         room.body.name = name
-        state = self._states[room]
-        if not state.dirty:
-            state.dirty = True
-            if room is self._room:
-                self.dirty_changed.emit(True)
+        self._dirty_room(room)
         stale = sum(
             1
             for other in self.scene.rooms
@@ -697,6 +693,127 @@ class Document(QObject):
             self.controllers_changed.emit()
             self.history_changed.emit()
         self.scene_changed.emit()
+
+    def _dirty_room(self, room: Room) -> None:
+        """Mark any room's file as differing from disk, active or not."""
+        state = self._states[room]
+        if not state.dirty:
+            state.dirty = True
+            if room is self._room:
+                self.dirty_changed.emit(True)
+
+    # ------------------------------------------------------------------
+    # doors
+    # ------------------------------------------------------------------
+    #
+    # Door edits are file-grade like the room list and the terrain: an
+    # explicit authoring act, immediate, on no undo stack — but they DO
+    # dirty the room, because doors save with its file and a clean flag
+    # over an unsaved doorway is a lie Save All would act on.
+
+    def add_door(self, room: Room) -> Door:
+        """Author a door where the author is looking.
+
+        Placed at the selection's centroid — the Add rule one noun up — or
+        the origin when nothing is selected or the room is not on screen.
+        Named uniquely within the room, aimed at the first *other* room
+        (itself when alone, which the scene treats as closed — an honest
+        placeholder), arriving at a far door of its own name, which is the
+        pairing convention the shipped tests use: den's "east" meets
+        meadow's "west" only because an author re-aims it, but "door"
+        meeting "door" works out of the box.
+        """
+        if room not in self._states:
+            raise ValueError(
+                f"room {room.name!r} is not in this document's scene"
+            )
+        taken = {door.name for door in room.doors}
+        name, suffix = "door", 2
+        while name in taken:
+            name = f"door {suffix}"
+            suffix += 1
+
+        state = self._states[room]
+        if room is self._room and state.selection:
+            centroid = np.mean(
+                [room.body.chunk(cid).pos for cid in sorted(state.selection)],
+                axis=0,
+            )
+            at = tuple(float(v) for v in centroid)
+        else:
+            at = (0.0,) * room.body.dim
+        others = [r.name for r in self.scene.rooms if r is not room]
+        door = Door(
+            name, at, to_room=others[0] if others else room.name, to_door=name
+        )
+        room.doors = [*room.doors, door]
+        self._dirty_room(room)
+        self.scene_changed.emit()
+        self.status.emit(f"Door {name!r} added to {room.name!r}")
+        return door
+
+    def set_door(self, room: Room, index: int, door: Door) -> None:
+        """Replace one door record — how the dock edits a field.
+
+        A duplicate name is refused: doors are the room's addressing the
+        way rooms are the scene's, and ``ctx.doors`` is a dict that would
+        silently keep one of the pair.
+        """
+        if room not in self._states:
+            raise ValueError(
+                f"room {room.name!r} is not in this document's scene"
+            )
+        if not 0 <= index < len(room.doors):
+            raise IndexError(f"room {room.name!r} has no door {index}")
+        if any(
+            i != index and other.name == door.name
+            for i, other in enumerate(room.doors)
+        ):
+            self.status.emit(
+                f"A door named {door.name!r} already exists in {room.name!r}"
+            )
+            self.scene_changed.emit()
+            return
+        doors = list(room.doors)
+        doors[index] = door
+        room.doors = doors
+        self._dirty_room(room)
+        self.scene_changed.emit()
+
+    def remove_door(self, room: Room, index: int) -> None:
+        """Take a door out. Far sides that paired with it become closed doors."""
+        if room not in self._states:
+            raise ValueError(
+                f"room {room.name!r} is not in this document's scene"
+            )
+        if not 0 <= index < len(room.doors):
+            raise IndexError(f"room {room.name!r} has no door {index}")
+        doors = list(room.doors)
+        removed = doors.pop(index)
+        room.doors = doors
+        self._dirty_room(room)
+        self.scene_changed.emit()
+        self.status.emit(f"Removed door {removed.name!r} from {room.name!r}")
+
+    def door_status(self, room: Room, door: Door) -> str:
+        """Why a door is closed, or an empty string for one that would carry.
+
+        The dock's surfacing of :meth:`Scene._cross`'s own refusals — the
+        same conditions, answered before a creature walks there: an
+        unknown room, the door's own room, a parked far side, a missing
+        far door. Never an error; a closed door is a state, not a fault.
+        """
+        try:
+            target = self.scene.room(door.to_room)
+        except KeyError:
+            return f"closed: no room {door.to_room!r}"
+        if target is room:
+            return "closed: leads to its own room"
+        if target.abstracted:
+            return f"closed: {target.name!r} is parked"
+        if not any(far.name == door.to_door for far in target.doors):
+            return f"closed: no door {door.to_door!r} in {target.name!r}"
+        return ""
 
     def unique_room_name(self, base: str = "room") -> str:
         """A name no room in the scene holds: ``base``, then ``base 2``, on up."""

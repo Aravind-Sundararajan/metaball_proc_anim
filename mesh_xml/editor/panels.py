@@ -36,6 +36,7 @@ being smuggled onto the document behind its own contract. The radius curve in
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import replace
 from functools import wraps
 from itertools import combinations
 from typing import Callable, Iterator
@@ -74,6 +75,7 @@ from PySide6.QtWidgets import (
 
 from mesh_xml.anim import serialize
 from mesh_xml.core import solver
+from mesh_xml.scene.door import Door
 from mesh_xml.scene.room import Room
 from mesh_xml.editor.document import (
     AddLink,
@@ -122,6 +124,9 @@ _RADIUS_FORMAT = ".3f"
 
 _R_NAME, _R_CREATURES, _R_ABSTRACT, _R_FILE = 0, 1, 2, 3
 _ROOM_COLUMNS = ("Name", "Creatures", "Abstract", "File")
+
+_D_NAME, _D_AT, _D_TO_ROOM, _D_TO_DOOR, _D_RADIUS, _D_STATUS = range(6)
+_DOOR_COLUMNS = ("Name", "At", "To room", "To door", "Radius", "")
 
 
 def _user_edit(handler: Callable[..., None]) -> Callable[..., None]:
@@ -1392,6 +1397,9 @@ class RoomPanel(_Panel):
         self._new = QPushButton("New")
         self._open = QPushButton("Open…")
         self._remove = QPushButton("Remove")
+        self._doors = self._build_doors_table()
+        self._add_door = QPushButton("Add Door")
+        self._remove_door = QPushButton("Remove Door")
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._table, 1)
@@ -1404,6 +1412,7 @@ class RoomPanel(_Panel):
                 "is closed until it realizes."
             )
         )
+        layout.addWidget(self._build_doors(), 1)
 
         self._new.setToolTip(
             "Add an empty room to the scene and switch to it. Its name is "
@@ -1424,6 +1433,9 @@ class RoomPanel(_Panel):
         self._new.clicked.connect(self._on_new)
         self._open.clicked.connect(self._on_open)
         self._remove.clicked.connect(self._on_remove)
+        self._doors.itemChanged.connect(self._on_door_changed)
+        self._add_door.clicked.connect(self._on_add_door)
+        self._remove_door.clicked.connect(self._on_remove_door)
 
         self._follow(
             document.scene_changed,
@@ -1463,6 +1475,57 @@ class RoomPanel(_Panel):
         for button in (self._new, self._open, self._remove):
             layout.addWidget(button)
         return row
+
+    def _build_doors_table(self) -> QTableWidget:
+        table = QTableWidget(0, len(_DOOR_COLUMNS))
+        table.setHorizontalHeaderLabels(_DOOR_COLUMNS)
+        table.verticalHeader().setVisible(False)
+        table.setSortingEnabled(False)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.SelectedClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
+        header = table.horizontalHeader()
+        for column in (_D_NAME, _D_TO_ROOM, _D_TO_DOOR):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
+        for column in (_D_AT, _D_RADIUS, _D_STATUS):
+            header.setSectionResizeMode(
+                column, QHeaderView.ResizeMode.ResizeToContents
+            )
+        return table
+
+    def _build_doors(self) -> QWidget:
+        box = QGroupBox("Doors — the active room's exits")
+        layout = QVBoxLayout(box)
+        layout.addWidget(self._doors, 1)
+        buttons = QWidget()
+        buttons_layout = QHBoxLayout(buttons)
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.addWidget(self._add_door)
+        buttons_layout.addWidget(self._remove_door)
+        layout.addWidget(buttons)
+        layout.addWidget(
+            _note(
+                "A door is a place plus a promise: brains walk to it, the "
+                "scene carries whoever arrives to the far room's paired "
+                "door. The last column says when a promise cannot be kept "
+                "— a closed door is waited at, never an error. Saved with "
+                "the room's file."
+            )
+        )
+        self._add_door.setToolTip(
+            "Add a door at the selection's centroid (the origin when "
+            "nothing is selected), aimed at the first other room, arriving "
+            "at a far door of the same name."
+        )
+        self._remove_door.setToolTip(
+            "Remove the selected door. Far doors that paired with it "
+            "become closed doors."
+        )
+        return box
 
     @_user_edit
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
@@ -1509,6 +1572,48 @@ class RoomPanel(_Panel):
     def _on_remove(self) -> None:
         self.remove_requested.emit()
 
+    @_user_edit
+    def _on_door_changed(self, item: QTableWidgetItem) -> None:
+        room = self._document.room
+        index, column = item.row(), item.column()
+        if not 0 <= index < len(room.doors):
+            return
+        door = room.doors[index]
+        text = item.text().strip()
+        try:
+            if column == _D_NAME:
+                updated = replace(door, name=text)
+            elif column == _D_AT:
+                updated = replace(
+                    door, at=tuple(float(v) for v in text.split())
+                )
+            elif column == _D_TO_ROOM:
+                updated = replace(door, to_room=text)
+            elif column == _D_TO_DOOR:
+                updated = replace(door, to_door=text)
+            elif column == _D_RADIUS:
+                updated = replace(door, radius=float(text))
+            else:
+                return
+        except ValueError as exc:
+            # Door validates itself on construction; a bad edit reads its
+            # own refusal and the refresh snaps the cell back to the truth.
+            self._document.status.emit(str(exc))
+            self.refresh()
+            return
+        if updated != door:
+            self._document.set_door(room, index, updated)
+
+    @_user_edit
+    def _on_add_door(self) -> None:
+        self._document.add_door(self._document.room)
+
+    @_user_edit
+    def _on_remove_door(self) -> None:
+        index = self._doors.currentRow()
+        if 0 <= index < len(self._document.room.doors):
+            self._document.remove_door(self._document.room, index)
+
     def _cell(self, row: int, column: int) -> QTableWidgetItem:
         item = self._table.item(row, column)
         if item is None:
@@ -1541,6 +1646,30 @@ class RoomPanel(_Panel):
             text = f"{star}unsaved" if star else "—"
         self._cell(row, _R_FILE).setText(text)
 
+    def _door_cell(self, row: int, column: int) -> QTableWidgetItem:
+        item = self._doors.item(row, column)
+        if item is None:
+            item = QTableWidgetItem()
+            if column == _D_STATUS:
+                item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                )
+            self._doors.setItem(row, column, item)
+        return item
+
+    def _write_door_row(self, row: int, door: Door) -> None:
+        self._door_cell(row, _D_NAME).setText(door.name)
+        self._door_cell(row, _D_AT).setText(
+            " ".join(f"{float(v):g}" for v in door.at)
+        )
+        self._door_cell(row, _D_TO_ROOM).setText(door.to_room)
+        self._door_cell(row, _D_TO_DOOR).setText(door.to_door)
+        self._door_cell(row, _D_RADIUS).setText(f"{float(door.radius):g}")
+        status = self._document.door_status(self._document.room, door)
+        cell = self._door_cell(row, _D_STATUS)
+        cell.setText(status)
+        cell.setToolTip(status)
+
     def _apply_active(self) -> None:
         model = self._table.selectionModel()
         model.clearSelection()
@@ -1561,6 +1690,14 @@ class RoomPanel(_Panel):
             self._write_row(row, room)
         self._apply_active()
         self._remove.setEnabled(len(self._rows) > 1)
+
+        # Doors are room data abstraction never parks, so a parked room's
+        # doors stay editable — unlike its chunks, they are not elsewhere.
+        doors = self._document.room.doors
+        self._doors.setRowCount(len(doors))
+        for row, door in enumerate(doors):
+            self._write_door_row(row, door)
+        self._remove_door.setEnabled(bool(doors))
 
 
 class ChunkPanel(_Panel):

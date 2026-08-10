@@ -9,6 +9,8 @@ restores, and the scene ticking whole through the document's own loop.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from mesh_xml.anim.behavior import Grazer
@@ -360,3 +362,110 @@ class TestRoomManagement:
         document.set_active_room(spare)
         document.open(path)
         assert document.room.name == "meadow 2"
+
+
+class TestDoors:
+    """Door authoring through the document: file-grade, dirty-tracked, and
+    surfaced as open or closed by the scene's own rules."""
+
+    def test_add_door_defaults_aim_at_the_first_other_room(self, document):
+        document.add_room(Room(name="meadow"))
+
+        door = document.add_door(document.room)
+        assert door.name == "door"
+        assert door.to_room == "meadow"
+        assert door.to_door == "door", "pairing convention: same name far side"
+        assert door.at == (0.0, 0.0, 0.0)
+        assert document.dirty, "a doorway is unsaved until saved"
+
+        second = document.add_door(document.room)
+        assert second.name == "door 2"
+
+    def test_add_door_lands_on_the_selection(self, document):
+        document.set_selection(ids_of(document)[:2])
+        door = document.add_door(document.room)
+        assert door.at == pytest.approx((0.5, 0.5, 0.0))
+
+    def test_a_lone_rooms_door_aims_home_and_reads_closed(self, document):
+        door = document.add_door(document.room)
+        assert door.to_room == document.room.name
+        assert "its own room" in document.door_status(document.room, door)
+
+    def test_set_door_refuses_a_duplicate_name(self, document):
+        document.add_door(document.room)
+        second = document.add_door(document.room)
+
+        document.set_door(document.room, 1, replace(second, name="door"))
+        assert document.room.doors[1].name == "door 2", "the pair would collide"
+
+    def test_remove_door_empties_the_list_and_dirties(self, document):
+        document.add_door(document.room)
+        document.remove_door(document.room, 0)
+        assert document.room.doors == []
+        assert document.dirty
+
+    def test_door_status_names_each_closed_reason(self, document):
+        den = document.room
+        document.rename_room(den, "den")
+        meadow = document.add_room(Room(name="meadow"))
+
+        document.add_door(den)
+        assert "no door" in document.door_status(den, den.doors[0])
+
+        document.add_door(meadow)  # meadow's own "door" aims back at den
+        assert document.door_status(den, den.doors[0]) == ""
+
+        document.set_room_abstracted(meadow, True)
+        assert "parked" in document.door_status(den, den.doors[0])
+        document.set_room_abstracted(meadow, False)
+
+        document.set_door(
+            den, 0, replace(den.doors[0], to_room="attic")
+        )
+        assert "no room" in document.door_status(den, den.doors[0])
+
+    def test_the_money_path_a_dock_authored_door_pair_carries_a_grazer(
+        self, document
+    ):
+        """SCENE_BINDING.md's money test, short of the mouse.
+
+        Every step is the editor's own API — rename, add door, re-aim,
+        play — and the grazer walks out of a room nobody re-plumbed by
+        hand and into the roster of the other.
+        """
+        den = document.room
+        document.new()
+        document.rename_room(den, "den")
+        ids = [
+            den.body.add_chunk(f"grazer{i}", (float(i) * 0.6, 0.5, 0.0), radius=0.3)
+            for i in range(3)
+        ]
+        for a, b in zip(ids, ids[1:]):
+            den.body.add_link(a, b)
+        den.body.set_pinned(ids[0], True)
+        den.controllers.add(Grazer(ids[0], home=(0.0, 0.5, 0.0), exit="east"))
+        meadow = document.add_room(Room(name="meadow"))
+
+        document.add_door(den)
+        document.set_door(
+            den,
+            0,
+            Door("east", (5.0, 0.5, 0.0), to_room="meadow", to_door="west"),
+        )
+        document.add_door(meadow)
+        document.set_door(
+            meadow,
+            0,
+            Door("west", (-5.0, 0.5, 0.0), to_room="den", to_door="east"),
+        )
+        assert document.door_status(den, den.doors[0]) == "", "the pair is open"
+
+        for _ in range(1200):
+            document.step_once()
+            if meadow.body.chunk_ids():
+                break
+        assert meadow.body.chunk_ids(), "the grazer never crossed"
+
+        document.set_active_room(meadow)
+        roster = document.creatures()
+        assert len(roster) == 1 and len(roster[0].chunks) == 3

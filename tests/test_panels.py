@@ -1017,3 +1017,48 @@ class TestRoomPanel:
 
         document.add_room(Room(name="meadow"))
         assert panel._remove.isEnabled()
+
+    def test_door_rows_follow_the_active_room(self, document):
+        from mesh_xml.scene import Room
+
+        panel = panels.RoomPanel(document)
+        meadow = document.add_room(Room(name="meadow"))
+        document.add_door(document.room)
+        assert panel._doors.rowCount() == 1
+
+        document.set_active_room(meadow)
+        assert panel._doors.rowCount() == 0
+
+    def test_editing_a_door_cell_rewrites_the_door(self, document):
+        from mesh_xml.scene import Room
+
+        panel = panels.RoomPanel(document)
+        document.add_room(Room(name="meadow"))
+        document.add_door(document.room)
+
+        panel._doors.item(0, 3).setText("west")
+        assert document.room.doors[0].to_door == "west"
+        assert undo_depth(document) == 0, "door edits are file-grade"
+
+    def test_a_bad_door_edit_snaps_back_to_the_truth(self, document):
+        panel = panels.RoomPanel(document)
+        document.add_door(document.room)
+
+        panel._doors.item(0, 4).setText("not-a-number")
+        assert document.room.doors[0].radius == pytest.approx(0.9)
+        assert panel._doors.item(0, 4).text() == "0.9"
+
+    def test_the_door_buttons_add_and_remove(self, document):
+        panel = panels.RoomPanel(document)
+
+        panel._add_door.click()
+        assert len(document.room.doors) == 1
+
+        panel._doors.setCurrentCell(0, 0)
+        panel._remove_door.click()
+        assert document.room.doors == []
+
+    def test_the_status_column_surfaces_closed_doors(self, document):
+        panel = panels.RoomPanel(document)
+        document.add_door(document.room)  # a lone room's door aims home
+        assert "closed" in panel._doors.item(0, 5).text()
