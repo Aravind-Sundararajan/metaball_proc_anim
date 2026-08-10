@@ -1,6 +1,9 @@
 # Chrome: the editor wears the viewport's own palette
 
-**Status:** design — package 1 in progress
+**Status:** in progress — packages 1 (the skin) and 2 (the toolbar: one
+QAction per gesture, shared by menu and toolbar so the surfaces cannot
+drift; Fit Autorig and Rig Legs surfaced at last) landed. 3 (the details)
+open.
 **Provenance:** user-requested (2026-08-10), after a session of actually
 using the app: "I think you need some ui/ux chrome, like a modern app."
 **North star:** the app already has a visual identity — the render's dark
