@@ -373,7 +373,9 @@ class TestAgainstTheCpuReference:
 
     def test_albedo_matches_the_oracle(self):
         """Debug mode 4 against field.albedo: colour joins depth in the
-        parity harness (docs/TEXTURES.md package 1)."""
+        parity harness (docs/TEXTURES.md package 1), and every pattern in
+        the vocabulary is in the frame (package 3) — one creature striped,
+        the other countershaded, both over varied per-chunk colours."""
         from mesh_xml.render.gl.camera import OrbitCamera
 
         body = Body()
@@ -381,13 +383,20 @@ class TestAgainstTheCpuReference:
             ("1 0 0", "1 1 0", "0 1 0", "0 1 1"),
             ("0 0 1", "1 0 1", "1 1 1", "0.2 0.2 0.2"),
         ]
+        patterns = [
+            {sdf.PATTERN_META: "stripes", sdf.PATTERN_PARAM_META: "3.0"},
+            {sdf.PATTERN_META: "countershade", sdf.PATTERN_PARAM_META: "0.8"},
+        ]
         for creature, y in enumerate((0.0, 1.1)):
             ids = [
                 body.add_chunk(
                     f"w{creature}c{i}",
                     [i * 0.8 - 1.6, y, 0.0],
                     radius=0.45,
-                    meta={sdf.COLOUR_META: palette[creature][i]},
+                    meta={
+                        sdf.COLOUR_META: palette[creature][i],
+                        **patterns[creature],
+                    },
                 )
                 for i in range(4)
             ]

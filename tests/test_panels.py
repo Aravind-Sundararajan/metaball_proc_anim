@@ -258,6 +258,27 @@ class TestSurfacePanel:
             "the creature-wide button reaches the whole component"
         )
 
+    def test_the_pattern_combo_routes_and_reads_back(self, document):
+        panel = panels.SurfacePanel(document)
+        ids = document.body.chunk_ids()
+        assert not panel._pattern.isEnabled(), "no selection, no pattern edits"
+
+        document.set_selection(ids[:1])
+        assert panel._pattern.isEnabled()
+
+        index = panel._pattern.findText("stripes")
+        panel._pattern.setCurrentIndex(index)
+        assert document.creature_pattern() == ("stripes", 4.0), (
+            "picking a pattern applies it with its default parameter"
+        )
+        assert panel._pattern_param.value() == pytest.approx(4.0)
+
+        panel._pattern_param.setValue(7.0)
+        assert document.creature_pattern() == ("stripes", 7.0)
+
+        panel._pattern.setCurrentIndex(panel._pattern.findText("none"))
+        assert document.creature_pattern() == ("none", 0.0)
+
     def test_the_overlay_is_panel_state_and_announces_itself(self, document):
         panel = panels.SurfacePanel(document)
         seen = []

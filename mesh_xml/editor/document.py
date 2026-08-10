@@ -1335,6 +1335,58 @@ class Document(QObject):
             self.do(Macro(commands, text="Creature Colour"))
         self.status.emit(f"Coloured {len(chunks)} chunk(s)")
 
+    def creature_pattern(self) -> tuple[str, float]:
+        """The first selected creature's pattern — what the panel shows."""
+        creatures = self._selected_creatures()
+        if not creatures:
+            return "none", 0.0
+        return sdf.pattern_of(self.body, sorted(creatures[0]))
+
+    def set_creature_pattern(self, name: str, param: float | None = None) -> None:
+        """Pattern every creature the selection touches, as one undo step.
+
+        The tempo mechanism for the skin (``docs/TEXTURES.md`` package 3):
+        the pattern name and its parameter ride every chunk of each
+        component as meta, so they survive any one chunk's deletion and
+        every format era that carries meta. A name outside the vocabulary —
+        including the honest ``"none"`` — clears both keys and the skin
+        returns to plain colours. ``param=None`` takes the pattern's
+        default.
+        """
+        if not self.selection:
+            self.status.emit("Select a chunk of the creature to pattern first")
+            return
+        name = name.strip().lower()
+        known = name in sdf.PATTERN_IDS
+        pattern_value = name if known else None
+        param_value = None
+        if known:
+            chosen = param if param is not None else sdf.PATTERN_DEFAULTS[name]
+            if not np.isfinite(float(chosen)):
+                self.status.emit("Pattern parameter must be a finite number")
+                return
+            param_value = repr(float(chosen))
+
+        chunks: set[int] = set()
+        for component in self._selected_creatures():
+            chunks |= component
+        commands: list[Command] = []
+        for cid in sorted(chunks):
+            commands.append(
+                SetMeta(cid, sdf.PATTERN_META, pattern_value, text="Creature Pattern")
+            )
+            commands.append(
+                SetMeta(
+                    cid, sdf.PATTERN_PARAM_META, param_value, text="Creature Pattern"
+                )
+            )
+        self.do(Macro(commands, text="Creature Pattern"))
+        self.status.emit(
+            f"Pattern {name!r} on {len(chunks)} chunk(s)"
+            if known
+            else f"Pattern cleared on {len(chunks)} chunk(s)"
+        )
+
     def set_chunk_colour(self, rgb: tuple[float, float, float]) -> None:
         """Paint exactly the selected chunks, as one undo step.
 

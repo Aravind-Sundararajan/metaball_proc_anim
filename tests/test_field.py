@@ -1216,6 +1216,52 @@ class TestAlbedo:
         assert out[0] == pytest.approx((1.0, 0.0, 0.0))
         assert out[1] == pytest.approx((0.0, 0.0, 1.0))
 
+    def test_stripes_band_along_the_axis(self):
+        """Pattern 1: wave peaks darken to the band level, troughs pass the
+        base through — checked at the exact quarter points of the cosine."""
+        prims = np.array([[0.0, 0.0, 0.0, 0.3, 2.0, 0.0, 0.0, 0.3]])
+        attrs = np.array([[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0]])
+
+        out = albedo(
+            np.array([[0.0, 0.35, 0.0], [0.5, 0.35, 0.0]]), prims, attrs, 0.0
+        )
+        assert out[0] == pytest.approx((0.45, 0.45, 0.45)), "t=0 is a band peak"
+        assert out[1] == pytest.approx((1.0, 1.0, 1.0)), "a trough passes through"
+
+    def test_countershade_darkens_the_back_and_pales_the_belly(self):
+        prims = np.array([self._sphere_row((0.0, 0.0, 0.0), 0.5)])
+        attrs = np.array([[0.5, 0.5, 0.5, 2.0, 0.5, 0.5, 0.5, 1.0]])
+
+        out = albedo(
+            np.array([[0.0, 0.6, 0.0], [0.0, -0.6, 0.0], [0.6, 0.0, 0.0]]),
+            prims,
+            attrs,
+            0.0,
+        )
+        assert out[0] == pytest.approx((0.175, 0.175, 0.175)), "the back: 0.5 x 0.35"
+        assert out[1] == pytest.approx((0.8, 0.8, 0.8)), "the belly: 0.6 of the way to white"
+        assert out[2] == pytest.approx((0.5, 0.5, 0.5)), "the flank keeps the base"
+
+    def test_stripes_ride_the_limb_through_a_rigid_motion(self):
+        """The acceptance behind the vocabulary: patterns live in the link's
+        own frame, so moving the link moves the markings with it."""
+        prims = np.array([[0.0, 0.0, 0.0, 0.3, 2.0, 0.0, 0.0, 0.3]])
+        attrs = np.array([[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0]])
+        point = np.array([[0.7, 0.35, 0.0]])
+        before = albedo(point, prims, attrs, 0.0)
+
+        # Translate by (5, 1, -2) and rotate 90 degrees about z, segment and
+        # sample point together.
+        def moved(p):
+            x, y, z = p
+            return [-y + 5.0, x + 1.0, z - 2.0]
+
+        turned = np.array(
+            [[*moved((0.0, 0.0, 0.0)), 0.3, *moved((2.0, 0.0, 0.0)), 0.3]]
+        )
+        after = albedo(np.array([moved(point[0])]), turned, attrs, 0.0)
+        assert after[0] == pytest.approx(tuple(before[0]), abs=1e-9)
+
     def test_mismatched_attributes_are_refused(self):
         prims, attrs = self._red_blue_cone()
         with pytest.raises(ValueError, match="row for row"):

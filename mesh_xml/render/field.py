@@ -247,12 +247,26 @@ def albedo(
     return best_c.reshape(p.shape)
 
 
+#: The pattern constants, mirrored in ``sdf.glsl``'s SDF_* twins: the band
+#: level stripes darken to, the factor a countershaded back darkens by, and
+#: the fraction of the way to white a countershaded belly pales.
+_TAU = 6.28318530717958647692
+_STRIPE_BAND = 0.45
+_SHADE_DARK = 0.35
+_SHADE_PALE = 0.6
+
+
 def _primitive_albedo(
     flat: np.ndarray, prim: np.ndarray, attr: np.ndarray
 ) -> np.ndarray:
-    """One primitive's colour at each point: end colours lerped by the
-    orthogonal projection fraction — ``sd_primitive_albedo``'s twin,
-    including the degenerate guard reading the ``a`` end."""
+    """One primitive's colour at each point — ``sd_primitive_albedo``'s twin.
+
+    End colours lerped by the orthogonal projection fraction (a degenerate
+    record reads its ``a`` end, ``t = 0``), then the pattern lanes
+    modulate: stripes band along the segment's own axis, countershade keys
+    on the radial direction's world-y. Same constants, same ``mix``
+    algebra — ``mix(x, y, a)`` is ``x + (y - x)·a`` on both sides.
+    """
     a = prim[0:3]
     b = prim[4:7]
     ca = attr[0:3]
@@ -260,9 +274,25 @@ def _primitive_albedo(
     ba = b - a
     l2 = float(ba @ ba)
     if l2 < _DEGENERATE_EPSILON * _DEGENERATE_EPSILON:
-        return np.broadcast_to(ca, (len(flat), 3)).copy()
-    t = np.clip((flat - a) @ ba / l2, 0.0, 1.0)
-    return ca + (cb - ca) * t[:, None]
+        t = np.zeros(len(flat))
+    else:
+        t = np.clip((flat - a) @ ba / l2, 0.0, 1.0)
+    base = ca + (cb - ca) * t[:, None]
+
+    pattern = int(attr[3])
+    if pattern == 1:
+        wave = 0.5 + 0.5 * np.cos(_TAU * float(attr[7]) * t)
+        base = base * (1.0 + (_STRIPE_BAND - 1.0) * wave)[:, None]
+    elif pattern == 2:
+        radial = flat - (a + ba * t[:, None])
+        length = np.linalg.norm(radial, axis=1)
+        up = radial[:, 1] / np.maximum(length, 1e-6)
+        strength = float(attr[7])
+        back = strength * np.maximum(up, 0.0)
+        base = base * (1.0 + (_SHADE_DARK - 1.0) * back)[:, None]
+        belly = _SHADE_PALE * strength * np.maximum(-up, 0.0)
+        base = base + (1.0 - base) * belly[:, None]
+    return base
 
 
 def normal(

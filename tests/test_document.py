@@ -671,6 +671,35 @@ class TestCreatureColour:
         document.set_chunk_colour((1.0, 0.0, 0.0))
         assert not document.can_undo
 
+    def test_pattern_paints_the_component_and_undoes_whole(self, document):
+        ids = ids_of(document)
+        document.set_selection(ids[:1])
+        document.set_creature_pattern("stripes", 3.0)
+
+        for cid in ids:
+            assert document.body.meta_of(cid)["pattern"] == "stripes"
+            assert document.body.meta_of(cid)["pattern_param"] == "3.0"
+        assert document.creature_pattern() == ("stripes", 3.0)
+        assert len(document.attribute_rows()) > 0, "a pattern arms the skin"
+
+        document.undo()
+        assert "pattern" not in document.body.meta_of(ids[0]), "one undo step"
+
+    def test_none_clears_the_pattern(self, document):
+        ids = ids_of(document)
+        document.set_selection(ids[:1])
+        document.set_creature_pattern("stripes")
+        assert document.creature_pattern()[0] == "stripes"
+
+        document.set_creature_pattern("none")
+        assert document.creature_pattern() == ("none", 0.0)
+        assert "pattern" not in document.body.meta_of(ids[0])
+
+    def test_pattern_default_param_when_unspecified(self, document):
+        document.set_selection(ids_of(document)[:1])
+        document.set_creature_pattern("countershade")
+        assert document.creature_pattern() == ("countershade", 0.7)
+
     def test_a_painted_head_arms_the_skin_and_survives_a_save(
         self, document, tmp_path
     ):

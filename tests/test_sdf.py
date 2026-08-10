@@ -380,6 +380,56 @@ class TestPackAttributes:
         assert tuple(attrs[lonely][0:3]) == (0.0, 0.0, 1.0)
         assert tuple(attrs[lonely][4:7]) == (0.0, 0.0, 1.0)
 
+    def test_a_pattern_arms_the_table_over_uniform_colours(self):
+        """A striped creature varies by definition."""
+        body = chain(3)
+        for cid in body.chunk_ids():
+            body.meta_of(cid)[sdf.PATTERN_META] = "stripes"
+
+        rows = sdf.pack_attributes(body)
+        assert rows.shape == (sdf.primitive_count(body), 8)
+        assert (rows[:, 3] == 1.0).all(), "the id rides the a texel's lane"
+        assert (rows[:, 7] == sdf.PATTERN_DEFAULTS["stripes"]).all(), (
+            "an unset parameter takes the pattern's default"
+        )
+
+    def test_pattern_lanes_are_per_component(self):
+        body = Body()
+        for creature, (name, param) in enumerate(
+            (("stripes", "3.0"), ("countershade", "0.5"))
+        ):
+            ids = [
+                body.add_chunk(
+                    f"w{creature}c{i}",
+                    [float(i), creature * 5.0, 0.0],
+                    radius=0.3,
+                    meta={sdf.PATTERN_META: name, sdf.PATTERN_PARAM_META: param},
+                )
+                for i in range(3)
+            ]
+            for a, b in zip(ids, ids[1:]):
+                body.add_link(a, b)
+
+        rows = sdf.pack_attributes(body)
+        assert rows.shape[0] == 4, "two links per creature, group-major"
+        assert tuple(rows[:, 3]) == (1.0, 1.0, 2.0, 2.0)
+        assert tuple(rows[:, 7]) == (3.0, 3.0, 0.5, 0.5)
+
+    def test_pattern_of_reads_like_the_colour_reader(self):
+        body = chain(3)
+        ids = body.chunk_ids()
+        assert sdf.pattern_of(body, ids) == ("none", 0.0)
+
+        body.meta_of(ids[0])[sdf.PATTERN_META] = "tartan"  # not in the vocabulary
+        body.meta_of(ids[1])[sdf.PATTERN_META] = "stripes"
+        body.meta_of(ids[1])[sdf.PATTERN_PARAM_META] = "garbage"
+        name, param = sdf.pattern_of(body, ids)
+        assert name == "stripes", "unknown names are passed over, not raised on"
+        assert param == sdf.PATTERN_DEFAULTS["stripes"], "garbage takes the default"
+
+        body.meta_of(ids[1])[sdf.PATTERN_PARAM_META] = "6.5"
+        assert sdf.pattern_of(body, ids) == ("stripes", 6.5)
+
     def test_the_fallback_is_the_palette_not_the_flat_colour(self):
         """Painting a head must not repaint the body through the fallback.
 
