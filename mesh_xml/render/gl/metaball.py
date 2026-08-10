@@ -96,7 +96,14 @@ BOUNDS_TEXTURE_UNIT = 3
 TILE_TEXTURE_UNIT = 4
 
 #: Texture unit the per-primitive albedo table is bound to.
-ATTRIBUTE_TEXTURE_UNIT = 5
+#:
+#: 6, not 5, and the gap is load-bearing: unit 5 belongs to the cone
+#: prepass's seed depths (``context.SEED_TEXTURE_UNIT``), which live in a
+#: different module and bind on every prepass frame. Taking 5 here once
+#: painted every editor creature the seed's R32F red — while every test
+#: stayed green, because only the editor runs the prepass. The unit roster
+#: spans *both* files; check context.py before claiming the next number.
+ATTRIBUTE_TEXTURE_UNIT = 6
 
 
 @dataclass

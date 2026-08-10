@@ -421,6 +421,10 @@ class SurfacePanel(_Panel):
         self._pattern = QComboBox()
         self._pattern.addItems(["none", *sdf_module.PATTERN_IDS])
         self._pattern_param = _spin(0.0, 64.0, 0.5, decimals=2)
+        #: Why the pattern row is grey, told where the greyness is. A
+        #: disabled combo reads as an empty one, and the reason lives in
+        #: the selection — a fact this panel cannot show any other way.
+        self._pattern_scope = _note("")
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_blend())
@@ -522,6 +526,7 @@ class SurfacePanel(_Panel):
         layout.addRow(self._chunk_colour)
         layout.addRow("Pattern", self._pattern)
         layout.addRow("Pattern param", self._pattern_param)
+        layout.addRow(self._pattern_scope)
         layout.addRow(self._overlay)
         layout.addRow(self._ortho)
         layout.addRow(self._floor)
@@ -701,6 +706,12 @@ class SurfacePanel(_Panel):
         selected = bool(self._document.selection)
         self._pattern.setEnabled(selected)
         self._pattern_param.setEnabled(selected)
+        self._pattern_scope.setText(
+            ""
+            if selected
+            else "Patterns apply to the selected creature — click one in "
+            "the viewport or pick it in the Creatures roster."
+        )
 
 
 class SolverPanel(_Panel):

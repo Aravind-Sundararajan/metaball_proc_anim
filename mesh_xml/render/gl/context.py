@@ -50,7 +50,11 @@ from mesh_xml.render.gl.program import (
     file_resolver,
 )
 
-#: Texture unit the coarse prepass's seed depths are bound to.
+#: Texture unit the coarse prepass's seed depths are bound to. The unit
+#: roster is split across this file and metaball.py (units 0-4 and 6 live
+#: there); a newcomer claiming a number must check both, because a
+#: collision does not error — it silently feeds one sampler the other's
+#: data, and only on the code paths that bind both.
 SEED_TEXTURE_UNIT = 5
 
 #: Safety factor on the prepass cone radius, over the block half-diagonal it
