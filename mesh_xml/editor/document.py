@@ -1335,6 +1335,31 @@ class Document(QObject):
             self.do(Macro(commands, text="Creature Colour"))
         self.status.emit(f"Coloured {len(chunks)} chunk(s)")
 
+    def set_chunk_colour(self, rgb: tuple[float, float, float]) -> None:
+        """Paint exactly the selected chunks, as one undo step.
+
+        The per-part gesture (``docs/TEXTURES.md`` package 2), beside
+        :meth:`set_creature_colour` and deliberately narrower: a statement
+        about the chunks in hand, not their component. The weighted skin is
+        what makes the difference visible — unpainted neighbours keep their
+        palette colour, and the surface grades between them at the blend.
+        Same meta key, so the two gestures overwrite each other cleanly and
+        both round-trip through every format era that carries meta.
+        """
+        if not self.selection:
+            self.status.emit("Select the chunks to paint first")
+            return
+        value = " ".join(f"{min(max(float(v), 0.0), 1.0):.4f}" for v in rgb)
+        commands: list[Command] = [
+            SetMeta(cid, sdf.COLOUR_META, value, text="Paint Chunks")
+            for cid in sorted(self.selection)
+        ]
+        if len(commands) == 1:
+            self.do(commands[0])
+        else:
+            self.do(Macro(commands, text="Paint Chunks"))
+        self.status.emit(f"Painted {len(commands)} chunk(s)")
+
     def _selected_creatures(self) -> list[set[int]]:
         """The connected component of each selected chunk, deduplicated.
 

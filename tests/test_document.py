@@ -652,6 +652,48 @@ class TestCreatureColour:
         first = reopened.body.chunk_ids()[0]
         assert reopened.body.meta_of(first)["colour"] == "0.3000 0.6000 0.9000"
 
+    def test_paint_selection_paints_exactly_the_selection(self, document):
+        """The per-part gesture: a statement about the chunks in hand,
+        not their component — unlike the creature-wide button above."""
+        ids = ids_of(document)
+        document.set_selection(ids[:2])
+        document.set_chunk_colour((1.0, 0.0, 0.0))
+
+        assert document.body.meta_of(ids[0])["colour"] == "1.0000 0.0000 0.0000"
+        assert document.body.meta_of(ids[1])["colour"] == "1.0000 0.0000 0.0000"
+        assert "colour" not in document.body.meta_of(ids[2])
+
+        document.undo()
+        assert "colour" not in document.body.meta_of(ids[0]), "one undo step"
+
+    def test_paint_selection_without_a_selection_is_a_polite_no_op(self, document):
+        document.set_selection(())
+        document.set_chunk_colour((1.0, 0.0, 0.0))
+        assert not document.can_undo
+
+    def test_a_painted_head_arms_the_skin_and_survives_a_save(
+        self, document, tmp_path
+    ):
+        """The package-2 money path: paint the head, save, reopen — still
+        red-headed, and the weighted skin stays armed on the far side."""
+        ids = ids_of(document)
+        document.set_selection(ids[:1])
+        document.set_chunk_colour((1.0, 0.0, 0.0))
+        assert len(document.attribute_rows()) > 0, "a painted head arms the table"
+
+        path = tmp_path / "painted.xml"
+        document.save(path)
+        reopened = Document()
+        reopened.open(path)
+
+        painted = [
+            cid
+            for cid in reopened.body.chunk_ids()
+            if "colour" in reopened.body.meta_of(cid)
+        ]
+        assert len(painted) == 1
+        assert len(reopened.attribute_rows()) > 0
+
 
 class TestExportMesh:
     def test_exports_a_closed_obj(self, document, tmp_path):
