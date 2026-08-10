@@ -429,6 +429,11 @@ def main(argv: list[str] | None = None) -> int:
     """Launch the editor. ``configure_surface_format`` runs before QApplication."""
     configure_surface_format()
     app = ensure_application(argv if argv is not None else sys.argv)
+    # The entrypoint dresses the app; the library never does, so tests and
+    # embedders meet stock widgets unless they opt in (docs/CHROME.md).
+    from mesh_xml.editor import theme
+
+    theme.apply(app)
 
     window = MainWindow()
     args = (argv if argv is not None else sys.argv)[1:]
