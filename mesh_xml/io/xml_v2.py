@@ -115,6 +115,42 @@ doorway before it. Floats are full ``float64`` precision (``repr``, not
 :func:`_fmt`) for the terrain section's reason — the point and radius are the
 scene's arrival test, and a float32 shortening would nudge the doorway on
 every save.
+
+``<solver>``: additive in v3, absent means the config the caller already runs
+-----------------------------------------------------------------------------
+The physics a body was tuned under (``docs/SETTINGS.md``) is a ``<solver>``
+section beside ``<doors>``: every :class:`~mesh_xml.core.solver.SolverConfig`
+field except ``terrain``, because the world already rides above under its own
+name, and a config that also carried it would be two spellings of one world —
+of which the rarely-exercised spelling rots first, the flat-layout ruling.
+:func:`_read_solver` therefore returns ``terrain=None`` and the caller folds
+:attr:`Rig.terrain` into whichever config it installs.
+
+Absence is asymmetric here, and honestly so: an absent *section* is not "no
+physics", it is the config the caller already runs — for a room, a floor at
+zero, the room's founding opinion — so every document written before the
+section existed keeps its meaning and there is no version bump. A *present*
+section states the physics entirely, floor included, which is why ``ground_y``
+absent inside one means *no floor*, the dataclass truth: the alternative is a
+magic string standing for ``None`` and a section that cannot say "this world
+has no ground". The editor always writes the record in full, so the
+partial-section reading exists for hand-authors alone. Floats are full
+``float64`` precision (``repr``, not :func:`_fmt`) for the terrain section's
+reason — these numbers are inputs to every tick, and a float32 shortening
+would change the simulation a little on every save.
+
+``<metaball>``: additive in v3, absent means the default
+--------------------------------------------------------
+The smooth-min radius a skin was painted against is a ``<metaball>`` section
+with one ``blend`` attribute. It takes the number rather than
+``MetaballSettings`` because that class lives beside the OpenGL imports and
+``io`` does not follow it there; the section is named for the record so a
+later arc can land the rest of it on the same additive terms. Absent section
+and absent attribute mean the same thing — the dataclass default, which is
+what every pre-arc document ran under, so no version bump and no asymmetry to
+state. The value answers to :func:`~mesh_xml.core.distance.as_blend`, the
+validator terrain's blend already answers to: finite, non-negative, the same
+error vocabulary.
 """
 
 from __future__ import annotations
@@ -129,6 +165,8 @@ import numpy as np
 from mesh_xml.anim.controller import Controller, ControllerStack
 from mesh_xml.anim.serialize import decode_controller, encode_controller
 from mesh_xml.core.body import Body, LinkType
+from mesh_xml.core.distance import as_blend
+from mesh_xml.core.solver import SolverConfig
 from mesh_xml.core.terrain import Terrain
 from mesh_xml.scene.door import Door
 
@@ -168,13 +206,18 @@ class Rig:
     richer record, mirroring :class:`~mesh_xml.io.xml_legacy.LegacyImport`.
     ``terrain`` is ``None`` for every document without a ``<terrain>`` section,
     which is all of them written before it existed; ``doors`` is empty on the
-    same terms for every document without a ``<doors>`` section.
+    same terms for every document without a ``<doors>`` section. ``solver``
+    and ``blend`` are ``None`` on the same absent-section terms — which for
+    ``solver`` means the config the caller already runs, not an empty world;
+    the module docstring states the asymmetry.
     """
 
     body: Body
     controllers: ControllerStack
     terrain: Terrain | None = None
     doors: tuple[Door, ...] = ()
+    solver: SolverConfig | None = None
+    blend: float | None = None
 
 
 def save(
@@ -183,8 +226,11 @@ def save(
     controllers: ControllerStack | None = None,
     terrain: Terrain | None = None,
     doors: Sequence[Door] = (),
+    solver: SolverConfig | None = None,
+    blend: float | None = None,
 ) -> None:
-    """Write ``body``, any gait driving it, any world it stands in, its doors.
+    """Write ``body``, any gait driving it, any world it stands in, its doors,
+    and — when stated — its physics and its blend.
 
     Every field :func:`read` needs is written explicitly; nothing is inferred from
     element nesting, and nothing but the controller and terrain-primitive order
@@ -286,6 +332,30 @@ def save(
                     "radius": repr(float(door.radius)),
                 },
             )
+
+    # Written in full when written at all, so a dataclass default that later
+    # changes cannot reshape a saved creature. terrain is not an attribute —
+    # the world rides above under its own name — and an absent ground_y is the
+    # spelling for "no floor". Floats at full float64 precision: these numbers
+    # are inputs to every tick. See the module docstring.
+    if solver is not None:
+        attrs = {
+            "gravity": " ".join(repr(float(v)) for v in solver.gravity),
+            "damping": repr(float(solver.damping)),
+            "iterations": str(solver.iterations),
+            "max_velocity": repr(float(solver.max_velocity)),
+        }
+        if solver.ground_y is not None:
+            attrs["ground_y"] = repr(float(solver.ground_y))
+        attrs["ground_friction"] = repr(float(solver.ground_friction))
+        attrs["self_contact"] = "true" if solver.self_contact else "false"
+        attrs["self_contact_elasticity"] = repr(float(solver.self_contact_elasticity))
+        ET.SubElement(root, "solver", attrs)
+
+    # The number rather than MetaballSettings: that class lives beside the
+    # OpenGL imports, and io does not follow it there.
+    if blend is not None:
+        ET.SubElement(root, "metaball", {"blend": repr(float(blend))})
 
     tree = ET.ElementTree(root)
     ET.indent(tree, space="    ")
@@ -397,6 +467,8 @@ def read(path: str | Path) -> Rig:
         controllers=_read_controllers(root, body),
         terrain=_read_terrain(root),
         doors=_read_doors(root),
+        solver=_read_solver(root, dim),
+        blend=_read_metaball(root),
     )
 
 
@@ -499,6 +571,95 @@ def _read_doors(root: ET.Element) -> tuple[Door, ...]:
         except ValueError as exc:
             raise SchemaError(f"door {child.get('name', '')!r}: {exc}") from None
     return tuple(doors)
+
+
+def _read_solver(root: ET.Element, dim: int) -> SolverConfig | None:
+    """Rebuild the physics the document states. Absent means the caller's config.
+
+    Not "none", the way absent terrain means none: a document without the
+    section runs under whatever config the caller already has, so ``None`` is
+    returned rather than defaults being invented for it. A present section
+    starts from the dataclass defaults and overlays each attribute it carries —
+    ``ground_y`` absent inside one is therefore no floor, the dataclass truth.
+    ``terrain`` stays ``None``: the world rides under its own name, and the
+    caller folds :attr:`Rig.terrain` into whichever config it installs.
+    """
+    element = root.find("solver")
+    if element is None:
+        return None
+
+    defaults = SolverConfig()
+
+    gravity = defaults.gravity
+    if element.get("gravity") is not None:
+        gravity = tuple(_float_list(element, "gravity"))
+        if len(gravity) != dim:
+            raise SchemaError(
+                f"solver: gravity has {len(gravity)} components, expected {dim}; "
+                "a wrong-arity gravity is a broadcast error three layers later"
+            )
+
+    config = SolverConfig(
+        gravity=gravity,
+        damping=_float_attr(element, "damping", default=defaults.damping),
+        iterations=_int_attr(element, "iterations", default=defaults.iterations),
+        max_velocity=_float_attr(
+            element, "max_velocity", default=defaults.max_velocity
+        ),
+        ground_y=_float_attr(element, "ground_y", default=None),
+        ground_friction=_float_attr(
+            element, "ground_friction", default=defaults.ground_friction
+        ),
+        self_contact=_bool_attr(element, "self_contact", default=defaults.self_contact),
+        self_contact_elasticity=_float_attr(
+            element,
+            "self_contact_elasticity",
+            default=defaults.self_contact_elasticity,
+        ),
+    )
+
+    if config.iterations < 0:
+        raise SchemaError(
+            f"solver: iterations must be at least 0, got {config.iterations}"
+        )
+
+    for name, values in (
+        ("gravity", config.gravity),
+        ("damping", (config.damping,)),
+        ("max_velocity", (config.max_velocity,)),
+        ("ground_y", () if config.ground_y is None else (config.ground_y,)),
+        ("ground_friction", (config.ground_friction,)),
+        ("self_contact_elasticity", (config.self_contact_elasticity,)),
+    ):
+        for value in values:
+            if not np.isfinite(value):
+                raise SchemaError(
+                    f"solver: {name} must be finite, got {value}; a NaN here "
+                    "poisons every position in the room by the second tick"
+                )
+
+    return config
+
+
+def _read_metaball(root: ET.Element) -> float | None:
+    """The blend the skin was painted against. Absent means the default.
+
+    An absent attribute means the same as an absent section — the dataclass
+    default — because the section is a landing zone and may grow fields that
+    arrive without a blend beside them. The value answers to
+    :func:`~mesh_xml.core.distance.as_blend`, terrain's own validator.
+    """
+    element = root.find("metaball")
+    if element is None:
+        return None
+
+    value = _float_attr(element, "blend", default=None)
+    if value is None:
+        return None
+    try:
+        return as_blend(value)
+    except ValueError as exc:
+        raise SchemaError(f"metaball: {exc}") from None
 
 
 def _fmt(value: float) -> str:
