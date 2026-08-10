@@ -305,13 +305,21 @@ def chunk_centres(body: Body) -> np.ndarray:
 
 @dataclass
 class _ChunkDrag:
-    """State for one grab-and-move gesture, from press to release."""
+    """State for one grab-and-move gesture, from press to release.
+
+    ``body`` and ``stack`` are the ones the gesture began in. The document
+    can be re-pointed mid-drag — a room switch, a file opened — and the
+    rewind and the ``held`` release must land on the objects that took the
+    grab, not whatever the document answers with afterwards.
+    """
 
     chunk_id: int
     start: tuple[float, ...]
     anchor: np.ndarray
     normal: np.ndarray
     offset: np.ndarray
+    body: Body
+    stack: object
     moved: bool = False
 
 
@@ -379,6 +387,7 @@ class MetaballViewport(RaymarchView):
         self._timer.setInterval(FRAME_INTERVAL_MS)
         self._timer.timeout.connect(self.tick)
 
+        document.body_replaced.connect(self._abort_drag)
         document.body_replaced.connect(self._invalidate_geometry)
         document.topology_changed.connect(self._invalidate_geometry)
         document.chunk_changed.connect(self._on_chunk_changed)
@@ -971,6 +980,8 @@ class MetaballViewport(RaymarchView):
             anchor=anchor,
             normal=normal,
             offset=anchor - grabbed,
+            body=body,
+            stack=self._document.controllers,
         )
         # The hand owns the chunk for the duration: kinematic drivers stand
         # down for held chunks instead of overwriting the drag every tick.
@@ -1004,9 +1015,9 @@ class MetaballViewport(RaymarchView):
         self._drag = None
         if drag is None:
             return
-        self._document.controllers.held.discard(drag.chunk_id)
+        drag.stack.held.discard(drag.chunk_id)
 
-        body = self._document.body
+        body = drag.body
         if not drag.moved or not body.has_chunk(drag.chunk_id):
             return
 
@@ -1016,6 +1027,23 @@ class MetaballViewport(RaymarchView):
 
         body.set_pos(drag.chunk_id, drag.start)
         self._document.commit_drag(drag.chunk_id, final)
+
+    def _abort_drag(self) -> None:
+        """Release a drag whose document was re-pointed under it, without a command.
+
+        A room switch or a file open mid-gesture replaces what the panels
+        address; the grab must not follow. The preview rewinds on the body
+        that took it and the ``held`` mark comes off the stack that carries
+        it — left on, that stack's driver would stand down for the chunk
+        forever.
+        """
+        drag = self._drag
+        self._drag = None
+        if drag is None:
+            return
+        drag.stack.held.discard(drag.chunk_id)
+        if drag.moved and drag.body.has_chunk(drag.chunk_id):
+            drag.body.set_pos(drag.chunk_id, drag.start)
 
     # ------------------------------------------------------------------
     # lifecycle

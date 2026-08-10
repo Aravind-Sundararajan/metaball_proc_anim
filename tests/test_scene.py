@@ -338,3 +338,39 @@ class TestTransfer:
 
         assert sorted(den.body.chunk_ids()) == sorted(ids)
         assert not meadow.body.chunk_ids()
+
+
+class TestRemoveRoom:
+    def test_removal_releases_the_room_and_its_clock(self):
+        scene = Scene()
+        den = scene.add_room(Room(name="den"))
+        meadow = scene.add_room(Room(name="meadow"))
+
+        scene.remove_room(meadow)
+        assert scene.rooms == [den]
+        assert meadow.clock is not scene.clock, "a lone room owns its time again"
+        with pytest.raises(ValueError):
+            scene.remove_room(meadow)
+
+    def test_a_door_into_a_removed_room_is_closed(self):
+        """Removal breaks no invariant: the promise just cannot be kept."""
+        scene = Scene()
+        den = scene.add_room(Room(name="den"))
+        meadow = scene.add_room(Room(name="meadow"))
+        meadow.doors.append(
+            Door("west", (-5.0, 0.5, 0.0), to_room="den", to_door="east")
+        )
+        ids = chain(den, "grazer", (0.0, 0.5, 0.0), (0.6, 0.0, 0.0))
+        brain = den.controllers.add(
+            Grazer(ids[0], home=(0.0, 0.5, 0.0), exit="east")
+        )
+        den.doors.append(
+            Door("east", (5.0, 0.5, 0.0), to_room="meadow", to_door="west")
+        )
+
+        scene.remove_room(meadow)
+        for _ in range(600):
+            scene.tick()
+
+        assert sorted(den.body.chunk_ids()) == sorted(ids), "a closed door holds"
+        assert brain.exit == "east", "the goal is not spent on a vanished room"

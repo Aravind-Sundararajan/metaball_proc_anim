@@ -453,6 +453,10 @@ class Document(QObject):
     running_changed = Signal(bool)
     dirty_changed = Signal(bool)
     history_changed = Signal()
+    #: The scene's shape changed — a room added, removed, renamed, moved
+    #: between tiers, or saved. The rooms dock re-reads on this; the
+    #: per-room signals above stay about the *active* room's contents.
+    scene_changed = Signal()
     status = Signal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -584,7 +588,139 @@ class Document(QObject):
                 cid: room.body.chunk(cid).pos for cid in room.body.chunk_ids()
             },
         )
+        self.scene_changed.emit()
         return room
+
+    def remove_room(self, room: Room) -> Room:
+        """Release a room and its editor state.
+
+        The last room is refused — a document is at least one room, the
+        null case the whole binding stands on. Removing the active room
+        activates a neighbour first, so the viewport is never pointed at
+        nothing. Doors elsewhere that named the departed room become
+        closed doors, which is the scene's own answer, not an error.
+        """
+        if room not in self._states:
+            raise ValueError(
+                f"room {room.name!r} is not in this document's scene"
+            )
+        if len(self.scene.rooms) == 1:
+            raise ValueError("a document is at least one room")
+        if room is self._room:
+            index = self.scene.rooms.index(room)
+            neighbour = (
+                self.scene.rooms[index - 1] if index else self.scene.rooms[1]
+            )
+            self.set_active_room(neighbour)
+        self.scene.remove_room(room)
+        del self._states[room]
+        self.scene_changed.emit()
+        self.status.emit(f"Removed room {room.name!r}")
+        return room
+
+    def rename_room(self, room: Room, name: str) -> None:
+        """Rename a room — and its body: one value, one owner, two write sites.
+
+        File-grade like the room list itself, not undoable this round.
+        Doors address rooms by name and a rename does not chase their
+        references — a door into the old name becomes a closed door, which
+        the status message counts rather than hides. The body's name is
+        what saves, so the room dirties.
+        """
+        if room not in self._states:
+            raise ValueError(
+                f"room {room.name!r} is not in this document's scene"
+            )
+        name = name.strip()
+        if not name or name == room.name:
+            return
+        if any(other.name == name for other in self.scene.rooms if other is not room):
+            self.status.emit(f"A room named {name!r} already exists")
+            self.scene_changed.emit()
+            return
+        old = room.name
+        room.name = name
+        room.body.name = name
+        state = self._states[room]
+        if not state.dirty:
+            state.dirty = True
+            if room is self._room:
+                self.dirty_changed.emit(True)
+        stale = sum(
+            1
+            for other in self.scene.rooms
+            for door in other.doors
+            if door.to_room == old
+        )
+        if stale:
+            self.status.emit(
+                f"Renamed {old!r} to {name!r}; {stale} door(s) still "
+                f"address {old!r} and are closed until re-aimed"
+            )
+        else:
+            self.status.emit(f"Renamed {old!r} to {name!r}")
+        self.scene_changed.emit()
+
+    def set_room_abstracted(self, room: Room, abstracted: bool) -> None:
+        """Move a room between its tiers — an explicit authoring act.
+
+        The editor's cut deliberately is not :meth:`Scene.activate`: rooms
+        stay realized unless an author parks one here, because an
+        abstracted far side is a closed door and a scene-wide policy would
+        show every traveller waiting in a doorway (SCENE_BINDING.md §3).
+        Not an edit: no command, no dirty flag — a simulation state, like
+        running. Realizing recaptures the rest pose, because the rebuilt
+        creature standing wherever its brain walked *is* the pose Reset
+        should return to.
+        """
+        if room not in self._states:
+            raise ValueError(
+                f"room {room.name!r} is not in this document's scene"
+            )
+        if abstracted == room.abstracted:
+            return
+        state = self._states[room]
+        if abstracted:
+            room.abstract()
+        else:
+            room.realize()
+            state.rest_pose = {
+                cid: room.body.chunk(cid).pos for cid in room.body.chunk_ids()
+            }
+        if room is self._room:
+            state.selection = {
+                cid for cid in state.selection if room.body.has_chunk(cid)
+            }
+            state.draw.snap(room.body)
+            self.topology_changed.emit()
+            self.selection_changed.emit()
+            self.controllers_changed.emit()
+            self.history_changed.emit()
+        self.scene_changed.emit()
+
+    def unique_room_name(self, base: str = "room") -> str:
+        """A name no room in the scene holds: ``base``, then ``base 2``, on up."""
+        names = {room.name for room in self.scene.rooms}
+        if base not in names:
+            return base
+        index = 2
+        while f"{base} {index}" in names:
+            index += 1
+        return f"{base} {index}"
+
+    def room_path(self, room: Room) -> Path | None:
+        """The file a room is, or ``None`` for one never saved."""
+        return self._states[room].path
+
+    def room_dirty(self, room: Room) -> bool:
+        """Whether a room has unsaved changes, active or not."""
+        return self._states[room].dirty
+
+    def dirty_rooms(self) -> list[Room]:
+        """Every room with unsaved changes, in scene order — the close prompt's list."""
+        return [
+            room for room in self.scene.rooms if self._states[room].dirty
+        ]
 
     def set_active_room(self, room: Room) -> None:
         """Point the editor at ``room`` — the cut.
@@ -1350,31 +1486,71 @@ class Document(QObject):
         self.status.emit("New rig")
 
     def open(self, path) -> None:
-        """Load a rig and its gait, falling back to the legacy reader for v1 files."""
+        """Load a rig and its gait into the *active room*, replacing its contents."""
         path = Path(path)
-        controllers: ControllerStack | None = None
-        terrain: Terrain | None = None
-        doors: Sequence[Door] = ()
-        try:
-            rig = xml_v2.read(path)
-            controllers = rig.controllers
-            terrain = rig.terrain
-            doors = rig.doors
-            body = rig.body
-            driven = len(controllers.controllers)
-            note = f"Opened {path.name}"
-            if driven:
-                note += f" ({driven} controller(s))"
-        except Exception:
-            result = xml_legacy.read_legacy(path)
-            body = result.body
-            note = f"Opened {path.name} (legacy, {result.coords} coordinates)"
-            if result.missing_mesh:
-                note += f"; {len(result.missing_mesh)} bone(s) had no mesh"
+        body, controllers, terrain, doors, note = _read_rig(path)
         self.adopt(
             body, controllers=controllers, path=path, terrain=terrain, doors=doors
         )
+        self._adopt_room_name(path)
         self.status.emit(note)
+
+    def _adopt_room_name(self, path: Path) -> None:
+        """The active room takes the opened file's name.
+
+        Names are the scene's addressing, and doors in sibling files were
+        authored against them: a den whose file says "den" must answer to
+        it, or every door to the den is closed on a technicality. The
+        file's own body name wins, the stem stands in for a default-named
+        body, and a collision with a sibling room suffixes — same ladder as
+        :meth:`open_as_room`. Not :meth:`rename_room`: a load is not an
+        edit, so no dirty flag and no stale-door warning.
+        """
+        body = self.room.body
+        base = body.name if body.name and body.name != "body" else path.stem
+        if base == self.room.name:
+            return
+        taken = {room.name for room in self.scene.rooms if room is not self.room}
+        name, suffix = base, 2
+        while name in taken:
+            name = f"{base} {suffix}"
+            suffix += 1
+        self.room.name = name
+        body.name = name
+        self.scene_changed.emit()
+
+    def open_as_room(self, path) -> Room:
+        """Open a file as a new room of the scene, and point the editor at it.
+
+        The multi-room counterpart of :meth:`open`, which replaces the
+        active room. The room takes the file's own body name — names are
+        the scene's addressing, and doors in other files were authored
+        against them — falling back to the file stem for a default-named
+        body, and suffixing on collision rather than refusing: two copies
+        of one file are a legitimate scene, and the second answers to
+        "meadow 2". The suffix writes back to the body so room and body
+        stay one value.
+        """
+        path = Path(path)
+        body, controllers, terrain, doors, note = _read_rig(path)
+        base = body.name if body.name and body.name != "body" else path.stem
+        name = self.unique_room_name(base)
+
+        room = Room(name=name)
+        room.body = body
+        body.name = name
+        room.controllers = (
+            controllers if controllers is not None else ControllerStack(body)
+        )
+        room.solver_config.terrain = terrain
+        room.doors = list(doors)
+        self.add_room(room)
+        self._states[room].path = path
+        self.set_active_room(room)
+        if name != base:
+            note += f" as room {name!r}"
+        self.status.emit(note)
+        return room
 
     def adopt(
         self,
@@ -1406,7 +1582,7 @@ class Document(QObject):
         self.room.doors = list(doors)
 
     def save(self, path) -> None:
-        """Write the body, its gait, its world, *and* its doors.
+        """Write the active room to ``path``: body, gait, world, and doors.
 
         Passing the controllers is the whole point of the v3 format: without it
         a save keeps the skeleton and silently discards everything that made it
@@ -1414,17 +1590,34 @@ class Document(QObject):
         without its world reloads standing on nothing — and the doors on the
         same again: a room saved without its exits reloads as a dead end.
         """
-        path = Path(path)
+        self.save_room(self.room, path)
+
+    def save_room(self, room: Room, path=None) -> Path:
+        """Write any room of the scene to its file, active or not.
+
+        What Save All walks. ``path=None`` means the room's own remembered
+        file; a room that never had one is refused by name rather than
+        guessed at — that is Save As's question to ask.
+        """
+        state = self._states[room]
+        target = Path(path) if path is not None else state.path
+        if target is None:
+            raise ValueError(f"room {room.name!r} has no file; use Save As")
         xml_v2.save(
-            self.body,
-            path,
-            self.controllers,
-            terrain=self.terrain,
-            doors=tuple(self.room.doors),
+            room.body,
+            target,
+            room.controllers,
+            terrain=room.solver_config.terrain,
+            doors=tuple(room.doors),
         )
-        self.path = path
-        self.set_dirty(False)
-        self.status.emit(f"Saved {path.name}")
+        state.path = target
+        if state.dirty:
+            state.dirty = False
+            if room is self._room:
+                self.dirty_changed.emit(False)
+        self.scene_changed.emit()
+        self.status.emit(f"Saved {target.name}")
+        return target
 
     def _replace(self, body: Body, path: Path | None) -> None:
         state = self._state
@@ -1452,3 +1645,28 @@ class Document(QObject):
     def title(self) -> str:
         name = self.path.name if self.path else "Untitled"
         return f"{'*' if self.dirty else ''}{name} — mesh_xml"
+
+
+def _read_rig(
+    path: Path,
+) -> tuple[Body, ControllerStack | None, Terrain | None, Sequence[Door], str]:
+    """Read any supported rig file, v3 down to the legacy eras.
+
+    The one reader both :meth:`Document.open` and :meth:`Document.open_as_room`
+    share, so the fallback ladder cannot fork between them. Returns the body,
+    the gait (``None`` for files that cannot describe one), the world, the
+    doors, and the status line the read earned.
+    """
+    try:
+        rig = xml_v2.read(path)
+        note = f"Opened {path.name}"
+        driven = len(rig.controllers.controllers)
+        if driven:
+            note += f" ({driven} controller(s))"
+        return rig.body, rig.controllers, rig.terrain, rig.doors, note
+    except Exception:
+        result = xml_legacy.read_legacy(path)
+        note = f"Opened {path.name} (legacy, {result.coords} coordinates)"
+        if result.missing_mesh:
+            note += f"; {len(result.missing_mesh)} bone(s) had no mesh"
+        return result.body, None, None, (), note

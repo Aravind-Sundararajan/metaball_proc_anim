@@ -119,6 +119,7 @@ class TestBuildPanels:
         built = panels.build_panels(document)
         assert list(built) == [
             "Playback",
+            "Rooms",
             "Chunks",
             "Creatures",
             "Controllers",
@@ -936,3 +937,83 @@ class TestCreaturePanel:
         assert len(document.creatures()) == 2
         assert undo_depth(document) == 1
         assert panel._roster.count() == 2
+
+
+class TestRoomPanel:
+    """The rooms dock: the row selection is the active room, and the cut
+    goes through the document, never around it."""
+
+    def test_rows_mirror_the_scene(self, document):
+        from mesh_xml.scene import Room
+
+        panel = panels.RoomPanel(document)
+        document.add_room(Room(name="meadow"))
+
+        names = [
+            panel._table.item(row, 0).text()
+            for row in range(panel._table.rowCount())
+        ]
+        assert names == ["document", "meadow"]
+
+    def test_picking_a_row_activates_the_room(self, document):
+        from mesh_xml.scene import Room
+
+        panel = panels.RoomPanel(document)
+        meadow = document.add_room(Room(name="meadow"))
+        landed = []
+        panel.activated.connect(lambda: landed.append(1))
+
+        panel._table.selectRow(1)
+
+        assert document.room is meadow
+        assert landed == [1]
+
+    def test_refresh_does_not_reactivate(self, document):
+        from mesh_xml.scene import Room
+
+        panel = panels.RoomPanel(document)
+        document.add_room(Room(name="meadow"))
+        landed = []
+        panel.activated.connect(lambda: landed.append(1))
+
+        panel.refresh()
+
+        assert landed == [], "re-rendering the table is not a user pick"
+        assert document.room is document.scene.rooms[0]
+
+    def test_renaming_through_the_cell_renames_room_and_body(self, document):
+        panel = panels.RoomPanel(document)
+
+        panel._table.item(0, 0).setText("den")
+
+        assert document.room.name == "den"
+        assert document.room.body.name == "den"
+        assert undo_depth(document) == 0, "renames are file-grade, not commands"
+
+    def test_the_abstract_checkbox_parks_a_room(self, document):
+        from mesh_xml.scene import Room
+
+        panel = panels.RoomPanel(document)
+        meadow = document.add_room(Room(name="meadow"))
+
+        panel._table.item(1, 2).setCheckState(Qt.CheckState.Checked)
+        assert meadow.abstracted
+
+        panel._table.item(1, 2).setCheckState(Qt.CheckState.Unchecked)
+        assert not meadow.abstracted
+
+    def test_the_file_column_stars_unsaved_changes(self, document):
+        panel = panels.RoomPanel(document)
+        assert panel._table.item(0, 3).text() == "—"
+
+        document.do(SetRadius(document.body.chunk_ids()[0], 0.5))
+        assert panel._table.item(0, 3).text() == "*unsaved"
+
+    def test_remove_stays_disabled_for_the_last_room(self, document):
+        from mesh_xml.scene import Room
+
+        panel = panels.RoomPanel(document)
+        assert not panel._remove.isEnabled()
+
+        document.add_room(Room(name="meadow"))
+        assert panel._remove.isEnabled()

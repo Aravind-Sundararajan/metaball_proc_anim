@@ -74,6 +74,7 @@ from PySide6.QtWidgets import (
 
 from mesh_xml.anim import serialize
 from mesh_xml.core import solver
+from mesh_xml.scene.room import Room
 from mesh_xml.editor.document import (
     AddLink,
     Command,
@@ -97,6 +98,7 @@ __all__ = [
     "ChunkPanel",
     "CreaturePanel",
     "ControllerPanel",
+    "RoomPanel",
     "build_panels",
 ]
 
@@ -117,6 +119,9 @@ _AXES = ("X", "Y", "Z")
 _NAME, _RADIUS, _PINNED = 0, 1, 2
 _COLUMNS = ("Name", "Radius", "Pinned")
 _RADIUS_FORMAT = ".3f"
+
+_R_NAME, _R_CREATURES, _R_ABSTRACT, _R_FILE = 0, 1, 2, 3
+_ROOM_COLUMNS = ("Name", "Creatures", "Abstract", "File")
 
 
 def _user_edit(handler: Callable[..., None]) -> Callable[..., None]:
@@ -1352,6 +1357,212 @@ def _summarise(value: object) -> str:
     return str(value)
 
 
+class RoomPanel(_Panel):
+    """The scene's rooms: pick one and the editor points at it — the cut.
+
+    The selected row *is* the active room, and selecting another activates
+    it, which every other panel experiences as File > Open. Activation is
+    view state like the camera — no command, no dirty flag. The Name cell
+    renames room and body as one value (file-grade, not undoable, and doors
+    elsewhere are not chased — the document's status line counts the ones
+    left addressing the old name). The Abstract checkbox moves a room
+    between its tiers, deliberately per room rather than wholesale: an
+    abstracted far side is a closed door, so parking rooms is an authoring
+    statement, never a side effect of looking away (SCENE_BINDING.md §3).
+    The File column is read-only truth about where each room saves,
+    starred while it holds unsaved changes.
+
+    Dialogs stay the window's: Open Into Scene and Remove ask for things a
+    dock does not own (a file dialog, a discard confirmation), so they
+    leave as signals the way the Surface panel's viewport toggles do.
+    """
+
+    #: The cut landed somewhere new; the window re-frames the viewport.
+    activated = Signal()
+    #: Open Into Scene… — the window owns the file dialog.
+    open_requested = Signal()
+    #: Remove the active room — the window owns the confirmation.
+    remove_requested = Signal()
+
+    def __init__(self, document: Document, parent: QWidget | None = None) -> None:
+        super().__init__(document, parent)
+
+        self._rows: list[Room] = []
+        self._table = self._build_table()
+        self._new = QPushButton("New")
+        self._open = QPushButton("Open…")
+        self._remove = QPushButton("Remove")
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self._table, 1)
+        layout.addWidget(self._build_actions())
+        layout.addWidget(
+            _note(
+                "Click a room to edit it; every room keeps simulating "
+                "either way. Abstract parks a room at its cheap tier — "
+                "anchors and brains only — and a door into a parked room "
+                "is closed until it realizes."
+            )
+        )
+
+        self._new.setToolTip(
+            "Add an empty room to the scene and switch to it. Its name is "
+            "the scene's address for doors, editable in the table."
+        )
+        self._open.setToolTip(
+            "Open a rig file as a new room beside the others, named from "
+            "the file's own body."
+        )
+        self._remove.setToolTip(
+            "Remove the active room from the scene. Doors elsewhere that "
+            "lead to it become closed doors. The last room stays — a "
+            "document is at least one room."
+        )
+
+        self._table.itemChanged.connect(self._on_item_changed)
+        self._table.itemSelectionChanged.connect(self._on_table_selection_changed)
+        self._new.clicked.connect(self._on_new)
+        self._open.clicked.connect(self._on_open)
+        self._remove.clicked.connect(self._on_remove)
+
+        self._follow(
+            document.scene_changed,
+            document.dirty_changed,
+            document.body_replaced,
+            document.topology_changed,
+        )
+
+        self.refresh()
+
+    def _build_table(self) -> QTableWidget:
+        table = QTableWidget(0, len(_ROOM_COLUMNS))
+        table.setHorizontalHeaderLabels(_ROOM_COLUMNS)
+        table.verticalHeader().setVisible(False)
+        table.setSortingEnabled(False)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(_R_NAME, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(
+            _R_CREATURES, QHeaderView.ResizeMode.ResizeToContents
+        )
+        header.setSectionResizeMode(
+            _R_ABSTRACT, QHeaderView.ResizeMode.ResizeToContents
+        )
+        header.setSectionResizeMode(_R_FILE, QHeaderView.ResizeMode.ResizeToContents)
+        return table
+
+    def _build_actions(self) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        for button in (self._new, self._open, self._remove):
+            layout.addWidget(button)
+        return row
+
+    @_user_edit
+    def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        row, column = item.row(), item.column()
+        if not 0 <= row < len(self._rows):
+            return
+        room = self._rows[row]
+        if column == _R_NAME:
+            if item.text().strip() != room.name:
+                # rename_room refuses collisions and emits scene_changed
+                # either way, which snaps a refused cell back to the truth.
+                self._document.rename_room(room, item.text())
+        elif column == _R_ABSTRACT:
+            abstracted = item.checkState() == Qt.CheckState.Checked
+            if abstracted != room.abstracted:
+                self._document.set_room_abstracted(room, abstracted)
+
+    @_user_edit
+    def _on_table_selection_changed(self) -> None:
+        rows = self._table.selectionModel().selectedRows()
+        if not rows:
+            return
+        row = rows[0].row()
+        if not 0 <= row < len(self._rows):
+            return
+        room = self._rows[row]
+        if room is self._document.room:
+            return
+        self._document.set_active_room(room)
+        self.activated.emit()
+
+    @_user_edit
+    def _on_new(self) -> None:
+        document = self._document
+        room = document.add_room(Room(name=document.unique_room_name()))
+        document.set_active_room(room)
+        self.activated.emit()
+
+    @_user_edit
+    def _on_open(self) -> None:
+        self.open_requested.emit()
+
+    @_user_edit
+    def _on_remove(self) -> None:
+        self.remove_requested.emit()
+
+    def _cell(self, row: int, column: int) -> QTableWidgetItem:
+        item = self._table.item(row, column)
+        if item is None:
+            item = QTableWidgetItem()
+            if column == _R_ABSTRACT:
+                item.setFlags(
+                    Qt.ItemFlag.ItemIsUserCheckable
+                    | Qt.ItemFlag.ItemIsEnabled
+                    | Qt.ItemFlag.ItemIsSelectable
+                )
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            elif column != _R_NAME:
+                item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                )
+            self._table.setItem(row, column, item)
+        return item
+
+    def _write_row(self, row: int, room: Room) -> None:
+        self._cell(row, _R_NAME).setText(room.name)
+        self._cell(row, _R_CREATURES).setText(str(len(room.body.components())))
+        self._cell(row, _R_ABSTRACT).setCheckState(
+            Qt.CheckState.Checked if room.abstracted else Qt.CheckState.Unchecked
+        )
+        path = self._document.room_path(room)
+        star = "*" if self._document.room_dirty(room) else ""
+        if path is not None:
+            text = f"{star}{path.name}"
+        else:
+            text = f"{star}unsaved" if star else "—"
+        self._cell(row, _R_FILE).setText(text)
+
+    def _apply_active(self) -> None:
+        model = self._table.selectionModel()
+        model.clearSelection()
+        try:
+            row = self._rows.index(self._document.room)
+        except ValueError:
+            return
+        model.select(
+            self._table.model().index(row, _R_NAME),
+            QItemSelectionModel.SelectionFlag.Select
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+
+    def _refresh(self) -> None:
+        self._rows = list(self._document.scene.rooms)
+        self._table.setRowCount(len(self._rows))
+        for row, room in enumerate(self._rows):
+            self._write_row(row, room)
+        self._apply_active()
+        self._remove.setEnabled(len(self._rows) > 1)
+
+
 class ChunkPanel(_Panel):
     """The chunk table, bound to the selection.
 
@@ -1599,6 +1810,7 @@ def build_panels(document: Document) -> dict[str, QWidget]:
 
     return {
         "Playback": PlaybackPanel(document),
+        "Rooms": RoomPanel(document),
         "Chunks": ChunkPanel(document),
         "Creatures": CreaturePanel(document),
         "Controllers": ControllerPanel(document),

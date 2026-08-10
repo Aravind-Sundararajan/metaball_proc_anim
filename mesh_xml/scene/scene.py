@@ -47,6 +47,22 @@ class Scene:
         self.rooms.append(room)
         return room
 
+    def remove_room(self, room: Room) -> Room:
+        """Release a room: it leaves the roster and owns its time again.
+
+        The clock un-aliases — a lone room ticking the scene's accumulator
+        from outside would spend ticks behind the scene's back, the exact
+        hazard :meth:`add_room` wired away. Doors elsewhere that name the
+        departed room become closed doors, the scene's standing answer to a
+        promise that cannot be kept: nothing raises at crossing time, the
+        traveller waits.
+        """
+        if room not in self.rooms:
+            raise ValueError(f"no room {room.name!r} in this scene")
+        self.rooms.remove(room)
+        room.clock = Clock()
+        return room
+
     def room(self, name: str) -> Room:
         for room in self.rooms:
             if room.name == name:

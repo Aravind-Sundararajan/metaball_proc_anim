@@ -58,7 +58,15 @@ class MainWindow(QMainWindow):
             dock = QDockWidget(title, self)
             dock.setWidget(widget)
             dock.setObjectName(f"dock_{title.lower().replace(' ', '_')}")
-            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+            # Rooms sit apart on the left: the dock is a map of the scene,
+            # not another knob on the active room like everything tabbed
+            # on the right.
+            area = (
+                Qt.DockWidgetArea.LeftDockWidgetArea
+                if title == "Rooms"
+                else Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            self.addDockWidget(area, dock)
             self._docks[title] = dock
 
         # Playback stays visible; the four editing panels share one tab stack,
@@ -91,6 +99,13 @@ class MainWindow(QMainWindow):
         if playback is not None:
             playback.stepped.connect(self.viewport.update)
 
+        rooms = self.panels.get("Rooms")
+        if rooms is not None:
+            # A cut that lands pointed at nothing reads as a broken app.
+            rooms.activated.connect(self.viewport.frame_all)
+            rooms.open_requested.connect(self.open_into_scene)
+            rooms.remove_requested.connect(self.remove_active_room)
+
     def _set_rig_overlay(self, visible: bool) -> None:
         self.viewport.show_rig = visible
 
@@ -109,10 +124,12 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("&File")
         self._action(file_menu, "&New", QKeySequence.StandardKey.New, self.new)
         self._action(file_menu, "&Open…", QKeySequence.StandardKey.Open, self.open)
+        self._action(file_menu, "Open &Into Scene…", None, self.open_into_scene)
         self._build_examples_menu(file_menu)
         file_menu.addSeparator()
         self._action(file_menu, "&Save", QKeySequence.StandardKey.Save, self.save)
         self._action(file_menu, "Save &As…", QKeySequence.StandardKey.SaveAs, self.save_as)
+        self._action(file_menu, "Save A&ll", None, self.save_all)
         self._action(file_menu, "Export &Mesh…", None, self.export_mesh)
         file_menu.addSeparator()
         self._action(file_menu, "E&xit", QKeySequence.StandardKey.Quit, self.close)
@@ -224,6 +241,61 @@ class MainWindow(QMainWindow):
             return
         self.viewport.frame_all()
 
+    def open_into_scene(self) -> None:
+        """Open a file as a new room beside the others, and cut to it."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Into Scene", str(EXAMPLES), "Rig files (*.xml);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            self.document.open_as_room(Path(path))
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Open Failed", f"{Path(path).name}\n\n{exc}"
+            )
+            return
+        self.viewport.frame_all()
+
+    def remove_active_room(self) -> None:
+        """Remove the room being looked at, after the dirty question."""
+        document = self.document
+        room = document.room
+        if len(document.scene.rooms) == 1:
+            self.statusBar().showMessage("A document is at least one room")
+            return
+        if document.dirty:
+            answer = QMessageBox.question(
+                self,
+                "Unsaved Changes",
+                f"Room {room.name!r} has unsaved changes. Remove it anyway?",
+                QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Discard:
+                return
+        document.remove_room(room)
+        self.viewport.frame_all()
+
+    def save_all(self) -> None:
+        """Save every dirty room — to its own file, or through Save As for
+        one that never had a file, which activates so the dialog names what
+        it is asking about."""
+        for room in list(self.document.dirty_rooms()):
+            path = self.document.room_path(room)
+            if path is None:
+                self.document.set_active_room(room)
+                self.save_as()
+            else:
+                try:
+                    self.document.save_room(room, path)
+                except Exception as exc:
+                    QMessageBox.critical(
+                        self, "Save Failed", f"{path.name}\n\n{exc}"
+                    )
+                    return
+
     def save(self) -> None:
         if self.document.path is None:
             self.save_as()
@@ -259,6 +331,7 @@ class MainWindow(QMainWindow):
         self._refresh_title()
 
     def _confirm_discard(self) -> bool:
+        """The active room's question — what New and Open actually replace."""
         if not self.document.dirty:
             return True
         answer = QMessageBox.question(
@@ -270,8 +343,23 @@ class MainWindow(QMainWindow):
         )
         return answer == QMessageBox.StandardButton.Discard
 
+    def _confirm_discard_all(self) -> bool:
+        """The whole scene's question — closing loses every room at once."""
+        dirty = self.document.dirty_rooms()
+        if not dirty:
+            return True
+        names = ", ".join(room.name for room in dirty)
+        answer = QMessageBox.question(
+            self,
+            "Unsaved Changes",
+            f"Unsaved changes in: {names}. Discard them?",
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Discard
+
     def closeEvent(self, event) -> None:
-        if self._confirm_discard():
+        if self._confirm_discard_all():
             event.accept()
         else:
             event.ignore()
