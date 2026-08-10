@@ -33,7 +33,7 @@ from mesh_xml.anim.controllers.drive import WaveAnchor
 from mesh_xml.core import Body, LinkType
 from mesh_xml.core.solver import SolverConfig
 from mesh_xml.core.terrain import Terrain
-from mesh_xml.io import xml_legacy, xml_v2
+from mesh_xml.io import scene_xml, xml_legacy, xml_v2
 from mesh_xml.render import DrawPoints, sdf
 from mesh_xml.render.gl.metaball import MetaballSettings
 from mesh_xml.scene.door import Door
@@ -1709,6 +1709,89 @@ class Document(QObject):
         """
         self.save_room(self.room, path)
 
+    def open_scene(self, path) -> None:
+        """Replace the whole scene with a manifest's assembly.
+
+        Every room file is read *before* the live scene is touched, and
+        the new scene is built complete off to the side — so a missing
+        file, a duplicate name, or a broken rig leaves the current scene
+        standing, and the error names the room rather than the line
+        number. Refusal is wholesale, the transfer module's stance. The
+        manifest's names win over the files' own body names: the manifest
+        is the addressing the doors compiled against.
+        """
+        path = Path(path)
+        scene_name, refs = scene_xml.read_scene(path)
+        if not refs:
+            raise ValueError(f"{path.name} lists no rooms")
+
+        scene = Scene(name=scene_name)
+        states: dict[Room, _RoomState] = {}
+        for ref in refs:
+            src = path.parent / ref.src
+            try:
+                body, controllers, terrain, doors, _note = _read_rig(src)
+            except Exception as exc:
+                raise ValueError(
+                    f"room {ref.name!r}: {src.name}: {exc}"
+                ) from exc
+            room = Room(name=ref.name)
+            room.body = body
+            body.name = ref.name
+            room.controllers = (
+                controllers if controllers is not None else ControllerStack(body)
+            )
+            room.solver_config.terrain = terrain
+            room.doors = list(doors)
+            scene.add_room(room)
+            states[room] = _RoomState(
+                draw=DrawPoints(body),
+                metaball=MetaballSettings(),
+                rest_pose={
+                    cid: body.chunk(cid).pos for cid in body.chunk_ids()
+                },
+                path=src,
+            )
+
+        self.scene = scene
+        self._states = states
+        self._room = scene.rooms[0]
+        self.body_replaced.emit()
+        self.topology_changed.emit()
+        self.selection_changed.emit()
+        self.controllers_changed.emit()
+        self.history_changed.emit()
+        self.settings_changed.emit()
+        self.terrain_changed.emit()
+        self.dirty_changed.emit(False)
+        self.scene_changed.emit()
+        self.status.emit(f"Opened scene {path.name} ({len(refs)} room(s))")
+
+    def save_scene_as(self, path) -> None:
+        """Write the manifest, and every room that owes the disk something.
+
+        A room that never had a file gets one beside the manifest, named
+        for itself; dirty rooms save to their own files; clean rooms with
+        files are only *listed* — the manifest records assembly, it does
+        not rewrite what already agrees with disk. The scene takes the
+        manifest's stem as its name, the same adoption a room performs at
+        open.
+        """
+        path = Path(path)
+        self.scene.name = path.stem
+        rooms: list[tuple[str, Path]] = []
+        for room in self.scene.rooms:
+            state = self._states[room]
+            target = state.path
+            if target is None:
+                target = path.parent / f"{room.name}.xml"
+                self.save_room(room, target)
+            elif state.dirty:
+                self.save_room(room, target)
+            rooms.append((room.name, target))
+        scene_xml.save_scene(path, self.scene.name, rooms)
+        self.status.emit(f"Saved scene {path.name} ({len(rooms)} room(s))")
+
     def save_room(self, room: Room, path=None) -> Path:
         """Write any room of the scene to its file, active or not.
 
@@ -1782,6 +1865,11 @@ def _read_rig(
             note += f" ({driven} controller(s))"
         return rig.body, rig.controllers, rig.terrain, rig.doors, note
     except Exception:
+        # A scene manifest is not an older rig era; falling through to the
+        # legacy reader would bury the one error message that says what to
+        # do instead.
+        if scene_xml.is_manifest(path):
+            raise
         result = xml_legacy.read_legacy(path)
         note = f"Opened {path.name} (legacy, {result.coords} coordinates)"
         if result.missing_mesh:

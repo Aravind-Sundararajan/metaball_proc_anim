@@ -314,6 +314,11 @@ def read(path: str | Path) -> Rig:
             f"{path} is a pre-versioned <armature> document; "
             "read it with mesh_xml.io.xml_legacy.load_legacy"
         )
+    if root.tag == "scene":
+        raise SchemaError(
+            f"{path} is a <scene> manifest, not a rig; "
+            "read it with mesh_xml.io.scene_xml.read_scene"
+        )
     if root.tag != "body":
         raise SchemaError(f"expected root element <body>, got <{root.tag}>")
 

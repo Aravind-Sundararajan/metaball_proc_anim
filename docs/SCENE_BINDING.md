@@ -1,8 +1,10 @@
 # The editor scene binding: one document, re-pointed
 
-**Status:** in progress — packages 1 (doors through open and save), 2 (the
-scene on the document; the null result held), 3 (the rooms dock) and 4 (the
-doors section; the money test passes) landed. 5 (manifest) open.
+**Status:** landed — all five packages. The null result held (the full
+editor suite passed unchanged through the identity rework), the money test
+passes (a dock-authored door pair carries a grazer between rooms), and a
+two-room scene with an open door pair round-trips whole from a cold start
+through the manifest.
 **Arc:** the last rooms package. Packages 1–5 built the simulation side;
 this is the editor's half.
 **North star:** the viewport switches rooms the way Rain World's camera

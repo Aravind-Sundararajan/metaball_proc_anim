@@ -206,6 +206,152 @@ class TestTheSceneTicksWhole:
         assert len(roster) == 1 and len(roster[0].chunks) == 3
 
 
+class TestManifest:
+    """Package 5: the assembly survives a cold start.
+
+    Room files persist everything substantive; the manifest records only
+    which of them were one world, by which names. The acceptance is the
+    round trip from nothing: a two-room scene with an open door pair,
+    saved, reopened by a fresh document, still one world.
+    """
+
+    def _authored_scene(self, document):
+        den = document.room
+        document.new()
+        document.rename_room(den, "den")
+        ids = [
+            den.body.add_chunk(f"grazer{i}", (float(i) * 0.6, 0.5, 0.0), radius=0.3)
+            for i in range(3)
+        ]
+        for a, b in zip(ids, ids[1:]):
+            den.body.add_link(a, b)
+        den.body.set_pinned(ids[0], True)
+        den.controllers.add(Grazer(ids[0], home=(0.0, 0.5, 0.0), exit="east"))
+        den.doors.append(
+            Door("east", (5.0, 0.5, 0.0), to_room="meadow", to_door="west")
+        )
+        meadow = document.add_room(Room(name="meadow"))
+        meadow.doors.append(
+            Door("west", (-5.0, 0.5, 0.0), to_room="den", to_door="east")
+        )
+        return den, meadow
+
+    def test_a_scene_round_trips_whole_from_a_cold_start(self, document, tmp_path):
+        den, meadow = self._authored_scene(document)
+        manifest = tmp_path / "world.xml"
+        document.save_scene_as(manifest)
+        assert not document.any_dirty, "Save Scene leaves nothing owed"
+        assert (tmp_path / "den.xml").is_file()
+        assert (tmp_path / "meadow.xml").is_file()
+
+        cold = Document()
+        cold.open_scene(manifest)
+        assert [room.name for room in cold.scene.rooms] == ["den", "meadow"]
+        assert cold.room.name == "den"
+        assert cold.room_path(cold.scene.rooms[1]) == tmp_path / "meadow.xml"
+
+        den2 = cold.scene.rooms[0]
+        assert den2.doors == [
+            Door("east", (5.0, 0.5, 0.0), to_room="meadow", to_door="west")
+        ]
+        assert cold.door_status(den2, den2.doors[0]) == "", "the pair is open"
+        assert len(cold.creatures()) == 1, "the grazer made the trip"
+
+        for _ in range(1200):
+            cold.step_once()
+            if cold.scene.rooms[1].body.chunk_ids():
+                break
+        assert cold.scene.rooms[1].body.chunk_ids(), (
+            "a reopened world still carries its traveller"
+        )
+
+    def test_a_missing_room_file_fails_naming_the_room(self, document, tmp_path):
+        from mesh_xml.io import scene_xml
+
+        scene_xml.save_scene(
+            tmp_path / "world.xml", "world", [("meadow", tmp_path / "meadow.xml")]
+        )
+        with pytest.raises(ValueError, match="meadow"):
+            document.open_scene(tmp_path / "world.xml")
+
+    def test_a_failed_open_leaves_the_scene_standing(self, document, tmp_path):
+        from mesh_xml.io import scene_xml
+
+        before = list(document.scene.rooms)
+        chunks = document.body.n_chunks
+        scene_xml.save_scene(
+            tmp_path / "world.xml", "world", [("gone", tmp_path / "gone.xml")]
+        )
+        with pytest.raises(ValueError):
+            document.open_scene(tmp_path / "world.xml")
+        assert document.scene.rooms == before
+        assert document.body.n_chunks == chunks
+
+    def test_the_manifests_names_win(self, document, tmp_path):
+        path = tmp_path / "meadow.xml"
+        document.save(path)
+
+        from mesh_xml.io import scene_xml
+
+        scene_xml.save_scene(tmp_path / "world.xml", "world", [("pasture", path)])
+        document.open_scene(tmp_path / "world.xml")
+        assert document.room.name == "pasture"
+        assert document.room.body.name == "pasture"
+
+    def test_a_rig_reader_refuses_a_manifest_by_tag(self, document, tmp_path):
+        from mesh_xml.io import scene_xml, xml_v2
+
+        manifest = tmp_path / "world.xml"
+        scene_xml.save_scene(manifest, "world", [])
+        with pytest.raises(xml_v2.SchemaError, match="manifest"):
+            xml_v2.read(manifest)
+        with pytest.raises(xml_v2.SchemaError, match="manifest"):
+            document.open(manifest)
+
+    def test_is_manifest_answers_only_that(self, document, tmp_path):
+        from mesh_xml.io import scene_xml
+
+        manifest = tmp_path / "world.xml"
+        scene_xml.save_scene(manifest, "world", [])
+        rig = tmp_path / "rig.xml"
+        document.save(rig)
+
+        assert scene_xml.is_manifest(manifest)
+        assert not scene_xml.is_manifest(rig)
+        assert not scene_xml.is_manifest(tmp_path / "absent.xml")
+
+    def test_an_empty_manifest_is_refused(self, document, tmp_path):
+        from mesh_xml.io import scene_xml
+
+        manifest = tmp_path / "world.xml"
+        scene_xml.save_scene(manifest, "world", [])
+        with pytest.raises(ValueError, match="no rooms"):
+            document.open_scene(manifest)
+
+    def test_duplicate_manifest_names_are_refused_at_the_read(self, tmp_path):
+        from mesh_xml.io import scene_xml
+
+        manifest = tmp_path / "world.xml"
+        scene_xml.save_scene(
+            manifest, "world", [("den", "den.xml"), ("den", "den2.xml")]
+        )
+        with pytest.raises(scene_xml.SchemaError, match="twice"):
+            scene_xml.read_scene(manifest)
+
+    def test_save_scene_saves_only_what_is_owed(self, document, tmp_path):
+        den, meadow = self._authored_scene(document)
+        manifest = tmp_path / "world.xml"
+        document.save_scene_as(manifest)
+
+        stamp = (tmp_path / "meadow.xml").stat().st_mtime_ns
+        document.set_active_room(den)
+        document.do(SetRadius(ids_of(document)[0], 0.5))
+        document.save_scene_as(manifest)
+        assert (tmp_path / "meadow.xml").stat().st_mtime_ns == stamp, (
+            "a clean room is listed, not rewritten"
+        )
+
+
 class TestAbstractionMeetsEditing:
     def test_an_abstracted_room_refuses_edits_and_sleeps_its_history(
         self, document

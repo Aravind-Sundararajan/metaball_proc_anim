@@ -7,6 +7,12 @@ entirely, and imports nothing that produces them.
 """
 
 from mesh_xml.io.mesh_export import write_mesh, write_obj, write_stl
+from mesh_xml.io.scene_xml import (
+    SceneRef,
+    is_manifest,
+    read_scene,
+    save_scene,
+)
 from mesh_xml.io.xml_legacy import (
     CoordMode,
     LegacyChunkMeta,
@@ -30,7 +36,11 @@ __all__ = [
     "FORMAT_VERSION",
     "READABLE_VERSIONS",
     "Rig",
+    "SceneRef",
     "SchemaError",
+    "is_manifest",
+    "read_scene",
+    "save_scene",
     "save",
     "load",
     "read",

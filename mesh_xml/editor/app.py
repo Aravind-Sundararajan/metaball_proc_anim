@@ -125,11 +125,13 @@ class MainWindow(QMainWindow):
         self._action(file_menu, "&New", QKeySequence.StandardKey.New, self.new)
         self._action(file_menu, "&Open…", QKeySequence.StandardKey.Open, self.open)
         self._action(file_menu, "Open &Into Scene…", None, self.open_into_scene)
+        self._action(file_menu, "Open S&cene…", None, self.open_scene)
         self._build_examples_menu(file_menu)
         file_menu.addSeparator()
         self._action(file_menu, "&Save", QKeySequence.StandardKey.Save, self.save)
         self._action(file_menu, "Save &As…", QKeySequence.StandardKey.SaveAs, self.save_as)
         self._action(file_menu, "Save A&ll", None, self.save_all)
+        self._action(file_menu, "Save Scene &As…", None, self.save_scene_as)
         self._action(file_menu, "Export &Mesh…", None, self.export_mesh)
         file_menu.addSeparator()
         self._action(file_menu, "E&xit", QKeySequence.StandardKey.Quit, self.close)
@@ -225,21 +227,69 @@ class MainWindow(QMainWindow):
             self.document.new()
 
     def open(self) -> None:
-        if not self._confirm_discard():
-            return
+        """Pick the file first, then ask the right-sized discard question:
+        a rig replaces the active room, a manifest replaces every room."""
+        from mesh_xml.io import scene_xml
+
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Rig", str(EXAMPLES), "Rig files (*.xml);;All files (*)"
         )
-        if path:
-            self.open_path(Path(path))
+        if not path:
+            return
+        if scene_xml.is_manifest(Path(path)):
+            if not self._confirm_discard_all():
+                return
+        elif not self._confirm_discard():
+            return
+        self.open_path(Path(path))
 
     def open_path(self, path: Path) -> None:
+        """Open a file for what it is: a manifest opens as a scene, a rig
+        as a rig — the user picked a file, not a parser."""
+        from mesh_xml.io import scene_xml
+
         try:
-            self.document.open(path)
+            if scene_xml.is_manifest(path):
+                self.document.open_scene(path)
+            else:
+                self.document.open(path)
         except Exception as exc:
             QMessageBox.critical(self, "Open Failed", f"{path.name}\n\n{exc}")
             return
         self.viewport.frame_all()
+
+    def open_scene(self) -> None:
+        """Open a scene manifest, replacing every room after the discard prompt."""
+        if not self._confirm_discard_all():
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Scene", str(EXAMPLES), "Scene files (*.xml);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            self.document.open_scene(Path(path))
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Open Failed", f"{Path(path).name}\n\n{exc}"
+            )
+            return
+        self.viewport.frame_all()
+
+    def save_scene_as(self) -> None:
+        """Write the manifest and every room that owes the disk something."""
+        suggested = str(Path.cwd() / f"{self.document.scene.name}.xml")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Scene", suggested, "Scene files (*.xml);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            self.document.save_scene_as(Path(path))
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Save Failed", f"{Path(path).name}\n\n{exc}"
+            )
 
     def open_into_scene(self) -> None:
         """Open a file as a new room beside the others, and cut to it."""

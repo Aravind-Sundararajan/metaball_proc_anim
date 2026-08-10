@@ -621,6 +621,21 @@ Landed after Phase 5, in one fan-out:
   to wandering. What did not land here is the editor's half — rooms dock,
   Play-the-scene — split into package 6 as a ``Document``-identity rework
   with its design constraints named in the plan.
+* **The editor scene binding** (``docs/ROOMS.md`` package 6; design and
+  landing in ``docs/SCENE_BINDING.md``). The last rooms package: one
+  ``Document`` re-pointed across a ``Scene`` — to every panel a room switch
+  is File > Open, which is why the null result held and the whole suite
+  passed unchanged — with per-room editor state (undo histories, draw
+  springs, rest poses, paths, dirty flags, surface looks) in a side table
+  the Qt-free room never sees. The rooms dock cuts, renames, parks and
+  saves; the cut is deliberately not ``Scene.activate``, because an
+  abstracted far side is a closed door and a scene-wide policy would queue
+  every traveller in a doorway — abstraction is a per-room toggle instead,
+  which makes the cheap tier something an author can watch. Doors author
+  in the dock as file-grade edits with the closed ones saying why, and the
+  additive ``<scene>`` manifest records the assembly, so a two-room world
+  with a door pair round-trips whole from a cold start and the grazer
+  still crosses on arrival.
 * **Controllers in the GUI, and grabs that win.** A Controllers panel: one
   group per controller on the stack, an enabled switch, spins for every
   numeric field the v3 registry persists — the widget list *is* the format's
