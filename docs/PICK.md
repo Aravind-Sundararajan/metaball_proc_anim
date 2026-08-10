@@ -32,9 +32,12 @@ gesture's whole claim is "where you clicked": the creature field
 `Document.primitives()` and the `group_rows()[:, :2]` adapter), hard-min
 against the terrain fold (`Terrain.distance`), and — only when the
 terrain is empty and the floor is shown — the analytic reference plane
-at `solver_config.ground_y`, which is exactly the shader's own gating
-for the visible grid floor. What is not on screen is not pickable: a
-`ground_y` of `None` draws no floor and stops no ray.
+at the shader's own height — `solver_config.ground_y`, or the zero the
+shader substitutes when the solver has none, because the frag draws the
+reference grid even for a floorless world. The pick follows the drawn
+grid exactly, gates and substitution both, so what is on screen is
+pickable and nothing else is; a chunk placed on that reference
+furniture in a floorless world falls, which is what it reads as.
 
 The creature∪terrain hard min deliberately does not exist as a library
 function — "compositing against a creature is the consumer's job"
@@ -150,8 +153,9 @@ when visible), returning point, normal, kind, and the hit chunk id for
 flesh. Tests against the CPU-oracle conventions: a ray at a lone
 sphere hits at radius; between two blended chunks hits the fused flesh
 where sphere-picking misses; terrain wins where it is nearer; the
-floor answers only when terrain is empty and shown; `ground_y=None`
-means sky; normal-zero fallback.
+floor answers only when terrain is empty and shown, at the shader's
+substituted zero when `ground_y` is `None`; hidden floor means sky;
+normal-zero fallback.
 
 **Package 3 — the gesture.** `create_chunk` grows `at`/`attach_to`/
 `radius` overrides (defaults preserve the three-branch rule
