@@ -312,6 +312,38 @@ QSlider::sub-page:horizontal {{
     border-radius: 2px;
 }}
 
+QToolBar {{
+    background: {WINDOW};
+    border-bottom: 1px solid {BORDER};
+    padding: 3px 6px;
+    spacing: 2px;
+}}
+QToolBar::separator {{
+    width: 1px;
+    background: {BORDER};
+    margin: 5px 6px;
+}}
+QToolButton {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    padding: 4px 12px;
+}}
+QToolButton:hover {{
+    background: {HOVER};
+    border-color: {BORDER};
+}}
+QToolButton:pressed {{
+    background: {FIELD};
+}}
+QToolButton:checked {{
+    background: {ACCENT};
+    color: {ON_ACCENT};
+}}
+QToolButton:disabled {{
+    color: {QUIET};
+}}
+
 QToolTip {{
     background: {RAISED};
     color: {INK};

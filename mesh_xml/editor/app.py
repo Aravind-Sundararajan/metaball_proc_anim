@@ -19,7 +19,13 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import QDockWidget, QFileDialog, QMainWindow, QMessageBox
+from PySide6.QtWidgets import (
+    QDockWidget,
+    QFileDialog,
+    QMainWindow,
+    QMessageBox,
+    QToolBar,
+)
 
 from mesh_xml.editor.document import Document, RemoveChunk
 from mesh_xml.editor.panels import build_panels
@@ -40,7 +46,9 @@ class MainWindow(QMainWindow):
 
         self._docks: dict[str, QDockWidget] = {}
         self._build_docks()
+        self._build_shared_actions()
         self._build_menus()
+        self._build_toolbar()
 
         self.document.status.connect(self.statusBar().showMessage)
         self.document.dirty_changed.connect(lambda _: self._refresh_title())
@@ -120,8 +128,122 @@ class MainWindow(QMainWindow):
         self.viewport.camera.orthographic = orthographic
         self.viewport.camera_changed.emit()
 
+    def _build_shared_actions(self) -> None:
+        """The gestures both the menus and the toolbar offer: one QAction
+        each, so shortcut, enabled state and checked state have a single
+        owner and the two surfaces cannot disagree (docs/CHROME.md pkg 2).
+        """
+        document = self.document
+
+        self.play_action = QAction("Play", self)
+        self.play_action.setCheckable(True)
+        self.play_action.setShortcut(QKeySequence(Qt.Key.Key_Space))
+        self.play_action.setToolTip("Play or pause the scene (Space)")
+        self.play_action.triggered.connect(
+            lambda checked=False: document.set_running(bool(checked))
+        )
+        document.running_changed.connect(self._sync_play_action)
+
+        self.step_action = QAction("Step", self)
+        self.step_action.setToolTip(
+            "Advance one fixed tick while paused; the clock is not consumed"
+        )
+        self.step_action.triggered.connect(lambda checked=False: self.step_once())
+        document.running_changed.connect(
+            lambda running: self.step_action.setEnabled(not running)
+        )
+
+        self.rest_action = QAction("Rest Pose", self)
+        self.rest_action.setToolTip(
+            "Return every chunk to the pose captured when playback last stopped"
+        )
+        self.rest_action.triggered.connect(
+            lambda checked=False: document.reset_pose()
+        )
+
+        self.add_action = QAction("Add Chunk", self)
+        self.add_action.setShortcut(QKeySequence("A"))
+        self.add_action.setToolTip("Grow a chunk out of the selection (A)")
+        self.add_action.triggered.connect(lambda checked=False: self.add_chunk())
+
+        self.autorig_action = QAction("Fit Autorig", self)
+        self.autorig_action.setToolTip(
+            "Fit a spine, an idle breath and a wave driver to the body — "
+            "the shipped examples' recipe, one undo step"
+        )
+        self.autorig_action.triggered.connect(
+            lambda checked=False: document.fit_autorig()
+        )
+
+        self.rig_legs_action = QAction("Rig Legs", self)
+        self.rig_legs_action.setToolTip(
+            "Compile the measured walker onto every leg-shaped appendage — "
+            "three chunks grown from the spine, ending near the floor"
+        )
+        self.rig_legs_action.triggered.connect(
+            lambda checked=False: document.rig_legs()
+        )
+
+        self.frame_action = QAction("Frame All", self)
+        self.frame_action.setShortcut(QKeySequence("F"))
+        self.frame_action.setToolTip("Fit the camera to the creature (F)")
+        self.frame_action.triggered.connect(
+            lambda checked=False: self.viewport.frame_all()
+        )
+
+        # Registered on the window as well, so the shortcuts fire while
+        # focus sits in the viewport — where it lives most of the time.
+        for action in (
+            self.play_action,
+            self.step_action,
+            self.rest_action,
+            self.add_action,
+            self.autorig_action,
+            self.rig_legs_action,
+            self.frame_action,
+        ):
+            self.addAction(action)
+
+    def _sync_play_action(self, running: bool) -> None:
+        self.play_action.setChecked(running)
+        self.play_action.setText("Pause" if running else "Play")
+
+    def step_once(self) -> None:
+        """One paused tick from the window's own surfaces.
+
+        Delegates to the document like the Playback panel does, and buys
+        the repaint itself: stepping emits no document signal, so without
+        the update the tick happens invisibly.
+        """
+        if self.document.running:
+            return
+        self.document.step_once()
+        self.viewport.update()
+
+    def _build_toolbar(self) -> None:
+        toolbar = QToolBar("Transport", self)
+        toolbar.setObjectName("toolbar_main")
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        for action in (self.play_action, self.step_action, self.rest_action):
+            toolbar.addAction(action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.add_action)
+        toolbar.addSeparator()
+        for action in (self.autorig_action, self.rig_legs_action):
+            toolbar.addAction(action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.frame_action)
+        self.addToolBar(toolbar)
+        self.toolbar = toolbar
+
     def _build_menus(self) -> None:
+        #: Menus by name, the docks-dict precedent: assembly the window can
+        #: answer questions about without a traversal of Qt internals.
+        self.menus: dict[str, object] = {}
         file_menu = self.menuBar().addMenu("&File")
+        self.menus["file"] = file_menu
         self._action(file_menu, "&New", QKeySequence.StandardKey.New, self.new)
         self._action(file_menu, "&Open…", QKeySequence.StandardKey.Open, self.open)
         self._action(file_menu, "Open &Into Scene…", None, self.open_into_scene)
@@ -137,6 +259,7 @@ class MainWindow(QMainWindow):
         self._action(file_menu, "E&xit", QKeySequence.StandardKey.Quit, self.close)
 
         edit_menu = self.menuBar().addMenu("&Edit")
+        self.menus["edit"] = edit_menu
         self.undo_action = self._action(
             edit_menu, "&Undo", QKeySequence.StandardKey.Undo, self.document.undo
         )
@@ -144,14 +267,18 @@ class MainWindow(QMainWindow):
             edit_menu, "&Redo", QKeySequence.StandardKey.Redo, self.document.redo
         )
         edit_menu.addSeparator()
-        self._action(edit_menu, "&Add Chunk", QKeySequence("A"), self.add_chunk)
+        edit_menu.addAction(self.add_action)
         self._action(edit_menu, "&Delete Selected", QKeySequence.StandardKey.Delete, self.delete_selected)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.autorig_action)
+        edit_menu.addAction(self.rig_legs_action)
 
         view_menu = self.menuBar().addMenu("&View")
-        self._action(view_menu, "&Frame All", QKeySequence("F"), self.viewport.frame_all)
+        self.menus["view"] = view_menu
+        view_menu.addAction(self.frame_action)
         self._action(view_menu, "Toggle &Rig Overlay", QKeySequence("R"), self.toggle_rig)
         self._action(view_menu, "&Orthographic", QKeySequence("O"), self.toggle_orthographic)
-        self._action(view_menu, "&Play / Pause", QKeySequence(Qt.Key.Key_Space), self.toggle_running)
+        view_menu.addAction(self.play_action)
         view_menu.addSeparator()
         # Blender's numbers: 1/3/7 for front/right/top, Ctrl for the opposite.
         for label, key, view in (
@@ -192,9 +319,6 @@ class MainWindow(QMainWindow):
             submenu.addAction(action)
 
     # ------------------------------------------------------------------
-
-    def toggle_running(self) -> None:
-        self.document.set_running(not self.document.running)
 
     def snap_view(self, view: str) -> None:
         self.viewport.camera.snap_view(view)
