@@ -1110,3 +1110,38 @@ class TestRoomPanel:
         panel = panels.RoomPanel(document)
         document.add_door(document.room)  # a lone room's door aims home
         assert "closed" in panel._doors.item(0, 5).text()
+
+
+class TestSettingsDirty:
+    """The persistence line, enforced where edits happen: solver and blend
+    save with the room's file and must dirty it; view-only edits must not."""
+
+    def test_a_blend_edit_dirties_the_document(self, document):
+        panel = panels.SurfacePanel(document)
+        assert not document.dirty
+
+        panel._blend.setValue(0.42)
+
+        assert document.metaball.blend == pytest.approx(0.42)
+        assert document.dirty
+
+    def test_a_solver_edit_dirties_the_document(self, document):
+        panel = panels.SolverPanel(document)
+        assert not document.dirty
+
+        panel._iterations.setValue(8)
+
+        assert document.solver_config.iterations == 8
+        assert document.dirty
+
+    def test_view_only_edits_keep_the_file_clean(self, document):
+        panel = panels.SurfacePanel(document)
+
+        panel._debug.setCurrentIndex(2)
+        panel._max_steps.setValue(256)
+        panel._floor.setChecked(False)
+
+        assert document.metaball.debug_mode == 2, "the edits landed"
+        assert document.metaball.max_steps == 256
+        assert not document.metaball.show_floor
+        assert not document.dirty

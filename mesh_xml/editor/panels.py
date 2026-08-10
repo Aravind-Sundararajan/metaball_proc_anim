@@ -680,7 +680,7 @@ class SurfacePanel(_Panel):
 
     def _write_blend(self, value: float) -> None:
         self._document.metaball.blend = float(value)
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     def _refresh(self) -> None:
         settings = self._document.metaball
@@ -822,32 +822,32 @@ class SolverPanel(_Panel):
     @_user_edit
     def _on_iterations_changed(self, value: int) -> None:
         self._document.solver_config.iterations = int(value)
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     @_user_edit
     def _on_damping_changed(self, value: float) -> None:
         self._document.solver_config.damping = float(value)
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     @_user_edit
     def _on_max_velocity_changed(self, value: float) -> None:
         self._document.solver_config.max_velocity = float(value)
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     @_user_edit
     def _on_friction_changed(self, value: float) -> None:
         self._document.solver_config.ground_friction = float(value)
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     @_user_edit
     def _on_self_contact_toggled(self, on: bool) -> None:
         self._document.solver_config.self_contact = bool(on)
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     @_user_edit
     def _on_contact_elasticity_changed(self, value: float) -> None:
         self._document.solver_config.self_contact_elasticity = float(value)
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     @_user_edit
     def _on_gravity_changed(self, _value: float) -> None:
@@ -855,7 +855,7 @@ class SolverPanel(_Panel):
         if any(gravity):
             self._gravity_memo = gravity
         self._document.solver_config.gravity = gravity
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     @_user_edit
     def _on_zero_g_toggled(self, zero: bool) -> None:
@@ -866,7 +866,7 @@ class SolverPanel(_Panel):
             self._document.solver_config.gravity = (0.0, 0.0, 0.0)
         else:
             self._document.solver_config.gravity = self._gravity_memo
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     def _authored_gravity(self) -> tuple[float, ...]:
         gravity = tuple(float(v) for v in self._document.solver_config.gravity)

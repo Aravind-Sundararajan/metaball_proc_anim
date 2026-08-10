@@ -10,7 +10,12 @@ import numpy as np
 import pytest
 
 from mesh_xml.core import Body, LinkType
+from mesh_xml.core.solver import SolverConfig
+from mesh_xml.core.terrain import Terrain
+from mesh_xml.io import xml_v2
+from mesh_xml.render.gl.metaball import MetaballSettings
 from mesh_xml.scene.door import Door
+from mesh_xml.scene.room import Room
 from mesh_xml.editor.document import (
     AddChunk,
     AddLink,
@@ -785,3 +790,102 @@ class TestExportMesh:
 
         welded = polygonise(document.primitives(), blend=0.4, resolution=48)
         assert len(vertices) != len(welded.vertices)
+
+
+class TestSettingsPersistence:
+    """Solver tuning and blend ride the room's file; the file is the truth."""
+
+    def test_a_tuned_room_reopens_as_tuned(self, document, tmp_path):
+        document.solver_config.iterations = 8
+        document.solver_config.gravity = (0.0, -3.0, 0.0)
+        document.solver_config.self_contact = True
+        document.metaball.blend = 0.5
+        document.set_terrain(Terrain.flat(0.25))
+        path = tmp_path / "tuned.xml"
+        document.save(path)
+
+        reopened = Document()
+        reopened.open(path)
+        config = reopened.solver_config
+        assert config.iterations == 8
+        assert tuple(config.gravity) == pytest.approx((0.0, -3.0, 0.0))
+        assert config.self_contact is True
+        assert reopened.metaball.blend == pytest.approx(0.5)
+        assert reopened.terrain is not None, "the fold lands in the loaded config"
+        assert reopened.terrain.planes == pytest.approx(document.terrain.planes)
+
+    def test_a_sectionless_file_resets_the_sessions_tuning(
+        self, document, tmp_path
+    ):
+        """Absent sections mean what every pre-arc document meant: defaults."""
+        path = tmp_path / "plain.xml"
+        xml_v2.save(document.body, path)
+
+        document.solver_config.iterations = 16
+        document.metaball.blend = 0.7
+        document.settings_edited()
+        assert document.dirty
+
+        document.open(path)
+        founding = SolverConfig(ground_y=0.0)
+        config = document.solver_config
+        assert config.iterations == founding.iterations
+        assert tuple(config.gravity) == pytest.approx(founding.gravity)
+        assert config.ground_y == pytest.approx(0.0)
+        assert document.metaball.blend == pytest.approx(MetaballSettings().blend)
+        assert not document.dirty
+
+    def test_settings_edited_dirties_and_a_raw_emit_does_not(self, document):
+        heard: list[bool] = []
+        document.dirty_changed.connect(heard.append)
+
+        document.settings_changed.emit()
+        assert not document.dirty, "a view-only refresh is not an edit"
+
+        document.settings_edited()
+        assert document.dirty
+        assert heard == [True]
+
+    def test_a_two_room_scene_reopens_each_rooms_own_tuning(
+        self, document, tmp_path
+    ):
+        meadow = document.add_room(Room(name="meadow"))
+        meadow.body.add_chunk("m0", (0.0, 0.5, 0.0), radius=0.3)
+
+        document.solver_config.iterations = 8
+        document.metaball.blend = 0.5
+        document.set_active_room(meadow)
+        document.solver_config.iterations = 12
+        document.metaball.blend = 0.1
+
+        manifest = tmp_path / "scene.xml"
+        document.save_scene_as(manifest)
+
+        reopened = Document()
+        reopened.open_scene(manifest)
+        rooms = {room.name: room for room in reopened.scene.rooms}
+        assert rooms["document"].solver_config.iterations == 8
+        assert rooms["meadow"].solver_config.iterations == 12
+
+        assert reopened.room is rooms["document"]
+        assert reopened.metaball.blend == pytest.approx(0.5)
+        reopened.set_active_room(rooms["meadow"])
+        assert reopened.metaball.blend == pytest.approx(0.1)
+
+    def test_save_room_carries_an_inactive_rooms_tuning(self, document, tmp_path):
+        meadow = document.add_room(Room(name="meadow"))
+        meadow.body.add_chunk("m0", (0.0, 0.5, 0.0), radius=0.3)
+        document.set_active_room(meadow)
+        document.solver_config.damping = 0.5
+        document.metaball.blend = 0.4
+        document.settings_edited()
+        document.set_active_room(document.scene.rooms[0])
+        assert document.room_dirty(meadow), "the tuning is owed to disk"
+
+        target = document.save_room(meadow, tmp_path / "meadow.xml")
+
+        rig = xml_v2.read(target)
+        assert rig.solver is not None
+        assert rig.solver.damping == pytest.approx(0.5)
+        assert rig.blend == pytest.approx(0.4)
+        assert not document.room_dirty(meadow)

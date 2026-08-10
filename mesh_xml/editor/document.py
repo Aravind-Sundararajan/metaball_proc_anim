@@ -427,7 +427,8 @@ class _RoomState:
     is one room's editing session: the easing springs with their per-point
     tuning, the pose Reset returns to, the selection, an undo history that
     structurally cannot contain another room's commands, the file this room
-    is, and the surface look (session-only — v3 does not carry it).
+    is, and the surface look (its blend saves with the room's file; the
+    rest — colours, march quality — stays session-only).
     """
 
     draw: DrawPoints
@@ -1027,6 +1028,23 @@ class Document(QObject):
             return
         self.solver_config.terrain = terrain
         self.terrain_changed.emit()
+
+    # ------------------------------------------------------------------
+    # settings
+    # ------------------------------------------------------------------
+
+    def settings_edited(self) -> None:
+        """A finished solver or blend edit — the doors rule for settings.
+
+        File-grade like a door edit: an explicit authoring act, immediate,
+        on no undo stack — but it DOES dirty the room, because solver and
+        blend save with the room's file and a clean flag over an unsaved
+        tuning is a lie Save All would act on. View-only settings (debug
+        modes, colours, march quality) stay off this path: panels emit
+        :attr:`settings_changed` raw for those and the file stays clean.
+        """
+        self._dirty_room(self._room)
+        self.settings_changed.emit()
 
     # ------------------------------------------------------------------
     # editing
@@ -1711,9 +1729,15 @@ class Document(QObject):
     def open(self, path) -> None:
         """Load a rig and its gait into the *active room*, replacing its contents."""
         path = Path(path)
-        body, controllers, terrain, doors, note = _read_rig(path)
+        body, controllers, terrain, doors, solver, blend, note = _read_rig(path)
         self.adopt(
-            body, controllers=controllers, path=path, terrain=terrain, doors=doors
+            body,
+            controllers=controllers,
+            path=path,
+            terrain=terrain,
+            doors=doors,
+            solver=solver,
+            blend=blend,
         )
         self._adopt_room_name(path)
         self.status.emit(note)
@@ -1755,7 +1779,7 @@ class Document(QObject):
         stay one value.
         """
         path = Path(path)
-        body, controllers, terrain, doors, note = _read_rig(path)
+        body, controllers, terrain, doors, solver, blend, note = _read_rig(path)
         base = body.name if body.name and body.name != "body" else path.stem
         name = self.unique_room_name(base)
 
@@ -1765,10 +1789,15 @@ class Document(QObject):
         room.controllers = (
             controllers if controllers is not None else ControllerStack(body)
         )
+        room.solver_config = (
+            solver if solver is not None else SolverConfig(ground_y=0.0)
+        )
         room.solver_config.terrain = terrain
         room.doors = list(doors)
         self.add_room(room)
         self._states[room].path = path
+        if blend is not None:
+            self._states[room].metaball.blend = blend
         self.set_active_room(room)
         if name != base:
             note += f" as room {name!r}"
@@ -1782,6 +1811,8 @@ class Document(QObject):
         path=None,
         terrain: Terrain | None = None,
         doors: Sequence[Door] = (),
+        solver: SolverConfig | None = None,
+        blend: float | None = None,
     ) -> None:
         """Take over a rig, optionally with the gait driving it and its world.
 
@@ -1795,14 +1826,31 @@ class Document(QObject):
         previous document stood on means nothing to this one, and a stale
         floor under a fresh rig would be drawn and collided with silently.
         ``doors`` defaults to none on the same terms — an exit into the old
-        file's world is a promise the new one never made.
+        file's world is a promise the new one never made. ``solver=None`` and
+        ``blend=None`` reset on the same terms again, to the room's founding
+        floor-at-zero config and the dataclass blend: the file is the truth
+        about both records, and the previous session's tuning under a fresh
+        rig would be a physics it never stated.
         """
         self._replace(body, Path(path) if path else None)
         if controllers is not None:
             self.controllers = controllers
             self.controllers_changed.emit()
+        config = solver if solver is not None else SolverConfig(ground_y=0.0)
+        # The incoming config carries the *old* world across the swap, so
+        # :meth:`set_terrain` still judges — and announces — the world change
+        # itself, including a terrain cleared by a file that has none.
+        config.terrain = self.solver_config.terrain
+        self.solver_config = config
         self.set_terrain(terrain)
         self.room.doors = list(doors)
+        self._state.metaball.blend = (
+            blend if blend is not None else MetaballSettings().blend
+        )
+        # _replace stops short of settings on SCENE_BINDING.md §2.1's terms —
+        # open used to reset them, and a reset needed no announcement. Solver
+        # and blend restore from the file, so the panels must re-read.
+        self.settings_changed.emit()
 
     def save(self, path) -> None:
         """Write the active room to ``path``: body, gait, world, and doors.
@@ -1836,7 +1884,9 @@ class Document(QObject):
         for ref in refs:
             src = path.parent / ref.src
             try:
-                body, controllers, terrain, doors, _note = _read_rig(src)
+                body, controllers, terrain, doors, solver, blend, _note = (
+                    _read_rig(src)
+                )
             except Exception as exc:
                 raise ValueError(
                     f"room {ref.name!r}: {src.name}: {exc}"
@@ -1847,12 +1897,18 @@ class Document(QObject):
             room.controllers = (
                 controllers if controllers is not None else ControllerStack(body)
             )
+            room.solver_config = (
+                solver if solver is not None else SolverConfig(ground_y=0.0)
+            )
             room.solver_config.terrain = terrain
             room.doors = list(doors)
             scene.add_room(room)
+            metaball = MetaballSettings()
+            if blend is not None:
+                metaball.blend = blend
             states[room] = _RoomState(
                 draw=DrawPoints(body),
-                metaball=MetaballSettings(),
+                metaball=metaball,
                 rest_pose={
                     cid: body.chunk(cid).pos for cid in body.chunk_ids()
                 },
@@ -1915,6 +1971,8 @@ class Document(QObject):
             room.controllers,
             terrain=room.solver_config.terrain,
             doors=tuple(room.doors),
+            solver=room.solver_config,
+            blend=state.metaball.blend,
         )
         state.path = target
         if state.dirty:
@@ -1955,13 +2013,22 @@ class Document(QObject):
 
 def _read_rig(
     path: Path,
-) -> tuple[Body, ControllerStack | None, Terrain | None, Sequence[Door], str]:
+) -> tuple[
+    Body,
+    ControllerStack | None,
+    Terrain | None,
+    Sequence[Door],
+    SolverConfig | None,
+    float | None,
+    str,
+]:
     """Read any supported rig file, v3 down to the legacy eras.
 
     The one reader both :meth:`Document.open` and :meth:`Document.open_as_room`
     share, so the fallback ladder cannot fork between them. Returns the body,
     the gait (``None`` for files that cannot describe one), the world, the
-    doors, and the status line the read earned.
+    doors, the solver tuning and the blend (``None`` each for eras that could
+    not describe them), and the status line the read earned.
     """
     try:
         rig = xml_v2.read(path)
@@ -1969,7 +2036,15 @@ def _read_rig(
         driven = len(rig.controllers.controllers)
         if driven:
             note += f" ({driven} controller(s))"
-        return rig.body, rig.controllers, rig.terrain, rig.doors, note
+        return (
+            rig.body,
+            rig.controllers,
+            rig.terrain,
+            rig.doors,
+            rig.solver,
+            rig.blend,
+            note,
+        )
     except Exception:
         # A scene manifest is not an older rig era; falling through to the
         # legacy reader would bury the one error message that says what to
@@ -1980,4 +2055,4 @@ def _read_rig(
         note = f"Opened {path.name} (legacy, {result.coords} coordinates)"
         if result.missing_mesh:
             note += f"; {len(result.missing_mesh)} bone(s) had no mesh"
-        return result.body, None, None, (), note
+        return result.body, None, None, (), None, None, note
