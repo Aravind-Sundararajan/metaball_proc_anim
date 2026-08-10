@@ -292,6 +292,85 @@ class TestCreateChunk:
         assert document.body.has_link(new, end)
 
 
+class TestCreateChunkAt:
+    """Add with a stated position — the surface pick's half of the rule.
+
+    The click states where (docs/PICK.md §3): the position lands verbatim,
+    the selection stands aside, and the hit chunk — when there is one —
+    earns the link and lends its radius. Same command shapes, same undo
+    grain, and the placed chunk still takes the selection, so a click then
+    repeated Adds extrudes from where you pointed.
+    """
+
+    def test_a_flesh_hit_links_to_it_and_inherits_its_radius(self, document):
+        links = document.body.n_links
+        anchor = ids_of(document)[2]
+        new = document.create_chunk(at=(2.0, 1.5, 0.5), attach_to=anchor)
+
+        assert document.body.chunk(new).pos == pytest.approx((2.0, 1.5, 0.5))
+        assert document.body.chunk(new).radius == pytest.approx(0.3)
+        assert document.body.has_link(new, anchor)
+        assert document.body.n_links == links + 1
+
+    def test_a_world_hit_is_a_free_default_chunk_exactly_there(self, document):
+        """The selection does not participate — the click is the statement."""
+        links = document.body.n_links
+        document.set_selection((ids_of(document)[0],))
+        new = document.create_chunk(at=(-1.0, 0.25, 2.0))
+
+        assert document.body.chunk(new).pos == pytest.approx((-1.0, 0.25, 2.0))
+        assert document.body.chunk(new).radius == pytest.approx(0.5)
+        assert document.body.n_links == links
+
+    def test_an_explicit_radius_beats_the_inherited_one(self, document):
+        anchor = ids_of(document)[0]
+        new = document.create_chunk(
+            at=(0.0, 1.0, 0.0), attach_to=anchor, radius=0.8
+        )
+        assert document.body.chunk(new).radius == pytest.approx(0.8)
+
+    def test_a_placed_attachment_is_one_undo_step(self, document):
+        chunks, links = document.body.n_chunks, document.body.n_links
+        anchor = ids_of(document)[4]
+        new = document.create_chunk(at=(4.0, 1.0, 0.0), attach_to=anchor)
+
+        document.undo()
+        assert (document.body.n_chunks, document.body.n_links) == (chunks, links)
+        assert not document.body.has_chunk(new)
+
+        document.redo()
+        assert document.body.has_chunk(new)
+        assert document.body.has_link(new, anchor)
+
+    def test_the_placed_chunk_takes_the_selection(self, document):
+        document.set_selection(ids_of(document)[:2])
+        new = document.create_chunk(at=(0.0, 2.0, 0.0))
+        assert document.selection == {new}
+
+    def test_overrides_without_a_position_are_refused(self, document):
+        with pytest.raises(ValueError):
+            document.create_chunk(attach_to=ids_of(document)[0])
+        with pytest.raises(ValueError):
+            document.create_chunk(radius=0.8)
+        assert not document.can_undo
+
+    def test_a_stale_hit_is_refused_before_anything_applies(self, document):
+        chunks, links = document.body.n_chunks, document.body.n_links
+        with pytest.raises(ValueError):
+            document.create_chunk(at=(0.0, 0.0, 0.0), attach_to=99)
+        assert (document.body.n_chunks, document.body.n_links) == (chunks, links)
+        assert not document.can_undo
+
+    def test_no_overrides_still_grow_from_the_selection(self, document):
+        end = ids_of(document)[-1]
+        document.set_selection((end,))
+        new = document.create_chunk()
+
+        assert document.body.has_link(new, end)
+        assert document.body.chunk(new).pos == pytest.approx((5.0, 0.0, 0.0))
+        assert document.body.chunk(new).radius == pytest.approx(0.3)
+
+
 class TestHistory:
     def test_a_new_command_clears_the_redo_stack(self, document):
         target = ids_of(document)[0]

@@ -941,6 +941,74 @@ class TestViewport:
         hit = view.surface_hit(*centre)
         assert hit is not None and hit.kind == "floor", "an empty world defers to the floor"
 
+    # -- placing -----------------------------------------------------
+
+    def test_ctrl_click_grows_the_creature_where_it_was_struck(self):
+        view = self.viewport()
+        body = view.document.body
+        x, y = view.rig_screen_points()[body.chunk_ids()[2]]
+        hit = view.surface_hit(x, y)
+        assert hit is not None and hit.kind == "flesh"
+        struck = body.chunk(hit.chunk_id)
+        expected = hit.point + hit.normal * struck.radius
+
+        before = set(body.chunk_ids())
+        press(view, x, y, modifiers=Qt.KeyboardModifier.ControlModifier)
+        release(view, x, y, modifiers=Qt.KeyboardModifier.ControlModifier)
+
+        (new_id,) = set(body.chunk_ids()) - before
+        placed = body.chunk(new_id)
+        assert placed.pos == pytest.approx(tuple(expected))
+        assert placed.radius == struck.radius
+        assert body.neighbors(new_id) == [hit.chunk_id]
+        assert view.document.selection == {new_id}
+
+        view.document.undo()
+        assert set(body.chunk_ids()) == before, (
+            "one step: the chunk and its link leave together"
+        )
+
+    def test_ctrl_click_on_the_grid_starts_a_new_beginning(self):
+        view = self.viewport(Document())
+        view.camera.snap_view("top")
+        view.document.solver_config.ground_y = -1.0
+        centre = (view.width() / 2.0, view.height() / 2.0)
+
+        press(view, *centre, modifiers=Qt.KeyboardModifier.ControlModifier)
+        release(view, *centre, modifiers=Qt.KeyboardModifier.ControlModifier)
+
+        (new_id,) = view.document.body.chunk_ids()
+        placed = view.document.body.chunk(new_id)
+        assert placed.pos[1] == pytest.approx(-0.5), "one radius of clearance"
+        assert placed.radius == 0.5
+        assert view.document.body.neighbors(new_id) == []
+        assert view.document.selection == {new_id}
+
+    def test_ctrl_click_on_sky_does_nothing_at_all(self):
+        """Not the legacy origin fallback, and not an orbit: sky means no."""
+        view = self.viewport(Document())
+        view.document.metaball.show_floor = False
+        centre = (view.width() / 2.0, view.height() / 2.0)
+        yaw = view.camera.yaw
+
+        press(view, *centre, modifiers=Qt.KeyboardModifier.ControlModifier)
+        move(
+            view,
+            centre[0] + 40,
+            centre[1] + 2,
+            modifiers=Qt.KeyboardModifier.ControlModifier,
+        )
+        release(
+            view,
+            centre[0] + 40,
+            centre[1] + 2,
+            modifiers=Qt.KeyboardModifier.ControlModifier,
+        )
+
+        assert view.document.body.n_chunks == 0
+        assert view.camera.yaw == yaw, "a missed place must not orbit"
+        assert view.document.selection == set()
+
     # -- dragging ----------------------------------------------------
 
     def test_one_drag_is_exactly_one_command(self):

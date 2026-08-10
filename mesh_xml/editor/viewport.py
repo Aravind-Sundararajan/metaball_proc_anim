@@ -1171,7 +1171,45 @@ class MetaballViewport(RaymarchView):
     # mouse
     # ------------------------------------------------------------------
 
+    def _place_at(self, x: float, y: float) -> None:
+        """Ctrl+click's half of the Add rule: the click states the position.
+
+        The pick answers with the surface the author saw, and the hit states
+        the attachment (``docs/PICK.md`` §3): flesh earns a link to the
+        struck chunk and borrows its radius, the world starts a free 0.5.
+        The centre sits one radius out along the normal — the
+        ``Terrain.project`` clearance generalized, because aiming at the
+        surface itself is aiming underground. At a gradient sink the field
+        reports no normal, so the offset falls back to back-along-the-ray:
+        always defined, always facing the author. A miss does nothing at
+        all — sky means no.
+        """
+        hit = self.surface_hit(x, y)
+        if hit is None:
+            return
+        normal = np.asarray(hit.normal, dtype=np.float64)
+        if not normal.any():
+            _, direction = self.ray_through(x, y)
+            normal = -direction
+        if hit.kind == "flesh":
+            radius = float(self._document.body.chunk(hit.chunk_id).radius)
+            attach_to = hit.chunk_id
+        else:
+            radius = 0.5
+            attach_to = None
+        at = tuple(float(v) for v in hit.point + normal * radius)
+        self._document.create_chunk(at=at, attach_to=attach_to, radius=radius)
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and bool(
+            event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            # Ahead of the whole ladder and consuming hit and miss alike: a
+            # failed place that spun the camera would punish the author for
+            # missing by a pixel (docs/PICK.md §4).
+            position = event.position()
+            self._place_at(position.x(), position.y())
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             position = event.position()
             view = gizmo_hit(

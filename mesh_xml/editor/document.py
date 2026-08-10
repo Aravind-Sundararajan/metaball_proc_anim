@@ -1141,8 +1141,14 @@ class Document(QObject):
     # authoring
     # ------------------------------------------------------------------
 
-    def create_chunk(self) -> int:
-        """Add a chunk, growing from the selection. Returns the new chunk's id.
+    def create_chunk(
+        self,
+        *,
+        at: tuple[float, ...] | None = None,
+        attach_to: int | None = None,
+        radius: float | None = None,
+    ) -> int:
+        """Add a chunk, growing from the selection or at ``at``. Returns its id.
 
         The rule, in three sentences. With exactly one chunk selected the new
         chunk is linked to it, inherits its radius, and continues the chain —
@@ -1152,6 +1158,20 @@ class Document(QObject):
         girdle or a palm closes. With nothing selected it is a free chunk just
         past the body's +x extent — origin on an empty body — because a new
         component is what an empty selection says you meant.
+
+        ``at`` is the same rule's second position source (``docs/PICK.md``
+        §3): a gesture that already knows where — the surface pick, its
+        offset along the normal already taken — states the position verbatim,
+        and the selection stands aside. The hit states the attachment:
+        ``attach_to`` earns exactly one link and, absent an explicit
+        ``radius``, lends its own — grown anatomy matches local anatomy, the
+        single-selection reasoning relocated to the cursor — while no
+        ``attach_to`` means the free chunk's 0.5. Without ``at`` the
+        overrides are refused rather than quietly dropped: the selection rule
+        chooses links and radius itself. An ``attach_to`` naming no chunk is
+        refused too, before any command applies — a live gesture hands over
+        a live hit, so a stale id is a caller bug better named here than
+        inside a half-applied :class:`Macro`.
 
         One call is one undo step: the chunk and its links arrive and leave
         together, via a :class:`Macro`. The new chunk becomes the selection, so
@@ -1164,46 +1184,62 @@ class Document(QObject):
         re-applies the same id on redo, so the links stay resolvable.
         """
         body = self.body
-        dim = body.dim
-        selected = sorted(self.selection)
-        along_x = np.zeros(dim)
-        along_x[0] = 1.0
-
-        def outward(origin: np.ndarray, away_from: np.ndarray) -> np.ndarray:
-            direction = origin - away_from
-            length = float(np.linalg.norm(direction))
-            return direction / length if length > 1e-6 else along_x
-
-        if not selected:
-            radius = 0.5
-            if body.n_chunks == 0:
-                pos = np.zeros(dim)
-            else:
-                pos = body.pos.mean(axis=0).astype(np.float64)
-                pos[0] = float(body.pos[:, 0].max()) + _GROW_SPACING * radius
-        elif len(selected) == 1:
-            anchor = np.asarray(body.chunk(selected[0]).pos)
-            radius = body.chunk(selected[0]).radius
-            neighbours = body.neighbors(selected[0])
-            if len(neighbours) == 1:
-                prev = np.asarray(body.chunk(neighbours[0]).pos)
-                step = anchor - prev
-                if float(np.linalg.norm(step)) <= 1e-6:
-                    step = along_x * _GROW_SPACING * radius
-                pos = anchor + step
-            else:
-                centre = (
-                    np.mean([body.chunk(n).pos for n in neighbours], axis=0)
-                    if neighbours
-                    else anchor
+        if at is None:
+            if attach_to is not None or radius is not None:
+                raise ValueError(
+                    "attach_to and radius state a placement; "
+                    "without at, the selection rule chooses both"
                 )
-                pos = anchor + outward(anchor, centre) * _GROW_SPACING * radius
+            dim = body.dim
+            selected = sorted(self.selection)
+            along_x = np.zeros(dim)
+            along_x[0] = 1.0
+
+            def outward(origin: np.ndarray, away_from: np.ndarray) -> np.ndarray:
+                direction = origin - away_from
+                length = float(np.linalg.norm(direction))
+                return direction / length if length > 1e-6 else along_x
+
+            if not selected:
+                radius = 0.5
+                if body.n_chunks == 0:
+                    pos = np.zeros(dim)
+                else:
+                    pos = body.pos.mean(axis=0).astype(np.float64)
+                    pos[0] = float(body.pos[:, 0].max()) + _GROW_SPACING * radius
+            elif len(selected) == 1:
+                anchor = np.asarray(body.chunk(selected[0]).pos)
+                radius = body.chunk(selected[0]).radius
+                neighbours = body.neighbors(selected[0])
+                if len(neighbours) == 1:
+                    prev = np.asarray(body.chunk(neighbours[0]).pos)
+                    step = anchor - prev
+                    if float(np.linalg.norm(step)) <= 1e-6:
+                        step = along_x * _GROW_SPACING * radius
+                    pos = anchor + step
+                else:
+                    centre = (
+                        np.mean([body.chunk(n).pos for n in neighbours], axis=0)
+                        if neighbours
+                        else anchor
+                    )
+                    pos = anchor + outward(anchor, centre) * _GROW_SPACING * radius
+            else:
+                radius = float(np.mean([body.chunk(s).radius for s in selected]))
+                centre = np.mean([body.chunk(s).pos for s in selected], axis=0)
+                pos = centre + outward(centre, body.pos.mean(axis=0)) * (
+                    _GROW_SPACING * radius
+                )
+            anchors = selected
         else:
-            radius = float(np.mean([body.chunk(s).radius for s in selected]))
-            centre = np.mean([body.chunk(s).pos for s in selected], axis=0)
-            pos = centre + outward(centre, body.pos.mean(axis=0)) * (
-                _GROW_SPACING * radius
-            )
+            if attach_to is not None and not body.has_chunk(attach_to):
+                raise ValueError(f"attach_to names no chunk {attach_to}")
+            pos = at
+            if radius is None:
+                radius = (
+                    body.chunk(attach_to).radius if attach_to is not None else 0.5
+                )
+            anchors = [attach_to] if attach_to is not None else []
 
         new_id = max(body.chunk_ids(), default=-1) + 1
         added = AddChunk(
@@ -1212,8 +1248,8 @@ class Document(QObject):
             radius=radius,
             chunk_id=new_id,
         )
-        if selected:
-            links: list[Command] = [AddLink(new_id, s) for s in selected]
+        if anchors:
+            links: list[Command] = [AddLink(new_id, s) for s in anchors]
             self.do(Macro([added, *links], text="Add Chunk"))
         else:
             self.do(added)
