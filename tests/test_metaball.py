@@ -214,6 +214,7 @@ class TestAgainstTheCpuReference:
         bounds=None,
         tiles=None,
         attributes=None,
+        prepass=None,
     ):
         from PySide6.QtGui import QImage
 
@@ -222,6 +223,8 @@ class TestAgainstTheCpuReference:
         view = gl_context.RaymarchView(camera=camera)
         view.set_fragment_source(metaball.fragment_source(), "metaball.frag")
         view.resize(width, height)
+        if prepass is not None:
+            view.prepass_divisor = prepass
 
         failures: list[str] = []
         view.shader_failed.connect(failures.append)
@@ -445,6 +448,55 @@ class TestAgainstTheCpuReference:
         )
         gpu = rgb[shared] / 255.0
         error = np.abs(gpu - cpu)
+        assert np.percentile(error, 99) < 0.06
+        assert error.mean() < 0.02
+
+    def test_the_armed_skin_survives_the_cone_prepass(self):
+        """The editor's own configuration: attribute table armed AND the
+        prepass on. The seed depths are an R32F texture on their own unit
+        (context.SEED_TEXTURE_UNIT); when the attribute table once shared
+        that unit, every colour fetch read seed depths instead — saturated
+        red creatures in the editor while every prepass-free test stayed
+        green. Colour must agree with the prepass-free frame within the
+        march's own drift, which is the prepass's surface-exact contract
+        extended to the skin."""
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = worm()
+        head = body.chunk_ids()[0]
+        body.meta_of(head)[sdf.COLOUR_META] = "0.95 0.15 0.1"
+        for cid in body.chunk_ids():
+            body.meta_of(cid)[sdf.PATTERN_META] = "stripes"
+
+        primitives = sdf.pack(body)
+        groups = sdf.group_table(body)
+        attributes = sdf.pack_attributes(body)
+        assert len(attributes) == len(primitives)
+
+        size = (160, 120)
+        camera = OrbitCamera(distance=8.0, yaw=25.0, pitch=18.0)
+        settings = metaball.MetaballSettings(blend=0.3, debug_mode=4, max_distance=20.0)
+
+        plain = self.render(
+            primitives, camera, settings, size, groups=groups, attributes=attributes
+        )
+        seeded = self.render(
+            primitives,
+            camera,
+            settings,
+            size,
+            groups=groups,
+            attributes=attributes,
+            prepass=4,
+        )
+
+        hit_plain = ~np.all(plain >= 254.0, axis=-1)
+        hit_seeded = ~np.all(seeded >= 254.0, axis=-1)
+        assert hit_plain.sum() > 500
+        assert (hit_plain == hit_seeded).mean() > 0.99
+
+        shared = hit_plain & hit_seeded
+        error = np.abs(plain[shared] - seeded[shared]) / 255.0
         assert np.percentile(error, 99) < 0.06
         assert error.mean() < 0.02
 
