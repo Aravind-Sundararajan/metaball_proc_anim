@@ -128,7 +128,7 @@ _R_NAME, _R_CREATURES, _R_ABSTRACT, _R_FILE = 0, 1, 2, 3
 _ROOM_COLUMNS = ("Name", "Creatures", "Abstract", "File")
 
 _D_NAME, _D_AT, _D_TO_ROOM, _D_TO_DOOR, _D_RADIUS, _D_STATUS = range(6)
-_DOOR_COLUMNS = ("Name", "At", "To room", "To door", "Radius", "")
+_DOOR_COLUMNS = ("Name", "At", "Room", "Door", "Radius", "")
 
 
 def _user_edit(handler: Callable[..., None]) -> Callable[..., None]:

@@ -555,9 +555,17 @@ def main(argv: list[str] | None = None) -> int:
     app = ensure_application(argv if argv is not None else sys.argv)
     # The entrypoint dresses the app; the library never does, so tests and
     # embedders meet stock widgets unless they opt in (docs/CHROME.md).
+    from PySide6.QtGui import QIcon
+
     from mesh_xml.editor import theme
 
     theme.apply(app)
+    # Two metaballs mid-blend, drawn by the CPU field itself — the one-glyph
+    # summary of what the app computes. Regenerate with the script recorded
+    # in docs/CHROME.md if the accent ever moves.
+    icon = Path(__file__).parent / "icon.png"
+    if icon.is_file():
+        app.setWindowIcon(QIcon(str(icon)))
 
     window = MainWindow()
     args = (argv if argv is not None else sys.argv)[1:]

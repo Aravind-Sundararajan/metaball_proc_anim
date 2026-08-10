@@ -1,9 +1,14 @@
 # Chrome: the editor wears the viewport's own palette
 
-**Status:** in progress — packages 1 (the skin) and 2 (the toolbar: one
+**Status:** landed — all three packages. 1 the skin, 2 the toolbar (one
 QAction per gesture, shared by menu and toolbar so the surfaces cannot
-drift; Fit Autorig and Rig Legs surfaced at last) landed. 3 (the details)
-open.
+drift; Fit Autorig and Rig Legs surfaced at last), 3 the details, scoped
+by what the survey actually found: the truncated table headers fixed (the
+one real defect — see the QSS comment for why styling that widens text
+after Qt measures it truncates columns), and the app icon added. Panel
+margins and note styling were already one voice — every panel builds from
+the same ``_form``/``_note`` helpers — and toolbar glyphs stay declined:
+the text labels are the teaching surface.
 **Provenance:** user-requested (2026-08-10), after a session of actually
 using the app: "I think you need some ui/ux chrome, like a modern app."
 **North star:** the app already has a visual identity — the render's dark
@@ -57,7 +62,19 @@ whole problem; the content is not.
    icons or glyphs, empty-state text given one voice, the window title and
    an app icon.
 
-## 4. Not in scope
+## 4. The icon
+
+Two metaballs mid-blend, drawn by the CPU field itself — the app's
+one-glyph summary, generated rather than authored so it is literally the
+thing the app computes. To regenerate (after an accent change, say):
+sample ``field.field`` on a 256² grid over [-1, 1]² at ``k = 0.55`` with
+two degenerate records (a 0.42-radius ball at (-0.32, -0.18) and a
+0.3-radius ball at (0.34, 0.26)), alpha from the signed distance smoothed
+over two pixels, and the fill a vertical gradient from the accent lit
+above to its deepened form below. Ships as ``editor/icon.png``;
+``main()`` installs it and quietly skips a missing file.
+
+## 5. Not in scope
 
 A custom frameless title bar (platform pain for chrome's sake). Light
 mode. Animation and transition effects. Redesigning any panel's content or

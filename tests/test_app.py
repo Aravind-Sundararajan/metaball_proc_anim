@@ -95,3 +95,16 @@ class TestToolbar:
         assert window.document.controllers.controllers, (
             "Fit Autorig fits a stack from the menu surface too"
         )
+
+
+class TestIcon:
+    def test_the_icon_asset_ships_and_loads(self):
+        from pathlib import Path
+
+        from PySide6.QtGui import QIcon
+
+        from mesh_xml.editor import app as editor_app
+
+        icon = Path(editor_app.__file__).parent / "icon.png"
+        assert icon.is_file(), "the app icon ships beside the entrypoint"
+        assert not QIcon(str(icon)).isNull()
