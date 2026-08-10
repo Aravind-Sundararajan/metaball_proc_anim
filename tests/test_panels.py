@@ -221,7 +221,7 @@ class TestSurfacePanel:
 
     def test_the_debug_combo_offers_every_mode_and_selects_one(self, document):
         panel = panels.SurfacePanel(document)
-        assert panel._debug.count() == 4
+        assert panel._debug.count() == 5
 
         panel._debug.setCurrentIndex(2)
         assert document.metaball.debug_mode == 2

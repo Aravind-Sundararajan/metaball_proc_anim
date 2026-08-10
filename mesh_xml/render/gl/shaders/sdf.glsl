@@ -71,6 +71,18 @@ float sdf_smooth_min(float a, float b, float k) {
     return mix(b, a, h) - k * h * (1.0 - h);
 }
 
+// The same minimum, also reporting h — the convex weight of `a`. What the
+// albedo fold blends colour by (docs/TEXTURES.md): one h, two folds, so the
+// skin cannot disagree with the flesh about where a blend is. At k == 0 the
+// weight is the step (a <= b) — ties go to the accumulated side — matching
+// core/distance.py's smooth_min_weight exactly. The plain variant above
+// stays untouched because the march calls it and owes nothing to colour.
+float sdf_smooth_min_h(float a, float b, float k, out float h) {
+    if (k <= 0.0) { h = (a <= b) ? 1.0 : 0.0; return min(a, b); }
+    h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return mix(b, a, h) - k * h * (1.0 - h);
+}
+
 float sd_primitive(vec3 p, int index) {
     vec4 head = texelFetch(u_primitives, ivec2(0, index), 0);
     vec4 tail = texelFetch(u_primitives, ivec2(1, index), 0);
@@ -233,6 +245,56 @@ int sd_nearest_group(vec3 p) {
 
 vec3 sd_group_colour(int group) {
     return texelFetch(u_groups, ivec2(1, group), 0).rgb;
+}
+
+// Per-primitive end colours: the skin's counterpart of the primitive texture
+// (docs/TEXTURES.md), one stride-8 row per primitive row on its own unit —
+// [ra_r, ra_g, ra_b, 0][rb_r, rb_g, rb_b, 0], the fourth lanes reserved for
+// the pattern vocabulary. Armed only when the count matches the primitive
+// count; sdf.pack_attributes packs an EMPTY table for a body whose chunks
+// all agree with their group colour, so an unpainted document shades by the
+// flat group colour on the exact code path it always ran — byte-identity by
+// construction, not by numerical luck. Colour folds once at the hit, never
+// in the march: every march acceleration keeps its exactness contract
+// because the thing it protects never reads this table.
+uniform sampler2D u_attributes;
+uniform int   u_attribute_count;
+
+// One primitive's colour at p: end colours lerped by the orthogonal
+// projection fraction along the primitive's own segment — deliberately not
+// the cone maths' three-case parameter, because the projection is smooth,
+// branchless, cheap to mirror in numpy, and equal to it wherever the two
+// could visibly disagree. Degenerate records read their `a` end. CPU twin:
+// field._primitive_albedo.
+vec3 sd_primitive_albedo(vec3 p, int index) {
+    vec4 head = texelFetch(u_primitives, ivec2(0, index), 0);
+    vec4 tail = texelFetch(u_primitives, ivec2(1, index), 0);
+    vec3 ca = texelFetch(u_attributes, ivec2(0, index), 0).rgb;
+    vec3 cb = texelFetch(u_attributes, ivec2(1, index), 0).rgb;
+    vec3 ba = tail.xyz - head.xyz;
+    float l2 = dot(ba, ba);
+    if (l2 < SDF_DEGENERATE_EPSILON2) return ca;
+    float t = clamp(dot(p - head.xyz, ba) / l2, 0.0, 1.0);
+    return mix(ca, cb, t);
+}
+
+// One group's skin at p: the distance fold re-run carrying colour beside it,
+// blended by the h each smooth-min step already computed. Same seed, same
+// array order — those are sd_group's contracts and colour inherits them.
+// CPU twin: field.albedo.
+vec3 sd_group_albedo(vec3 p, int group) {
+    vec4 span = texelFetch(u_groups, ivec2(0, group), 0);
+    int start = int(span.x);
+    int last = start + int(span.y);
+    if (last <= start) return vec3(0.0);
+    float d = sd_primitive(p, start);
+    vec3 colour = sd_primitive_albedo(p, start);
+    for (int i = start + 1; i < last; ++i) {
+        float h;
+        d = sdf_smooth_min_h(d, sd_primitive(p, i), u_blend, h);
+        colour = mix(sd_primitive_albedo(p, i), colour, h);
+    }
+    return colour;
 }
 
 // Central differences on a tetrahedron: four field taps instead of the six a

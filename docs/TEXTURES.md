@@ -1,6 +1,9 @@
 # Textures: a skin that varies, on a surface with no UVs
 
-**Status:** design — no code yet
+**Status:** in progress — package 1 (the weighted skin) landed: colour
+parity holds against the oracle through debug mode 4, and an unpainted
+body packs an empty attribute table, keeping the flat path byte-for-byte.
+2 (paint the selection), 3 (patterns) and 4 (painted exports) open.
 **Provenance:** user-requested (2026-08-07), the first arc after rooms.
 **North star:** Rain World again — creatures read as individuals, and after
 shape and gait the next carrier of individuality is markings: banding,

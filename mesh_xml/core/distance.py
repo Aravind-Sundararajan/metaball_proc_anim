@@ -26,6 +26,7 @@ __all__ = [
     "as_primitives",
     "round_cone",
     "smooth_min",
+    "smooth_min_weight",
 ]
 
 #: Floats per primitive: ``[ax, ay, az, ra, bx, by, bz, rb]``. The radii are
@@ -144,6 +145,31 @@ def smooth_min(a: np.ndarray, b: np.ndarray, k: float) -> np.ndarray:
         return np.minimum(a, b)
     h = np.clip(0.5 + 0.5 * (b - a) / blend, 0.0, 1.0)
     return b + (a - b) * h - blend * h * (1.0 - h)
+
+
+def smooth_min_weight(
+    a: np.ndarray, b: np.ndarray, k: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """:func:`smooth_min`, also returning the convex weight of ``a`` in it.
+
+    The weight is the ``h`` the polynomial form already computes: the fold's
+    gradient is ``h·∇a + (1−h)·∇b``, so ``h`` *is* "how much of ``a`` is
+    here", and anything folded beside the distance — a surface colour
+    (``docs/TEXTURES.md``) — blends by the same number or it disagrees with
+    the flesh about where a blend is. The distance returned is
+    :func:`smooth_min`'s expression term for term, so a caller switching to
+    this variant changes nothing about the field.
+
+    At ``k == 0`` the weight is the step ``a <= b``: ties go to ``a``, which
+    in a fold is the accumulated side — deterministic, and mirrored exactly
+    by the GLSL twin.
+    """
+    blend = as_blend(k)
+    if blend == 0.0:
+        h = np.where(np.asarray(a) <= np.asarray(b), 1.0, 0.0)
+        return np.minimum(a, b), h
+    h = np.clip(0.5 + 0.5 * (b - a) / blend, 0.0, 1.0)
+    return b + (a - b) * h - blend * h * (1.0 - h), h
 
 
 # ----------------------------------------------------------------------

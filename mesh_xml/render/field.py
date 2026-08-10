@@ -81,14 +81,19 @@ from mesh_xml.core.distance import (
     as_primitives as _as_primitives,
 )
 from mesh_xml.core.distance import (
+    DEGENERATE_EPSILON as _DEGENERATE_EPSILON,
+)
+from mesh_xml.core.distance import (
     round_cone,
     smooth_min,
+    smooth_min_weight,
 )
 
 __all__ = [
     "NORMAL_EPSILON",
     "SURFACE_EPSILON",
     "STEP_RELAXATION",
+    "albedo",
     "bounds",
     "field",
     "normal",
@@ -167,6 +172,97 @@ def field(
     if composite is None:
         return np.full(p.shape[:-1], np.inf)
     return composite
+
+
+def albedo(
+    points: np.ndarray,
+    primitives: np.ndarray,
+    attributes: np.ndarray,
+    k: float = 0.0,
+    groups: np.ndarray | None = None,
+) -> np.ndarray:
+    """Surface colour of the blended field at ``points``: ``(..., 3)``.
+
+    The CPU twin of ``sd_group_albedo`` (``docs/TEXTURES.md``): the distance
+    fold re-run carrying colour beside it, each step blending by the weight
+    :func:`~mesh_xml.core.distance.smooth_min_weight` reports — the same
+    ``h`` the distance took, so the skin cannot disagree with the flesh
+    about where a blend is. Within one primitive the two end colours lerp by
+    the orthogonal projection fraction along its own segment. Both fold
+    contracts (array order, seeded with the first primitive) are inherited
+    from :func:`field` and matter for the same reason.
+
+    ``attributes`` is :func:`~mesh_xml.render.sdf.pack_attributes`' table
+    and must pair the primitives row for row; the empty table that function
+    packs for a uniform body is *that caller's* signal to skip the fold
+    entirely, so it is refused here rather than given a meaning. ``groups``
+    selects the winner the way the shading does: the group whose field is
+    least at the point — ``sd_nearest_group``'s answer — colours it.
+
+    Meaningful on the surface, defined everywhere; float64 like every other
+    oracle here.
+    """
+    prims = _as_primitives(primitives)
+    attrs = np.asarray(attributes, dtype=np.float64)
+    if attrs.shape != prims.shape:
+        raise ValueError(
+            f"attributes must pair the primitives row for row: "
+            f"{prims.shape} primitives, {attrs.shape} attributes"
+        )
+    p = _as_points(points)
+    blend = _as_blend(k)
+    if len(prims) == 0:
+        return np.zeros(p.shape)
+    flat = p.reshape(-1, 3)
+
+    def fold(rows: np.ndarray, arows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        d = round_cone(flat, rows[0])
+        colour = _primitive_albedo(flat, rows[0], arows[0])
+        for prim, attr in zip(rows[1:], arows[1:]):
+            d, h = smooth_min_weight(d, round_cone(flat, prim), blend)
+            step = _primitive_albedo(flat, prim, attr)
+            colour = step + (colour - step) * h[:, None]
+        return d, colour
+
+    if groups is None:
+        _, colour = fold(prims, attrs)
+        return colour.reshape(p.shape)
+
+    best_d: np.ndarray | None = None
+    best_c: np.ndarray | None = None
+    for start, count in np.asarray(groups, dtype=np.int64):
+        rows = prims[start : start + count]
+        arows = attrs[start : start + count]
+        if len(rows) == 0:
+            continue
+        d, colour = fold(rows, arows)
+        if best_d is None:
+            best_d, best_c = d, colour
+        else:
+            wins = d < best_d
+            best_d = np.where(wins, d, best_d)
+            best_c = np.where(wins[:, None], colour, best_c)
+    if best_c is None:
+        return np.zeros(p.shape)
+    return best_c.reshape(p.shape)
+
+
+def _primitive_albedo(
+    flat: np.ndarray, prim: np.ndarray, attr: np.ndarray
+) -> np.ndarray:
+    """One primitive's colour at each point: end colours lerped by the
+    orthogonal projection fraction — ``sd_primitive_albedo``'s twin,
+    including the degenerate guard reading the ``a`` end."""
+    a = prim[0:3]
+    b = prim[4:7]
+    ca = attr[0:3]
+    cb = attr[4:7]
+    ba = b - a
+    l2 = float(ba @ ba)
+    if l2 < _DEGENERATE_EPSILON * _DEGENERATE_EPSILON:
+        return np.broadcast_to(ca, (len(flat), 3)).copy()
+    t = np.clip((flat - a) @ ba / l2, 0.0, 1.0)
+    return ca + (cb - ca) * t[:, None]
 
 
 def normal(

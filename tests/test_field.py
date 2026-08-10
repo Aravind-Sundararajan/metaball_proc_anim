@@ -28,8 +28,10 @@ import pytest
 
 from mesh_xml.io import load_legacy
 from mesh_xml.render import sdf
+from mesh_xml.core.distance import smooth_min_weight
 from mesh_xml.render.field import (
     SURFACE_EPSILON,
+    albedo,
     bounds,
     field,
     normal,
@@ -1067,3 +1069,158 @@ class TestBlendGroups:
 
         d = field(point, prims, 0.2, groups=np.array([[0, 1], [1, 0]]))
         assert float(d[0]) == pytest.approx(1.5, abs=1e-6)
+
+
+class TestSmoothMinWeight:
+    """The weight-returning smooth minimum: same value, plus the h the
+    colour fold blends by."""
+
+    def test_the_value_is_smooth_min_bit_for_bit(self):
+        a = np.linspace(-1.0, 1.0, 41)
+        b = 0.3 - a
+        for k in (0.0, 0.05, 0.4):
+            value, h = smooth_min_weight(a, b, k)
+            assert np.array_equal(value, smooth_min(a, b, k))
+            assert ((h >= 0.0) & (h <= 1.0)).all()
+
+    def test_far_apart_the_nearer_side_owns_the_weight(self):
+        value, h = smooth_min_weight(np.array([-5.0]), np.array([5.0]), 0.3)
+        assert float(value[0]) == -5.0 and float(h[0]) == 1.0
+        value, h = smooth_min_weight(np.array([5.0]), np.array([-5.0]), 0.3)
+        assert float(value[0]) == -5.0 and float(h[0]) == 0.0
+
+    def test_k_zero_is_a_step_with_ties_to_a(self):
+        _, h = smooth_min_weight(np.array([1.0]), np.array([1.0]), 0.0)
+        assert float(h[0]) == 1.0, "the accumulated side of a fold wins ties"
+        _, h = smooth_min_weight(np.array([2.0]), np.array([1.0]), 0.0)
+        assert float(h[0]) == 0.0
+
+
+class TestAlbedo:
+    """The colour oracle: the distance fold re-run carrying colour, blended
+    by the same h — sd_group_albedo's float64 twin."""
+
+    @staticmethod
+    def _sphere_row(centre, radius):
+        return [*centre, radius, *centre, radius]
+
+    @staticmethod
+    def _red_blue_cone():
+        prims = np.array([[0.0, 0.0, 0.0, 0.3, 2.0, 0.0, 0.0, 0.3]])
+        attrs = np.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]])
+        return prims, attrs
+
+    def test_uniform_attributes_are_exact(self):
+        """Equal colours make every mix an identity — no float wiggle at all."""
+        prims = np.array(
+            [
+                [0.0, 0.0, 0.0, 0.3, 1.0, 0.0, 0.0, 0.3],
+                [1.0, 0.0, 0.0, 0.3, 2.0, 0.0, 0.0, 0.3],
+            ]
+        )
+        colour = (0.82, 0.55, 0.42)
+        attrs = np.tile([*colour, 0.0], (2, 2)).reshape(2, 8)
+        points = np.stack(
+            np.meshgrid(
+                np.linspace(-0.5, 2.5, 7),
+                np.linspace(-0.6, 0.6, 5),
+                [0.0, 0.31],
+            ),
+            axis=-1,
+        ).reshape(-1, 3)
+
+        out = albedo(points, prims, attrs, 0.25)
+        assert np.array_equal(out, np.broadcast_to(colour, out.shape))
+
+    def test_ends_wear_their_own_colours(self):
+        prims, attrs = self._red_blue_cone()
+        out = albedo(
+            np.array([[0.0, 0.35, 0.0], [2.0, 0.35, 0.0], [1.0, 0.35, 0.0]]),
+            prims,
+            attrs,
+            0.0,
+        )
+        assert out[0] == pytest.approx((1.0, 0.0, 0.0))
+        assert out[1] == pytest.approx((0.0, 0.0, 1.0))
+        assert out[2] == pytest.approx((0.5, 0.0, 0.5))
+
+    def test_the_axial_lerp_clamps_past_the_ends(self):
+        prims, attrs = self._red_blue_cone()
+        out = albedo(np.array([[-3.0, 0.0, 0.0], [5.0, 0.0, 0.0]]), prims, attrs, 0.0)
+        assert out[0] == pytest.approx((1.0, 0.0, 0.0))
+        assert out[1] == pytest.approx((0.0, 0.0, 1.0))
+
+    def test_the_blend_weight_mixes_neighbours(self):
+        prims = np.array(
+            [
+                self._sphere_row((0.0, 0.0, 0.0), 0.3),
+                self._sphere_row((1.0, 0.0, 0.0), 0.3),
+            ]
+        )
+        attrs = np.array(
+            [
+                [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            ]
+        )
+        out = albedo(
+            np.array([[0.5, 0.0, 0.0], [0.02, 0.4, 0.0]]), prims, attrs, 0.5
+        )
+        assert out[0] == pytest.approx((0.5, 0.0, 0.5)), "equidistant is half"
+        assert out[1][0] > 0.9, "beside one sphere its colour dominates"
+
+    def test_k_zero_switches_at_the_nearer_primitive(self):
+        prims = np.array(
+            [
+                self._sphere_row((0.0, 0.0, 0.0), 0.3),
+                self._sphere_row((1.0, 0.0, 0.0), 0.3),
+            ]
+        )
+        attrs = np.array(
+            [
+                [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            ]
+        )
+        out = albedo(
+            np.array([[0.2, 0.0, 0.0], [0.8, 0.0, 0.0], [0.5, 0.0, 0.0]]),
+            prims,
+            attrs,
+            0.0,
+        )
+        assert out[0] == pytest.approx((1.0, 0.0, 0.0))
+        assert out[1] == pytest.approx((0.0, 0.0, 1.0))
+        assert out[2] == pytest.approx((1.0, 0.0, 0.0)), "ties go to the seed"
+
+    def test_groups_pick_the_nearest_creature(self):
+        prims = np.array(
+            [
+                self._sphere_row((0.0, 0.0, 0.0), 0.4),
+                self._sphere_row((5.0, 0.0, 0.0), 0.4),
+            ]
+        )
+        attrs = np.array(
+            [
+                [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            ]
+        )
+        groups = np.array([[0, 1], [1, 1]])
+        out = albedo(
+            np.array([[0.6, 0.0, 0.0], [4.5, 0.0, 0.0]]),
+            prims,
+            attrs,
+            0.3,
+            groups=groups,
+        )
+        assert out[0] == pytest.approx((1.0, 0.0, 0.0))
+        assert out[1] == pytest.approx((0.0, 0.0, 1.0))
+
+    def test_mismatched_attributes_are_refused(self):
+        prims, attrs = self._red_blue_cone()
+        with pytest.raises(ValueError, match="row for row"):
+            albedo(np.zeros((1, 3)), prims, attrs[:0], 0.2)
+
+    def test_empty_primitives_yield_zeros(self):
+        out = albedo(np.zeros((4, 3)), np.zeros((0, 8)), np.zeros((0, 8)), 0.2)
+        assert out.shape == (4, 3) and not out.any()

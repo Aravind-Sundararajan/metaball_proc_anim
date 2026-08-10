@@ -327,3 +327,77 @@ class TestAuthoredColour:
 
         table = sdf.group_table(body)
         assert table[0, 4:7] == pytest.approx((1.0, 0.0, 0.5))
+
+
+class TestPackAttributes:
+    """The weighted skin's table (docs/TEXTURES.md): paired with pack row
+    for row, and empty exactly when the flat path would draw the same
+    picture — that emptiness is what makes "unpainted means unchanged"
+    structural."""
+
+    def test_a_bare_body_packs_empty(self):
+        assert sdf.pack_attributes(chain(3)).shape == (0, 8)
+
+    def test_a_uniformly_painted_creature_packs_empty(self):
+        body = chain(3)
+        for cid in body.chunk_ids():
+            body.meta_of(cid)[sdf.COLOUR_META] = "0.9 0.1 0.1"
+        assert sdf.pack_attributes(body).shape == (0, 8)
+
+    def test_two_colours_arm_the_table(self):
+        body = chain(3)
+        body.meta_of(body.chunk_ids()[0])[sdf.COLOUR_META] = "1 0 0"
+        body.meta_of(body.chunk_ids()[1])[sdf.COLOUR_META] = "0 1 0"
+        rows = sdf.pack_attributes(body)
+        assert rows.shape == (sdf.primitive_count(body), 8)
+
+    def test_rows_pair_the_primitives_end_for_end(self):
+        body = chain(3)
+        by_x = {0.0: (1.0, 0.0, 0.0), 1.0: (0.0, 1.0, 0.0), 2.0: (0.0, 0.0, 1.0)}
+        for i, cid in enumerate(body.chunk_ids()):
+            body.meta_of(cid)[sdf.COLOUR_META] = " ".join(
+                str(v) for v in by_x[float(i)]
+            )
+
+        prims = sdf.pack(body)
+        attrs = sdf.pack_attributes(body)
+        for prim, attr in zip(prims, attrs):
+            assert tuple(attr[0:3]) == by_x[float(prim[0])]
+            assert tuple(attr[4:7]) == by_x[float(prim[4])]
+            assert attr[3] == 0.0 and attr[7] == 0.0, "pattern lanes reserved"
+
+    def test_a_lonely_chunk_wears_its_colour_on_both_ends(self):
+        body = chain(2)
+        body.meta_of(body.chunk_ids()[0])[sdf.COLOUR_META] = "1 0 0"
+        body.meta_of(body.chunk_ids()[1])[sdf.COLOUR_META] = "0 1 0"
+        body.add_chunk("free", [5.0, 0.0, 0.0], radius=0.4, meta={sdf.COLOUR_META: "0 0 1"})
+
+        prims = sdf.pack(body)
+        attrs = sdf.pack_attributes(body)
+        lonely = next(
+            i for i, prim in enumerate(prims) if float(prim[0]) == 5.0
+        )
+        assert tuple(attrs[lonely][0:3]) == (0.0, 0.0, 1.0)
+        assert tuple(attrs[lonely][4:7]) == (0.0, 0.0, 1.0)
+
+    def test_the_fallback_is_the_palette_not_the_flat_colour(self):
+        """Painting a head must not repaint the body through the fallback.
+
+        The flat path colours a whole creature by its first authored chunk;
+        the weighted skin's unpainted chunks fall back to the *palette*
+        colour instead, which is what makes painting one chunk a statement
+        about one chunk.
+        """
+        base = (0.2, 0.4, 0.8)
+        unpainted = chain(3)
+        palette = sdf.group_table(unpainted, base)[0, 4:7]
+
+        body = chain(3)
+        body.meta_of(body.chunk_ids()[2])[sdf.COLOUR_META] = "1 0 0"
+        attrs = sdf.pack_attributes(body, base)
+        assert attrs.shape[0] == 2
+        first_link = attrs[0]
+        assert first_link[0:3] == pytest.approx(palette)
+        assert first_link[4:7] == pytest.approx(palette)
+        second_link = attrs[1]
+        assert second_link[4:7] == pytest.approx((1.0, 0.0, 0.0))

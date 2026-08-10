@@ -114,6 +114,7 @@ _DEBUG_MODES = (
     "1 - normals",
     "2 - packed depth",
     "3 - step count",
+    "4 - albedo",
 )
 
 _AXES = ("X", "Y", "Z")

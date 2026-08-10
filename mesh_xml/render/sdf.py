@@ -52,6 +52,7 @@ __all__ = [
     "group_bounds",
     "group_table",
     "pack",
+    "pack_attributes",
     "primitive_count",
 ]
 
@@ -196,16 +197,110 @@ def group_table(
     out[:, 1] = counts
 
     labels = _component_labels(body)
-    hue, saturation, value = colorsys.rgb_to_hsv(*base_colour)
     for group in range(len(counts)):
         authored = _authored_colour(body, np.nonzero(labels == group)[0])
-        if authored is not None:
-            out[group, 4:7] = authored
-            continue
-        out[group, 4:7] = colorsys.hsv_to_rgb(
-            (hue + group * _GOLDEN_HUE) % 1.0, saturation, value
+        out[group, 4:7] = (
+            authored
+            if authored is not None
+            else _palette_colour(base_colour, group)
         )
     return out
+
+
+def pack_attributes(
+    body: Body,
+    base_colour: tuple[float, float, float] = (0.82, 0.55, 0.42),
+) -> np.ndarray:
+    """Per-primitive end colours: ``(P, 8) float32``, row *i* skinning
+    :func:`pack` row *i*.
+
+    The weighted skin's data (``docs/TEXTURES.md``): each record carries its
+    primitive's two end colours — ``[ra_r, ra_g, ra_b, 0, rb_r, rb_g,
+    rb_b, 0]``, fourth lanes reserved for the pattern vocabulary — built in
+    :func:`pack`'s own row order and sorted by the same stable key, so the
+    two tables pair by construction whatever the topology. A chunk's colour
+    is its own parseable :data:`COLOUR_META`, falling back to its group's
+    *palette* colour — the golden-angle hue by group index, deliberately not
+    the flat path's authored-first group colour, so painting one chunk of a
+    creature does not silently repaint the rest through the fallback.
+
+    **A body whose skin would look exactly like the flat path packs to an
+    empty ``(0, 8)`` table.** That is the contract that makes "unpainted
+    means unchanged" structural rather than numerical: with nothing
+    uploaded the shader shades by the flat group colour on the code path it
+    always ran, and no colour fold can wiggle a uniform document by even a
+    ulp of float arithmetic.
+    """
+    count = primitive_count(body)
+    if count == 0:
+        return np.zeros((0, PRIMITIVE_STRIDE), dtype=np.float32)
+
+    labels = _component_labels(body)
+    n_groups = int(labels.max()) + 1
+
+    flat = np.zeros((n_groups, 3), dtype=np.float32)
+    palette = np.zeros((n_groups, 3), dtype=np.float32)
+    for group in range(n_groups):
+        palette[group] = _palette_colour(base_colour, group)
+        authored = _authored_colour(body, np.nonzero(labels == group)[0])
+        flat[group] = authored if authored is not None else palette[group]
+
+    per_slot = np.zeros((body.n_chunks, 3), dtype=np.float32)
+    for slot in range(body.n_chunks):
+        own = _chunk_colour(body, slot)
+        per_slot[slot] = own if own is not None else palette[labels[slot]]
+
+    if np.array_equal(per_slot, flat[labels]):
+        return np.zeros((0, PRIMITIVE_STRIDE), dtype=np.float32)
+
+    out = np.zeros((count, PRIMITIVE_STRIDE), dtype=np.float32)
+    rendered = body.link_render
+    n_rendered = int(rendered.sum())
+    if n_rendered:
+        out[:n_rendered, 0:3] = per_slot[body.link_a[rendered]]
+        out[:n_rendered, 4:7] = per_slot[body.link_b[rendered]]
+
+    linked = set()
+    for link in body.links():
+        if not link.render:
+            continue
+        linked.add(body.slot(link.a))
+        linked.add(body.slot(link.b))
+    row = n_rendered
+    for slot in range(body.n_chunks):
+        if slot in linked:
+            continue
+        out[row, 0:3] = per_slot[slot]
+        out[row, 4:7] = per_slot[slot]
+        row += 1
+
+    return out[np.argsort(_row_groups(body), kind="stable")]
+
+
+def _palette_colour(
+    base_colour: tuple[float, float, float], group: int
+) -> tuple[float, float, float]:
+    """Group ``n``'s automatic colour: the base hue walked ``n`` golden steps."""
+    hue, saturation, value = colorsys.rgb_to_hsv(*base_colour)
+    return colorsys.hsv_to_rgb(
+        (hue + group * _GOLDEN_HUE) % 1.0, saturation, value
+    )
+
+
+def _chunk_colour(body: Body, slot: int) -> tuple[float, float, float] | None:
+    """One chunk's authored colour, or ``None`` — the single parse both the
+    flat path and the weighted skin read, so they cannot disagree on what a
+    meta string means."""
+    raw = body.meta_of(body.id_at(int(slot))).get(COLOUR_META)
+    if not raw:
+        return None
+    try:
+        parts = [float(part) for part in str(raw).split()]
+    except ValueError:
+        return None
+    if len(parts) == 3:
+        return tuple(min(max(part, 0.0), 1.0) for part in parts)
+    return None
 
 
 def _authored_colour(
@@ -213,15 +308,9 @@ def _authored_colour(
 ) -> tuple[float, float, float] | None:
     """The component's authored colour, or ``None`` for the palette."""
     for slot in slots:
-        raw = body.meta_of(body.id_at(int(slot))).get(COLOUR_META)
-        if not raw:
-            continue
-        try:
-            parts = [float(part) for part in str(raw).split()]
-        except ValueError:
-            continue
-        if len(parts) == 3:
-            return tuple(min(max(part, 0.0), 1.0) for part in parts)
+        colour = _chunk_colour(body, int(slot))
+        if colour is not None:
+            return colour
     return None
 
 

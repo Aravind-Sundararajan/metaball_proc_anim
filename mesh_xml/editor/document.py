@@ -984,6 +984,16 @@ class Document(QObject):
         """
         return sdf.group_table(self.body, self.metaball.surface_colour)
 
+    def attribute_rows(self) -> np.ndarray:
+        """Per-primitive end colours — the weighted skin's table.
+
+        Empty when nothing varies, which is
+        :func:`~mesh_xml.render.sdf.pack_attributes`' contract: an
+        unpainted document uploads no attributes and shades by the flat
+        group colour on the code path it always ran, bit for bit.
+        """
+        return sdf.pack_attributes(self.body, self.metaball.surface_colour)
+
     # ------------------------------------------------------------------
     # the world
     # ------------------------------------------------------------------

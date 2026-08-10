@@ -95,6 +95,9 @@ BOUNDS_TEXTURE_UNIT = 3
 #: Texture unit the per-tile group masks are bound to.
 TILE_TEXTURE_UNIT = 4
 
+#: Texture unit the per-primitive albedo table is bound to.
+ATTRIBUTE_TEXTURE_UNIT = 5
+
 
 @dataclass
 class MetaballSettings:
@@ -154,6 +157,11 @@ class MetaballSettings:
             # state* — no fetch has to execute for a conformant driver to
             # refuse the draw. A sampler aimed at an unbound unit is legal.
             "u_tiles": TILE_TEXTURE_UNIT,
+            # Float sampler, so unit 0 would be legal — pointed at its own
+            # unit anyway, with the count that keeps the fold disarmed, so a
+            # view that never uploads attributes states its whole contract.
+            "u_attributes": ATTRIBUTE_TEXTURE_UNIT,
+            "u_attribute_count": 0,
         }
 
 
@@ -356,6 +364,28 @@ class BoundsTexture(PrimitiveTexture):
         return {
             "u_group_bounds": self._unit,
             "u_group_bounds_count": int(self.count),
+        }
+
+
+@dataclass
+class AttributeTexture(PrimitiveTexture):
+    """Per-primitive end colours, on their own unit — the weighted skin's data.
+
+    :func:`mesh_xml.render.sdf.pack_attributes` emits the same stride-8 rows
+    as the primitives — ``[ra_r, ra_g, ra_b, 0][rb_r, rb_g, rb_b, 0]`` — so
+    this is the group table's trick again: a :class:`PrimitiveTexture` with
+    different uniform names. The count doubles as the arming switch: the
+    shader folds colour only when it equals the primitive count, so the
+    empty table a uniform body packs to leaves the flat path running
+    bit-for-bit (``docs/TEXTURES.md``).
+    """
+
+    _unit: int = dataclass_field(default=ATTRIBUTE_TEXTURE_UNIT, repr=False)
+
+    def uniforms(self) -> dict[str, object]:
+        return {
+            "u_attributes": self._unit,
+            "u_attribute_count": int(self.count),
         }
 
 
