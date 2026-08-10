@@ -1,7 +1,8 @@
 # The editor scene binding: one document, re-pointed
 
-**Status:** design — answers the constraints `docs/ROOMS.md` package 6 named;
-no code yet
+**Status:** in progress — packages 1 (doors through open and save) and 2
+(the scene on the document) landed, the null result held: the full suite
+passes unchanged. 3 (rooms dock), 4 (doors section) and 5 (manifest) open.
 **Arc:** the last rooms package. Packages 1–5 built the simulation side;
 this is the editor's half.
 **North star:** the viewport switches rooms the way Rain World's camera

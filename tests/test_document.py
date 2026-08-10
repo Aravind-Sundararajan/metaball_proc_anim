@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from mesh_xml.core import Body, LinkType
+from mesh_xml.scene.door import Door
 from mesh_xml.editor.document import (
     AddChunk,
     AddLink,
@@ -425,6 +426,34 @@ class TestFiles:
     def test_title_marks_unsaved_changes(self, document):
         document.do(SetRadius(ids_of(document)[0], 0.4))
         assert document.title.startswith("*")
+
+    def test_doors_survive_a_save(self, document, tmp_path):
+        """The room's exits ride the file; an editor session must not strip them."""
+        door = Door("east", (4.0, 0.5, 0.0), to_room="meadow", to_door="west")
+        document.room.doors = [door]
+        path = tmp_path / "den.xml"
+        document.save(path)
+
+        reopened = Document()
+        reopened.open(path)
+        assert reopened.room.doors == [door]
+
+    def test_a_doorless_file_clears_previous_doors(self, document, tmp_path):
+        """An exit into the old file's world is a promise the new one never made."""
+        path = tmp_path / "plain.xml"
+        document.save(path)
+        document.room.doors = [
+            Door("east", (0.0, 0.0, 0.0), to_room="meadow", to_door="west")
+        ]
+        document.open(path)
+        assert document.room.doors == []
+
+    def test_new_clears_doors(self, document):
+        document.room.doors = [
+            Door("east", (0.0, 0.0, 0.0), to_room="meadow", to_door="west")
+        ]
+        document.new()
+        assert document.room.doors == []
 
 
 class TestControllerCommands:

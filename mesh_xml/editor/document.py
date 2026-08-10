@@ -20,6 +20,7 @@ tweaking this tool exists for impossible.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
@@ -35,7 +36,9 @@ from mesh_xml.core.terrain import Terrain
 from mesh_xml.io import xml_legacy, xml_v2
 from mesh_xml.render import DrawPoints, sdf
 from mesh_xml.render.gl.metaball import MetaballSettings
+from mesh_xml.scene.door import Door
 from mesh_xml.scene.room import Room
+from mesh_xml.scene.scene import Scene
 
 __all__ = [
     "Command",
@@ -414,8 +417,31 @@ _CONTROLLER = (
 )
 
 
+@dataclass
+class _RoomState:
+    """What the editor keeps per room that the room must not carry itself.
+
+    A :class:`~mesh_xml.scene.room.Room` is Qt-free and editor-free — the
+    package-2 firewall a test stands on — so everything the *editor* holds
+    per room lives here instead, keyed by room on the document. One record
+    is one room's editing session: the easing springs with their per-point
+    tuning, the pose Reset returns to, the selection, an undo history that
+    structurally cannot contain another room's commands, the file this room
+    is, and the surface look (session-only — v3 does not carry it).
+    """
+
+    draw: DrawPoints
+    metaball: MetaballSettings
+    rest_pose: dict[int, tuple[float, ...]] = field(default_factory=dict)
+    selection: set[int] = field(default_factory=set)
+    undo: list[Command] = field(default_factory=list)
+    redo: list[Command] = field(default_factory=list)
+    path: Path | None = None
+    dirty: bool = False
+
+
 class Document(QObject):
-    """Owns the rig, the simulation state, and the undo stack."""
+    """Owns the scene, the simulation state, and the per-room undo stacks."""
 
     body_replaced = Signal()
     topology_changed = Signal()
@@ -431,27 +457,41 @@ class Document(QObject):
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        #: The simulation this document edits. A document *is* one room
-        #: wearing undo, signals and a file path (``docs/ROOMS.md`` package
-        #: 2); everything the solver needs lives there, everything only an
-        #: editor needs lives here, and the properties below keep the
-        #: existing vocabulary (``document.body``, ``document.controllers``)
-        #: pointing at the room's own state.
-        self.room = Room(name="document")
-        self.metaball = MetaballSettings()
-        self.draw = DrawPoints(self.body)
-        self.selection: set[int] = set()
-        self.path: Path | None = None
-
+        #: The scene this document edits: rooms in the plural, one clock
+        #: between them (``docs/ROOMS.md`` package 6). A fresh document is a
+        #: scene of one room — the null case that must stay bit-for-bit the
+        #: old editor. A document *is still* one room at a time: ``room`` is
+        #: the active one, drawn by the viewport and addressed by every
+        #: panel, and the properties below keep the existing vocabulary
+        #: (``document.body``, ``document.selection``) pointing at its
+        #: state — so to a panel, a room switch is indistinguishable from
+        #: opening a file.
+        self.scene = Scene()
+        self._room = self.scene.add_room(Room(name="document"))
+        #: Editor state per room, keyed by the room it describes. The room
+        #: stays Qt-free and editor-free — the package-2 firewall — so undo
+        #: histories, draw springs, rest poses and file paths live here, on
+        #: the document's side of the wall. Rooms enter through
+        #: :meth:`add_room`, which is what keeps this table total.
+        self._states: dict[Room, _RoomState] = {
+            self._room: _RoomState(
+                draw=DrawPoints(self._room.body), metaball=MetaballSettings()
+            )
+        }
         self._running = False
-        self._dirty = False
-        self._undo: list[Command] = []
-        self._redo: list[Command] = []
-        self._rest_pose: dict[int, tuple[float, ...]] = {}
 
     # ------------------------------------------------------------------
-    # the room's state, in the document's vocabulary
+    # the active room's state, in the document's vocabulary
     # ------------------------------------------------------------------
+
+    @property
+    def room(self) -> Room:
+        """The active room: what the viewport draws and every panel edits."""
+        return self._room
+
+    @property
+    def _state(self) -> _RoomState:
+        return self._states[self._room]
 
     @property
     def body(self) -> Body:
@@ -479,7 +519,110 @@ class Document(QObject):
 
     @property
     def clock(self) -> Clock:
+        """The clock — the scene's, whichever room is active.
+
+        :meth:`Scene.add_room` aliases one clock into every room, so this
+        property cannot show a per-room clock: no such object exists. The
+        transport's ticks, dropped and alpha are scene-level truths by
+        construction.
+        """
         return self.room.clock
+
+    @property
+    def draw(self) -> DrawPoints:
+        return self._state.draw
+
+    @draw.setter
+    def draw(self, draw: DrawPoints) -> None:
+        self._state.draw = draw
+
+    @property
+    def metaball(self) -> MetaballSettings:
+        return self._state.metaball
+
+    @property
+    def selection(self) -> set[int]:
+        return self._state.selection
+
+    @selection.setter
+    def selection(self, chunk_ids) -> None:
+        self._state.selection = set(chunk_ids)
+
+    @property
+    def path(self) -> Path | None:
+        return self._state.path
+
+    @path.setter
+    def path(self, path: Path | None) -> None:
+        self._state.path = path
+
+    @property
+    def _undo(self) -> list[Command]:
+        return self._state.undo
+
+    @property
+    def _redo(self) -> list[Command]:
+        return self._state.redo
+
+    # ------------------------------------------------------------------
+    # rooms
+    # ------------------------------------------------------------------
+
+    def add_room(self, room: Room) -> Room:
+        """Adopt a room into the scene, with fresh editor state beside it.
+
+        The one way in. :meth:`Scene.add_room` wires the shared clock and
+        refuses duplicate names; this wraps it so every room the scene holds
+        has an entry in the editor's table — switching, pose capture and
+        save-all iterate that table and never guess.
+        """
+        self.scene.add_room(room)
+        self._states[room] = _RoomState(
+            draw=DrawPoints(room.body),
+            metaball=MetaballSettings(),
+            rest_pose={
+                cid: room.body.chunk(cid).pos for cid in room.body.chunk_ids()
+            },
+        )
+        return room
+
+    def set_active_room(self, room: Room) -> None:
+        """Point the editor at ``room`` — the cut.
+
+        To every panel this is File > Open: body, controllers, solver
+        config, terrain, selection, history and dirty flag all change at
+        once, so the emission suite is :meth:`_replace`'s plus the signals
+        open never needed because it resets what a switch restores
+        (``settings_changed``, ``terrain_changed``, ``dirty_changed``).
+
+        Rooms tick while inactive — creatures cross, abstraction parks
+        chunks — so the stashed selection is pruned against the body as it
+        stands now, and the draw points snap to it rather than easing:
+        animating across a cut would be a camera transition the cut exists
+        to not have.
+        """
+        if room is self._room:
+            return
+        if room not in self._states:
+            raise ValueError(
+                f"room {room.name!r} is not in this document's scene; "
+                "add it with add_room first"
+            )
+        self._room = room
+        state = self._states[room]
+        state.selection = {
+            cid for cid in state.selection if room.body.has_chunk(cid)
+        }
+        state.draw.snap(room.body)
+        self.body_replaced.emit()
+        self.topology_changed.emit()
+        self.selection_changed.emit()
+        self.controllers_changed.emit()
+        self.history_changed.emit()
+        self.settings_changed.emit()
+        self.terrain_changed.emit()
+        self.dirty_changed.emit(state.dirty)
+        self.status.emit(f"Room {room.name}")
 
     # ------------------------------------------------------------------
     # simulation
@@ -502,12 +645,29 @@ class Document(QObject):
         self.running_changed.emit(running)
 
     def capture_rest_pose(self) -> None:
-        """Remember where things are, so :meth:`reset_pose` can come back here."""
-        self._rest_pose = {cid: self.body.chunk(cid).pos for cid in self.body.chunk_ids()}
+        """Remember where things are, so :meth:`reset_pose` can come back here.
+
+        Captured for every realized room, not only the active one: pause is
+        scene-wide, and a room visited *after* the pause still owes Reset an
+        answer. An abstracted room has nothing worth remembering — one
+        parked anchor per creature — and recaptures when it realizes.
+        """
+        for room, state in self._states.items():
+            if room.abstracted:
+                continue
+            state.rest_pose = {
+                cid: room.body.chunk(cid).pos for cid in room.body.chunk_ids()
+            }
 
     def reset_pose(self) -> None:
-        """Return every chunk to the captured rest pose and drop all motion."""
-        for chunk_id, pos in self._rest_pose.items():
+        """Return the active room to the captured rest pose and drop all motion.
+
+        The active room only: Reset is a statement about what is on screen.
+        What it deliberately cannot do is un-cross a creature that changed
+        rooms during play — a door is a serialization boundary, and the
+        ``has_chunk`` guard below makes the miss silent and honest.
+        """
+        for chunk_id, pos in self._state.rest_pose.items():
             if self.body.has_chunk(chunk_id):
                 self.body.set_pos(chunk_id, pos)
         self.draw.snap(self.body)
@@ -516,15 +676,17 @@ class Document(QObject):
         self.topology_changed.emit()
 
     def tick(self) -> None:
-        """One fixed simulation tick, plus the editor's own per-tick work.
+        """One fixed step of the whole scene, plus the editor's per-tick work.
 
-        What a tick *is* lives in :meth:`Room.tick` — the room simulates
-        whether or not an editor is attached. What belongs here is only what
-        a window adds on top: easing the draw points that trail the physics.
-        Both :meth:`advance` and :meth:`step_once` route through this, so
-        the controllers run on both paths.
+        What a tick *is* lives in :meth:`Scene.tick` — every room, looked at
+        or not, then the door crossings the step earned. What belongs here
+        is only what a window adds on top: easing the draw points that
+        trail the *active* room's physics. Both :meth:`advance` and
+        :meth:`step_once` route through this, so the controllers run on
+        both paths — and a paused author single-stepping a crossing gets to
+        watch it happen.
         """
-        self.room.tick()
+        self.scene.tick()
         self.draw.update(self.body)
 
     def step_once(self) -> None:
@@ -608,14 +770,23 @@ class Document(QObject):
     # ------------------------------------------------------------------
 
     def do(self, command: Command) -> None:
-        """Apply a command and push it onto the undo stack."""
+        """Apply a command and push it onto the active room's history.
+
+        Refused while the room is abstracted: its creatures are parked
+        data, and a command landing on the anchors-only body could orphan
+        what :meth:`Room.realize` expects to find. Abstraction is a
+        simulation state, not an edit state.
+        """
+        if self.room.abstracted:
+            self.status.emit(f"Realize {self.room.name!r} to edit it")
+            return
         command.apply(self)
         self._undo.append(command)
         self._redo.clear()
         self._after_edit(command)
 
     def undo(self) -> None:
-        if not self._undo:
+        if not self.can_undo:
             return
         command = self._undo.pop()
         command.revert(self)
@@ -624,7 +795,7 @@ class Document(QObject):
         self.status.emit(f"Undo {command.text}")
 
     def redo(self) -> None:
-        if not self._redo:
+        if not self.can_redo:
             return
         command = self._redo.pop()
         command.apply(self)
@@ -634,11 +805,17 @@ class Document(QObject):
 
     @property
     def can_undo(self) -> bool:
-        return bool(self._undo)
+        """Whether Undo has anywhere to go.
+
+        Histories sleep while their room is abstracted: ids survive the
+        abstract/realize round trip, but a dormant command's targets are
+        parked data until then, and reverting into them would raise.
+        """
+        return bool(self._undo) and not self.room.abstracted
 
     @property
     def can_redo(self) -> bool:
-        return bool(self._redo)
+        return bool(self._redo) and not self.room.abstracted
 
     @property
     def undo_text(self) -> str:
@@ -1153,16 +1330,23 @@ class Document(QObject):
 
     @property
     def dirty(self) -> bool:
-        return self._dirty
+        """Whether the *active room* has unsaved changes. A room is a file."""
+        return self._state.dirty
 
     def set_dirty(self, dirty: bool) -> None:
-        if dirty != self._dirty:
-            self._dirty = dirty
+        if dirty != self._state.dirty:
+            self._state.dirty = dirty
             self.dirty_changed.emit(dirty)
+
+    @property
+    def any_dirty(self) -> bool:
+        """Whether any room in the scene has unsaved changes — the close prompt's question."""
+        return any(state.dirty for state in self._states.values())
 
     def new(self) -> None:
         self._replace(Body(), None)
         self.set_terrain(None)
+        self.room.doors = []
         self.status.emit("New rig")
 
     def open(self, path) -> None:
@@ -1170,10 +1354,12 @@ class Document(QObject):
         path = Path(path)
         controllers: ControllerStack | None = None
         terrain: Terrain | None = None
+        doors: Sequence[Door] = ()
         try:
             rig = xml_v2.read(path)
             controllers = rig.controllers
             terrain = rig.terrain
+            doors = rig.doors
             body = rig.body
             driven = len(controllers.controllers)
             note = f"Opened {path.name}"
@@ -1185,7 +1371,9 @@ class Document(QObject):
             note = f"Opened {path.name} (legacy, {result.coords} coordinates)"
             if result.missing_mesh:
                 note += f"; {len(result.missing_mesh)} bone(s) had no mesh"
-        self.adopt(body, controllers=controllers, path=path, terrain=terrain)
+        self.adopt(
+            body, controllers=controllers, path=path, terrain=terrain, doors=doors
+        )
         self.status.emit(note)
 
     def adopt(
@@ -1194,6 +1382,7 @@ class Document(QObject):
         controllers: ControllerStack | None = None,
         path=None,
         terrain: Terrain | None = None,
+        doors: Sequence[Door] = (),
     ) -> None:
         """Take over a rig, optionally with the gait driving it and its world.
 
@@ -1206,39 +1395,52 @@ class Document(QObject):
         for the same reason :meth:`_replace` drops the old controllers: what a
         previous document stood on means nothing to this one, and a stale
         floor under a fresh rig would be drawn and collided with silently.
+        ``doors`` defaults to none on the same terms — an exit into the old
+        file's world is a promise the new one never made.
         """
         self._replace(body, Path(path) if path else None)
         if controllers is not None:
             self.controllers = controllers
             self.controllers_changed.emit()
         self.set_terrain(terrain)
+        self.room.doors = list(doors)
 
     def save(self, path) -> None:
-        """Write the body, its gait, *and* its world.
+        """Write the body, its gait, its world, *and* its doors.
 
         Passing the controllers is the whole point of the v3 format: without it
         a save keeps the skeleton and silently discards everything that made it
         move. The terrain rides along on the same reasoning — a creature saved
-        without its world reloads standing on nothing.
+        without its world reloads standing on nothing — and the doors on the
+        same again: a room saved without its exits reloads as a dead end.
         """
         path = Path(path)
-        xml_v2.save(self.body, path, self.controllers, terrain=self.terrain)
+        xml_v2.save(
+            self.body,
+            path,
+            self.controllers,
+            terrain=self.terrain,
+            doors=tuple(self.room.doors),
+        )
         self.path = path
         self.set_dirty(False)
         self.status.emit(f"Saved {path.name}")
 
     def _replace(self, body: Body, path: Path | None) -> None:
+        state = self._state
         self.body = body
-        self.path = path
-        self.draw = DrawPoints(body)
+        state.path = path
+        state.draw = DrawPoints(body)
         # Controllers hold chunk ids, and ids from the previous rig mean nothing
         # in this one; carrying them over would silently drive the wrong chunks.
         self.controllers = ControllerStack(body)
         self.clock.reset()
-        self.selection.clear()
-        self._undo.clear()
-        self._redo.clear()
-        self.capture_rest_pose()
+        state.selection.clear()
+        state.undo.clear()
+        state.redo.clear()
+        # The active room's pose only: opening a file into this room says
+        # nothing about where the others should return to.
+        state.rest_pose = {cid: body.chunk(cid).pos for cid in body.chunk_ids()}
         self.set_dirty(False)
         self.body_replaced.emit()
         self.topology_changed.emit()
@@ -1249,4 +1451,4 @@ class Document(QObject):
     @property
     def title(self) -> str:
         name = self.path.name if self.path else "Untitled"
-        return f"{'*' if self._dirty else ''}{name} — mesh_xml"
+        return f"{'*' if self.dirty else ''}{name} — mesh_xml"
