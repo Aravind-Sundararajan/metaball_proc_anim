@@ -2,7 +2,8 @@
 
 **Status:** in progress — packages 1 (creature roster), 2 (headless room),
 3 (scene + transfer), 4 (abstraction) and 5 (doors) landed; 6 (the editor
-scene binding) open.
+scene binding) open, its design pass done — `docs/SCENE_BINDING.md` answers
+the constraints below and splits the work into five packages.
 **Date:** 2026-08-07
 **North star:** Rain World's world model — `Room` as the unit of simulation,
 `AbstractRoom`/`AbstractCreature` as the cheap tier behind it, creatures that
