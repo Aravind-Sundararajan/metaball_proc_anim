@@ -258,6 +258,16 @@ class TestSurfacePanel:
             "the creature-wide button reaches the whole component"
         )
 
+    def test_the_pattern_row_explains_its_own_greyness(self, document):
+        """A disabled combo reads as an empty one — found by a user asking
+        exactly that. The row says why it is grey, and stops saying it the
+        moment the reason is gone."""
+        panel = panels.SurfacePanel(document)
+        assert "selected creature" in panel._pattern_scope.text()
+
+        document.set_selection(document.body.chunk_ids()[:1])
+        assert panel._pattern_scope.text() == ""
+
     def test_the_pattern_combo_routes_and_reads_back(self, document):
         panel = panels.SurfacePanel(document)
         ids = document.body.chunk_ids()
