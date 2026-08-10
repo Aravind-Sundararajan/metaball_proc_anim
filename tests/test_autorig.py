@@ -406,3 +406,32 @@ class TestRiggedWalkActuallyWalks:
         )
         assert travelled > 3.0, f"only travelled {travelled:.2f} along its drive"
         assert spine_height > 0.7, f"trunk sagged to {spine_height:.2f}"
+
+
+class TestShippedQuadruped:
+    def test_the_example_opens_and_walks_cold(self):
+        """``examples/quadruped.xml`` is the answer to "how do I make a
+        legged creature": open it, press Play, it walks. The file must keep
+        that promise from a cold start — the fitted stack, the hip truss,
+        the unpinning and the countershaded skin all riding one ordinary v3
+        document, at the solver's *default* settings, because SolverConfig
+        does not persist and an example that only walks at a hand-tuned
+        iteration count reads as a broken app."""
+        from mesh_xml.io import xml_v2
+        from mesh_xml.scene.room import Room
+
+        rig = xml_v2.read("examples/quadruped.xml")
+        room = Room(name="quadruped")
+        room.body = rig.body
+        room.controllers = rig.controllers
+
+        start = room.body.pos.mean(axis=0).copy()
+        for _ in range(1000):
+            room.tick()
+
+        assert np.isfinite(room.body.pos).all()
+        moved = np.asarray(room.body.pos.mean(axis=0) - start, dtype=float)
+        travelled = float(np.linalg.norm(moved[[0, 2]]))
+        assert travelled > 1.5, f"the shipped quadruped walked {travelled:.2f}"
+        height = float(room.body.pos[:, 1].mean())
+        assert height > 0.55, f"it sagged to {height:.2f}"
