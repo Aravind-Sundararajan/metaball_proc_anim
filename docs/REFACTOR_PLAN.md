@@ -636,6 +636,27 @@ Landed after Phase 5, in one fan-out:
   additive ``<scene>`` manifest records the assembly, so a two-room world
   with a door pair round-trips whole from a cold start and the grazer
   still crosses on arrival.
+* **The textures arc** (``docs/TEXTURES.md``, the first arc under the
+  branch-per-arc discipline). A skin that varies, on a surface with no
+  UVs: per-primitive end colours fold beside distance using the smooth
+  minimum's own ``h`` — one weight, two folds, so the skin cannot disagree
+  with the flesh about where a blend is — evaluated once per pixel at the
+  hit, never in the march, so every march acceleration keeps its exactness
+  contract untouched. ``pack_attributes`` packs an *empty* table for any
+  body that would render as the flat path, which makes "unpainted means
+  unchanged" structural rather than numerical — undoing a paint restores
+  the live viewport frame byte for byte — and unpainted chunks fall back
+  to the palette rather than the authored-first group colour, so painting
+  a head is a statement about a head. The pattern vocabulary is
+  axisymmetric because the link's own segment is the only stable frame a
+  point-chunk body offers: stripes band along each link (rings around a
+  limb are the same thing), countershade keys on the radial direction's
+  world-y, and gradients were already owned by per-chunk colours. Colour
+  joined depth in the numeric parity harness — debug mode 4 writes raw
+  albedo, ``field.albedo`` is the float64 twin, patterns included — and a
+  painted, patterned creature exports as OBJ vertex colours evaluated by
+  the same fold the viewport shades by, so Blender receives the animal
+  wearing its skin.
 * **Controllers in the GUI, and grabs that win.** A Controllers panel: one
   group per controller on the stack, an enabled switch, spins for every
   numeric field the v3 registry persists — the widget list *is* the format's

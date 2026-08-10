@@ -59,6 +59,7 @@ def write_obj(
     vertices: np.ndarray,
     faces: np.ndarray,
     normals: np.ndarray | None = None,
+    colours: np.ndarray | None = None,
 ) -> Path:
     """Write Wavefront OBJ. Returns the path written.
 
@@ -68,17 +69,32 @@ def write_obj(
     never ``a/vt/vn`` with an empty texture slot, which older loaders read as a
     missing coordinate rather than an omitted one.
 
+    ``colours``, when given, is one RGB triple per vertex and each ``v`` line
+    grows to ``v x y z r g b`` — the widely read extension (Blender, MeshLab)
+    rather than a sidecar material, because a painted skin is per-vertex data
+    and not a material. Values are clamped to the extension's [0, 1] domain.
+    Omitted, the file is byte-identical to what this writer always produced —
+    an unpainted export stays unchanged.
+
     OBJ indices are one-based, which is the single most common way a hand-rolled
     writer produces a mesh that opens with one corner of every triangle wrong.
     """
     v, f, n = _geometry(vertices, faces, normals)
+    c = _vertex_colours(colours, v)
     out = Path(path)
 
     number = f"%.{OBJ_PRECISION}g"
     with out.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(f"# {len(v)} vertices, {len(f)} faces\n")
         if len(v):
-            np.savetxt(handle, v, fmt=f"v {number} {number} {number}")
+            if c is None:
+                np.savetxt(handle, v, fmt=f"v {number} {number} {number}")
+            else:
+                np.savetxt(
+                    handle,
+                    np.hstack((v, c)),
+                    fmt=f"v {number} {number} {number} {number} {number} {number}",
+                )
         if n is not None and len(n):
             np.savetxt(handle, n, fmt=f"vn {number} {number} {number}")
         if len(f):
@@ -95,6 +111,7 @@ def write_stl(
     vertices: np.ndarray,
     faces: np.ndarray,
     normals: np.ndarray | None = None,
+    colours: np.ndarray | None = None,
 ) -> Path:
     """Write binary STL. Returns the path written.
 
@@ -103,6 +120,9 @@ def write_stl(
     it does have is derived from the winding here rather than from an average
     that could contradict it. A facet with no area gets the zero normal, which
     is the format's own convention for "work it out yourself".
+    ``colours`` is accepted and ignored on the same terms — the format has no
+    honest colour (the attribute short has vendor readings, none standard), so
+    a painted export prints its geometry and keeps its skin for OBJ.
 
     Binary rather than ASCII: an ASCII STL of the same mesh is roughly five
     times the size and parses slower, and nothing gains from being able to read
@@ -134,13 +154,14 @@ def write_mesh(
     vertices: np.ndarray,
     faces: np.ndarray,
     normals: np.ndarray | None = None,
+    colours: np.ndarray | None = None,
 ) -> Path:
     """Dispatch to :func:`write_obj` or :func:`write_stl` on the suffix."""
     out = Path(path)
     writer = {".obj": write_obj, ".stl": write_stl}.get(out.suffix.lower())
     if writer is None:
         raise ValueError(f"no writer for '{out.suffix}'; expected .obj or .stl")
-    return writer(out, vertices, faces, normals)
+    return writer(out, vertices, faces, normals, colours)
 
 
 def _geometry(
@@ -167,3 +188,17 @@ def _geometry(
             f"normals must have one per vertex, got {n.shape} for {v.shape}"
         )
     return v, f, n
+
+
+def _vertex_colours(
+    colours: np.ndarray | None, v: np.ndarray
+) -> np.ndarray | None:
+    """One RGB per vertex, clamped to the OBJ extension's [0, 1] domain."""
+    if colours is None:
+        return None
+    c = np.asarray(colours, dtype=np.float64)
+    if c.shape != v.shape:
+        raise ValueError(
+            f"colours must have one RGB per vertex, got {c.shape} for {v.shape}"
+        )
+    return np.clip(c, 0.0, 1.0)

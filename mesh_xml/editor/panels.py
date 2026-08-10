@@ -75,6 +75,7 @@ from PySide6.QtWidgets import (
 
 from mesh_xml.anim import serialize
 from mesh_xml.core import solver
+from mesh_xml.render import sdf as sdf_module
 from mesh_xml.scene.door import Door
 from mesh_xml.scene.room import Room
 from mesh_xml.editor.document import (
@@ -417,6 +418,9 @@ class SurfacePanel(_Panel):
         self._floor = QCheckBox("Show floor")
         self._creature_colour = QPushButton("Creature colour…")
         self._chunk_colour = QPushButton("Paint selection…")
+        self._pattern = QComboBox()
+        self._pattern.addItems(["none", *sdf_module.PATTERN_IDS])
+        self._pattern_param = _spin(0.0, 64.0, 0.5, decimals=2)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_blend())
@@ -433,9 +437,18 @@ class SurfacePanel(_Panel):
         self._floor.toggled.connect(self._on_floor_toggled)
         self._creature_colour.clicked.connect(self._on_pick_creature_colour)
         self._chunk_colour.clicked.connect(self._on_pick_chunk_colour)
+        self._pattern.currentIndexChanged.connect(self._on_pattern_changed)
+        self._pattern_param.valueChanged.connect(self._on_pattern_param_changed)
         self._overlay.toggled.connect(self._on_overlay_toggled)
         self._ortho.toggled.connect(self._on_ortho_toggled)
-        self._follow(document.settings_changed, document.body_replaced)
+        # Patterns are creature meta, so the panel re-reads on the signals
+        # meta edits and selection moves arrive by — not just settings.
+        self._follow(
+            document.settings_changed,
+            document.body_replaced,
+            document.selection_changed,
+            document.topology_changed,
+        )
 
         self.refresh()
 
@@ -507,6 +520,8 @@ class SurfacePanel(_Panel):
         layout.addRow("Background", self._background_colour)
         layout.addRow(self._creature_colour)
         layout.addRow(self._chunk_colour)
+        layout.addRow("Pattern", self._pattern)
+        layout.addRow("Pattern param", self._pattern_param)
         layout.addRow(self._overlay)
         layout.addRow(self._ortho)
         layout.addRow(self._floor)
@@ -543,6 +558,16 @@ class SurfacePanel(_Panel):
             "Paint exactly the selected chunks, one undo step, saved with "
             "the rig. The surface grades between painted and unpainted "
             "neighbours at the blend — a bright head on a dull body."
+        )
+        self._pattern.setToolTip(
+            "The selected creature's surface pattern, painted across its "
+            "chunks like colour. Stripes band along each link (rings "
+            "around a limb); countershade darkens the back and pales the "
+            "belly. One undo step, saved with the rig."
+        )
+        self._pattern_param.setToolTip(
+            "Stripes: bands per link. Countershade: strength, 0 to 1. "
+            "Applied with the pattern, one undo step."
         )
         return box
 
@@ -623,6 +648,25 @@ class SurfacePanel(_Panel):
         if picked is not None:
             self._document.set_chunk_colour(picked)
 
+    @_user_edit
+    def _on_pattern_changed(self, _index: int) -> None:
+        name = self._pattern.currentText()
+        # Switching patterns adopts the newcomer's default parameter — a
+        # stripe count means nothing to a countershade strength.
+        default = sdf_module.PATTERN_DEFAULTS.get(name)
+        if default is not None:
+            with self._sync():
+                self._pattern_param.setValue(float(default))
+        self._document.set_creature_pattern(
+            name, float(self._pattern_param.value())
+        )
+
+    @_user_edit
+    def _on_pattern_param_changed(self, value: float) -> None:
+        name = self._pattern.currentText()
+        if name in sdf_module.PATTERN_IDS:
+            self._document.set_creature_pattern(name, float(value))
+
     def _pick(
         self, current: tuple[float, float, float], title: str
     ) -> tuple[float, float, float] | None:
@@ -648,6 +692,15 @@ class SurfacePanel(_Panel):
         self._overlay.setChecked(self._show_rig_overlay)
         self._ortho.setChecked(self._orthographic)
         self._floor.setChecked(bool(settings.show_floor))
+
+        name, param = self._document.creature_pattern()
+        index = self._pattern.findText(name)
+        self._pattern.setCurrentIndex(index if index >= 0 else 0)
+        if name in sdf_module.PATTERN_IDS:
+            self._pattern_param.setValue(float(param))
+        selected = bool(self._document.selection)
+        self._pattern.setEnabled(selected)
+        self._pattern_param.setEnabled(selected)
 
 
 class SolverPanel(_Panel):

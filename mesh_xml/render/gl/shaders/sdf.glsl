@@ -260,22 +260,51 @@ vec3 sd_group_colour(int group) {
 uniform sampler2D u_attributes;
 uniform int   u_attribute_count;
 
+// The pattern constants, mirrored in field._primitive_albedo: stripes
+// darken to BAND at wave peaks; countershade scales the back toward DARK
+// and mixes the belly toward white by PALE. One authored parameter each
+// (frequency, strength); these three are the vocabulary's opinion.
+const float SDF_TAU = 6.28318530717958647692;
+const float SDF_STRIPE_BAND = 0.45;
+const float SDF_SHADE_DARK = 0.35;
+const float SDF_SHADE_PALE = 0.6;
+
 // One primitive's colour at p: end colours lerped by the orthogonal
 // projection fraction along the primitive's own segment — deliberately not
 // the cone maths' three-case parameter, because the projection is smooth,
 // branchless, cheap to mirror in numpy, and equal to it wherever the two
-// could visibly disagree. Degenerate records read their `a` end. CPU twin:
+// could visibly disagree. Degenerate records read their `a` end (t = 0).
+// The pattern lanes then modulate the base: stripes band along the
+// segment's own axis — rings around a limb, by construction — and
+// countershade keys on the radial direction's world-y, the one pattern
+// that references the world on purpose (a belly is a belly because light
+// comes from above). Both ride the link's own frame, so they translate
+// and rotate with the limb (docs/TEXTURES.md §2). CPU twin:
 // field._primitive_albedo.
 vec3 sd_primitive_albedo(vec3 p, int index) {
     vec4 head = texelFetch(u_primitives, ivec2(0, index), 0);
     vec4 tail = texelFetch(u_primitives, ivec2(1, index), 0);
-    vec3 ca = texelFetch(u_attributes, ivec2(0, index), 0).rgb;
-    vec3 cb = texelFetch(u_attributes, ivec2(1, index), 0).rgb;
+    vec4 skin_a = texelFetch(u_attributes, ivec2(0, index), 0);
+    vec4 skin_b = texelFetch(u_attributes, ivec2(1, index), 0);
     vec3 ba = tail.xyz - head.xyz;
     float l2 = dot(ba, ba);
-    if (l2 < SDF_DEGENERATE_EPSILON2) return ca;
-    float t = clamp(dot(p - head.xyz, ba) / l2, 0.0, 1.0);
-    return mix(ca, cb, t);
+    float t = (l2 < SDF_DEGENERATE_EPSILON2)
+        ? 0.0
+        : clamp(dot(p - head.xyz, ba) / l2, 0.0, 1.0);
+    vec3 base = mix(skin_a.rgb, skin_b.rgb, t);
+
+    int pattern = int(skin_a.w);
+    if (pattern == 1) {
+        float wave = 0.5 + 0.5 * cos(SDF_TAU * skin_b.w * t);
+        base *= mix(1.0, SDF_STRIPE_BAND, wave);
+    } else if (pattern == 2) {
+        vec3 radial = p - (head.xyz + ba * t);
+        float up = radial.y / max(length(radial), 1e-6);
+        float s = skin_b.w;
+        base = mix(base, base * SDF_SHADE_DARK, s * max(up, 0.0));
+        base = mix(base, vec3(1.0), SDF_SHADE_PALE * s * max(-up, 0.0));
+    }
+    return base;
 }
 
 // One group's skin at p: the distance fold re-run carrying colour beside it,

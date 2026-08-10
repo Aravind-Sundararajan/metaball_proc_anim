@@ -671,6 +671,35 @@ class TestCreatureColour:
         document.set_chunk_colour((1.0, 0.0, 0.0))
         assert not document.can_undo
 
+    def test_pattern_paints_the_component_and_undoes_whole(self, document):
+        ids = ids_of(document)
+        document.set_selection(ids[:1])
+        document.set_creature_pattern("stripes", 3.0)
+
+        for cid in ids:
+            assert document.body.meta_of(cid)["pattern"] == "stripes"
+            assert document.body.meta_of(cid)["pattern_param"] == "3.0"
+        assert document.creature_pattern() == ("stripes", 3.0)
+        assert len(document.attribute_rows()) > 0, "a pattern arms the skin"
+
+        document.undo()
+        assert "pattern" not in document.body.meta_of(ids[0]), "one undo step"
+
+    def test_none_clears_the_pattern(self, document):
+        ids = ids_of(document)
+        document.set_selection(ids[:1])
+        document.set_creature_pattern("stripes")
+        assert document.creature_pattern()[0] == "stripes"
+
+        document.set_creature_pattern("none")
+        assert document.creature_pattern() == ("none", 0.0)
+        assert "pattern" not in document.body.meta_of(ids[0])
+
+    def test_pattern_default_param_when_unspecified(self, document):
+        document.set_selection(ids_of(document)[:1])
+        document.set_creature_pattern("countershade")
+        assert document.creature_pattern() == ("countershade", 0.7)
+
     def test_a_painted_head_arms_the_skin_and_survives_a_save(
         self, document, tmp_path
     ):
@@ -701,6 +730,34 @@ class TestExportMesh:
         text = out.read_text(encoding="utf-8")
         assert text.count("\nf ") > 100
         assert text.startswith("#") or "v " in text
+
+    def test_an_unpainted_export_keeps_the_classic_format(self, document, tmp_path):
+        out = document.export_mesh(tmp_path / "plain.obj", resolution=32)
+        v_lines = [
+            line
+            for line in out.read_text(encoding="utf-8").splitlines()
+            if line.startswith("v ")
+        ]
+        assert v_lines and all(len(line.split()) == 4 for line in v_lines)
+
+    def test_a_painted_creature_exports_its_skin(self, document, tmp_path):
+        """The arc's closing acceptance: a two-tone creature arrives in
+        Blender two-toned — vertex colours from the same albedo fold the
+        viewport shades by."""
+        ids = ids_of(document)
+        document.set_selection(ids[:1])
+        document.set_chunk_colour((1.0, 0.0, 0.0))
+
+        out = document.export_mesh(tmp_path / "painted.obj", resolution=32)
+        v_lines = [
+            line
+            for line in out.read_text(encoding="utf-8").splitlines()
+            if line.startswith("v ")
+        ]
+        assert v_lines and all(len(line.split()) == 7 for line in v_lines)
+        red = np.array([[float(x) for x in line.split()[4:]] for line in v_lines])
+        assert red[:, 0].max() > 0.9, "the painted head reaches the mesh"
+        assert red[:, 0].min() < 0.9, "the unpainted tail keeps its own colour"
 
     def test_a_herd_exports_unwelded(self, document, tmp_path):
         """Two creatures inside blend range must export as two skins: the

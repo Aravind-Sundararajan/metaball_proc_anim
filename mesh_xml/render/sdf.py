@@ -48,11 +48,16 @@ from mesh_xml.core.distance import DEGENERATE_EPSILON, PRIMITIVE_STRIDE
 __all__ = [
     "COLOUR_META",
     "DEGENERATE_EPSILON",
+    "PATTERN_DEFAULTS",
+    "PATTERN_IDS",
+    "PATTERN_META",
+    "PATTERN_PARAM_META",
     "PRIMITIVE_STRIDE",
     "group_bounds",
     "group_table",
     "pack",
     "pack_attributes",
+    "pattern_of",
     "primitive_count",
 ]
 
@@ -66,6 +71,28 @@ _GOLDEN_HUE = 0.61803398875
 #: connected component — and meta is the one per-chunk store that is opaque to
 #: the simulation and round-trips through every format era.
 COLOUR_META = "colour"
+
+#: Chunk-meta key naming a creature's surface pattern — one of
+#: :data:`PATTERN_IDS`' names. Painted across the component like colour and
+#: tempo; a name outside the vocabulary reads as no pattern rather than
+#: breaking the render, the stance every meta reader here takes.
+PATTERN_META = "pattern"
+
+#: Chunk-meta key carrying the pattern's one parameter: bands per link for
+#: stripes, strength in [0, 1] for countershade.
+PATTERN_PARAM_META = "pattern_param"
+
+#: The pattern vocabulary, name to the id the shader switches on.
+#: Axisymmetric by construction (``docs/TEXTURES.md``): stripes band along
+#: each link's own axis, countershade keys on the radial direction's
+#: world-y. Two names, not the design's four — on a limb, rings around the
+#: axis *are* stripes along it, and a gradient is per-chunk colours doing
+#: their ordinary job.
+PATTERN_IDS = {"stripes": 1, "countershade": 2}
+
+#: Each pattern's parameter when the meta does not say: four bands per
+#: link, a strong-but-not-total countershade.
+PATTERN_DEFAULTS = {"stripes": 4.0, "countershade": 0.7}
 
 # Canonical home of the record format and its two degeneracies is
 # core/distance.py, since the world's terrain shares the same primitives.
@@ -215,21 +242,24 @@ def pack_attributes(
     :func:`pack` row *i*.
 
     The weighted skin's data (``docs/TEXTURES.md``): each record carries its
-    primitive's two end colours — ``[ra_r, ra_g, ra_b, 0, rb_r, rb_g,
-    rb_b, 0]``, fourth lanes reserved for the pattern vocabulary — built in
+    primitive's two end colours and the creature's pattern —
+    ``[ra_r, ra_g, ra_b, pattern, rb_r, rb_g, rb_b, param]`` — built in
     :func:`pack`'s own row order and sorted by the same stable key, so the
     two tables pair by construction whatever the topology. A chunk's colour
     is its own parseable :data:`COLOUR_META`, falling back to its group's
     *palette* colour — the golden-angle hue by group index, deliberately not
     the flat path's authored-first group colour, so painting one chunk of a
-    creature does not silently repaint the rest through the fallback.
+    creature does not silently repaint the rest through the fallback. The
+    pattern lanes are constant across a component, because the pattern is
+    creature-painted meta (:func:`pattern_of`).
 
     **A body whose skin would look exactly like the flat path packs to an
     empty ``(0, 8)`` table.** That is the contract that makes "unpainted
     means unchanged" structural rather than numerical: with nothing
     uploaded the shader shades by the flat group colour on the code path it
     always ran, and no colour fold can wiggle a uniform document by even a
-    ulp of float arithmetic.
+    ulp of float arithmetic. A pattern arms the table even over uniform
+    colours — a striped creature varies by definition.
     """
     count = primitive_count(body)
     if count == 0:
@@ -240,17 +270,25 @@ def pack_attributes(
 
     flat = np.zeros((n_groups, 3), dtype=np.float32)
     palette = np.zeros((n_groups, 3), dtype=np.float32)
+    patterns = np.zeros(n_groups, dtype=np.float32)
+    params = np.zeros(n_groups, dtype=np.float32)
     for group in range(n_groups):
+        slots = np.nonzero(labels == group)[0]
         palette[group] = _palette_colour(base_colour, group)
-        authored = _authored_colour(body, np.nonzero(labels == group)[0])
+        authored = _authored_colour(body, slots)
         flat[group] = authored if authored is not None else palette[group]
+        name, param = pattern_of(
+            body, (body.id_at(int(slot)) for slot in slots)
+        )
+        patterns[group] = PATTERN_IDS.get(name, 0)
+        params[group] = param
 
     per_slot = np.zeros((body.n_chunks, 3), dtype=np.float32)
     for slot in range(body.n_chunks):
         own = _chunk_colour(body, slot)
         per_slot[slot] = own if own is not None else palette[labels[slot]]
 
-    if np.array_equal(per_slot, flat[labels]):
+    if np.array_equal(per_slot, flat[labels]) and not patterns.any():
         return np.zeros((0, PRIMITIVE_STRIDE), dtype=np.float32)
 
     out = np.zeros((count, PRIMITIVE_STRIDE), dtype=np.float32)
@@ -274,7 +312,37 @@ def pack_attributes(
         out[row, 4:7] = per_slot[slot]
         row += 1
 
-    return out[np.argsort(_row_groups(body), kind="stable")]
+    row_groups = _row_groups(body)
+    out[:, 3] = patterns[row_groups]
+    out[:, 7] = params[row_groups]
+    return out[np.argsort(row_groups, kind="stable")]
+
+
+def pattern_of(body: Body, chunk_ids) -> tuple[str, float]:
+    """The authored pattern riding these chunks: ``(name, param)``.
+
+    The colour reader's rules one key over: the first chunk carrying a
+    *known* pattern name wins in the caller's order, an unknown name is
+    passed over rather than raised on, and a missing or garbage parameter
+    takes the pattern's default. ``("none", 0.0)`` when nothing patterns —
+    the honest zero the panel and the packer both key on.
+    """
+    for cid in chunk_ids:
+        meta = body.meta_of(cid)
+        name = str(meta.get(PATTERN_META) or "")
+        if name not in PATTERN_IDS:
+            continue
+        param = PATTERN_DEFAULTS[name]
+        raw = meta.get(PATTERN_PARAM_META)
+        if raw is not None:
+            try:
+                value = float(raw)
+            except ValueError:
+                value = param
+            if np.isfinite(value):
+                param = value
+        return name, float(param)
+    return "none", 0.0
 
 
 def _palette_colour(
