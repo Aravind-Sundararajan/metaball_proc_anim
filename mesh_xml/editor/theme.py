@@ -253,9 +253,12 @@ QHeaderView::section {{
     border-right: 1px solid {BORDER};
     padding: 4px 8px;
     font-size: 8pt;
-    text-transform: uppercase;
-    letter-spacing: 1px;
 }}
+/* No uppercase or letter-spacing on table headers, deliberately: Qt
+   measures section widths from the *untransformed* text, so styling that
+   widens text after measurement truncates every narrow column — the
+   Rooms and Doors tables shipped reading "AN|" and "ROC". Dock titles
+   and group-box titles keep the treatment; nothing measures them. */
 QTableWidget::item:selected {{
     background: {ACCENT};
     color: {ON_ACCENT};
