@@ -731,6 +731,34 @@ class TestExportMesh:
         assert text.count("\nf ") > 100
         assert text.startswith("#") or "v " in text
 
+    def test_an_unpainted_export_keeps_the_classic_format(self, document, tmp_path):
+        out = document.export_mesh(tmp_path / "plain.obj", resolution=32)
+        v_lines = [
+            line
+            for line in out.read_text(encoding="utf-8").splitlines()
+            if line.startswith("v ")
+        ]
+        assert v_lines and all(len(line.split()) == 4 for line in v_lines)
+
+    def test_a_painted_creature_exports_its_skin(self, document, tmp_path):
+        """The arc's closing acceptance: a two-tone creature arrives in
+        Blender two-toned — vertex colours from the same albedo fold the
+        viewport shades by."""
+        ids = ids_of(document)
+        document.set_selection(ids[:1])
+        document.set_chunk_colour((1.0, 0.0, 0.0))
+
+        out = document.export_mesh(tmp_path / "painted.obj", resolution=32)
+        v_lines = [
+            line
+            for line in out.read_text(encoding="utf-8").splitlines()
+            if line.startswith("v ")
+        ]
+        assert v_lines and all(len(line.split()) == 7 for line in v_lines)
+        red = np.array([[float(x) for x in line.split()[4:]] for line in v_lines])
+        assert red[:, 0].max() > 0.9, "the painted head reaches the mesh"
+        assert red[:, 0].min() < 0.9, "the unpainted tail keeps its own colour"
+
     def test_a_herd_exports_unwelded(self, document, tmp_path):
         """Two creatures inside blend range must export as two skins: the
         grouped field is a hard union, so the meshes near the gap differ

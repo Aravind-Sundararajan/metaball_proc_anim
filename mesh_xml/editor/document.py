@@ -1644,9 +1644,14 @@ class Document(QObject):
         The mesh honours the blend groups — smooth flesh within a creature, a
         hard skin between them — so an exported herd arrives in Blender as
         the separate animals the viewport shows, not as one weld. Positions
-        are the draw positions, matching what the viewer sees.
+        are the draw positions, matching what the viewer sees. A painted or
+        patterned skin rides as OBJ vertex colours, evaluated by the same
+        albedo fold the viewport shades by (``docs/TEXTURES.md`` package 4);
+        an unpainted body exports the file it always exported, byte for
+        byte, because its attribute table is empty.
         """
         from mesh_xml.io.mesh_export import write_mesh
+        from mesh_xml.render import field
         from mesh_xml.render.meshing import polygonise
 
         primitives = self.primitives()
@@ -1657,8 +1662,22 @@ class Document(QObject):
             resolution=resolution,
             groups=groups,
         )
-        out = write_mesh(Path(path), mesh.vertices, mesh.faces, mesh.normals)
+        attributes = self.attribute_rows()
+        colours = None
+        if len(attributes):
+            colours = field.albedo(
+                mesh.vertices,
+                primitives,
+                attributes,
+                self.metaball.blend,
+                groups=groups,
+            )
+        out = write_mesh(
+            Path(path), mesh.vertices, mesh.faces, mesh.normals, colours=colours
+        )
         note = f"Exported {len(mesh.vertices)} vertices to {out.name}"
+        if colours is not None:
+            note += " (painted)"
         if mesh.open_edges:
             note += f" ({mesh.open_edges} open edge(s) — raise the resolution)"
         self.status.emit(note)

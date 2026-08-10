@@ -497,6 +497,71 @@ class TestObj:
         assert "//" not in path.read_text()
         assert parse_obj(path) == (len(mesh.vertices), 0, len(mesh.faces))
 
+    def test_vertex_colours_ride_the_v_lines(self, tmp_path: Path):
+        """The widely read `v x y z r g b` extension: six numbers when
+        colours are given, the classic three when not — an unpainted
+        export stays byte-identical."""
+        mesh = polygonise(ball((0, 0, 0), 1.0), 0.0, 12)
+        colours = np.tile((0.9, 0.2, 0.1), (len(mesh.vertices), 1))
+        painted = write_obj(
+            tmp_path / "painted.obj",
+            mesh.vertices,
+            mesh.faces,
+            mesh.normals,
+            colours=colours,
+        )
+        v_lines = [
+            line for line in painted.read_text().splitlines() if line.startswith("v ")
+        ]
+        assert all(len(line.split()) == 7 for line in v_lines)
+        read = np.array([[float(x) for x in line.split()[4:]] for line in v_lines])
+        assert np.allclose(read, colours)
+
+        plain = write_obj(
+            tmp_path / "plain.obj", mesh.vertices, mesh.faces, mesh.normals
+        )
+        assert all(
+            len(line.split()) == 4
+            for line in plain.read_text().splitlines()
+            if line.startswith("v ")
+        )
+
+    def test_colours_clamp_to_the_extensions_domain(self, tmp_path: Path):
+        vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        faces = np.array([[0, 1, 2]])
+        path = write_obj(
+            tmp_path / "hot.obj",
+            vertices,
+            faces,
+            colours=np.array([[2.0, -1.0, 0.5]] * 3),
+        )
+        read = [
+            [float(x) for x in line.split()[4:]]
+            for line in path.read_text().splitlines()
+            if line.startswith("v ")
+        ]
+        assert read[0] == [1.0, 0.0, 0.5]
+
+    def test_mismatched_colours_are_refused(self, tmp_path: Path):
+        vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        faces = np.array([[0, 1, 2]])
+        with pytest.raises(ValueError, match="one RGB per vertex"):
+            write_obj(
+                tmp_path / "bad.obj", vertices, faces, colours=np.zeros((2, 3))
+            )
+
+    def test_stl_accepts_and_ignores_colours(self, tmp_path: Path):
+        mesh = polygonise(ball((0, 0, 0), 1.0), 0.0, 12)
+        colours = np.tile((0.9, 0.2, 0.1), (len(mesh.vertices), 1))
+        painted = write_stl(
+            tmp_path / "painted.stl",
+            mesh.vertices,
+            mesh.faces,
+            colours=colours,
+        )
+        plain = write_stl(tmp_path / "plain.stl", mesh.vertices, mesh.faces)
+        assert painted.read_bytes() == plain.read_bytes()
+
 
 class TestStl:
     def test_the_file_is_exactly_the_size_the_format_says(self, tmp_path: Path):
