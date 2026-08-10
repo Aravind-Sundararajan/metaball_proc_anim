@@ -114,6 +114,7 @@ _DEBUG_MODES = (
     "1 - normals",
     "2 - packed depth",
     "3 - step count",
+    "4 - albedo",
 )
 
 _AXES = ("X", "Y", "Z")
@@ -415,6 +416,7 @@ class SurfacePanel(_Panel):
         self._orthographic = False
         self._floor = QCheckBox("Show floor")
         self._creature_colour = QPushButton("Creature colour…")
+        self._chunk_colour = QPushButton("Paint selection…")
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_blend())
@@ -430,6 +432,7 @@ class SurfacePanel(_Panel):
         self._max_steps.valueChanged.connect(self._on_max_steps_changed)
         self._floor.toggled.connect(self._on_floor_toggled)
         self._creature_colour.clicked.connect(self._on_pick_creature_colour)
+        self._chunk_colour.clicked.connect(self._on_pick_chunk_colour)
         self._overlay.toggled.connect(self._on_overlay_toggled)
         self._ortho.toggled.connect(self._on_ortho_toggled)
         self._follow(document.settings_changed, document.body_replaced)
@@ -503,6 +506,7 @@ class SurfacePanel(_Panel):
         layout.addRow("Surface", self._surface_colour)
         layout.addRow("Background", self._background_colour)
         layout.addRow(self._creature_colour)
+        layout.addRow(self._chunk_colour)
         layout.addRow(self._overlay)
         layout.addRow(self._ortho)
         layout.addRow(self._floor)
@@ -534,6 +538,11 @@ class SurfacePanel(_Panel):
             "Paint the whole creature the selection touches — every chunk of "
             "its connected component, one undo step, saved with the rig. "
             "Unpainted creatures keep their automatic palette hue."
+        )
+        self._chunk_colour.setToolTip(
+            "Paint exactly the selected chunks, one undo step, saved with "
+            "the rig. The surface grades between painted and unpainted "
+            "neighbours at the blend — a bright head on a dull body."
         )
         return box
 
@@ -605,6 +614,14 @@ class SurfacePanel(_Panel):
         )
         if picked is not None:
             self._document.set_creature_colour(picked)
+
+    @_user_edit
+    def _on_pick_chunk_colour(self) -> None:
+        picked = self._pick(
+            self._document.metaball.surface_colour, "Paint selection"
+        )
+        if picked is not None:
+            self._document.set_chunk_colour(picked)
 
     def _pick(
         self, current: tuple[float, float, float], title: str

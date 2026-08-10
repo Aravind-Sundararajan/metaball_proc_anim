@@ -20,7 +20,7 @@ uniform float u_max_distance;
 uniform int   u_max_steps;
 uniform float u_surface_epsilon;
 uniform float u_step_relaxation;
-uniform int   u_debug_mode;      // 0 shaded, 1 normal, 2 packed depth, 3 step count
+uniform int   u_debug_mode;      // 0 shaded, 1 normal, 2 packed depth, 3 step count, 4 albedo
 uniform vec3  u_light_direction;
 uniform vec3  u_surface_colour;
 uniform vec3  u_terrain_colour;
@@ -178,6 +178,29 @@ float floor_shadow(vec3 point, vec3 light) {
     return clamp(shade, 0.0, 1.0);
 }
 
+// What colour the surface is at a hit, before any light touches it: the
+// terrain's flat colour where the world won the hard min, else the
+// creature's — its group's folded albedo when the attribute table is armed
+// (docs/TEXTURES.md), its group's flat colour when not, and the single
+// surface colour when no groups are uploaded at all. Debug mode 4 writes
+// this raw, which is what lets the CPU oracle check colour numerically
+// through the same readback the depth modes use, lighting never in frame.
+vec3 scene_albedo(vec3 position) {
+    vec3 creature;
+    if (u_group_count > 0) {
+        int group = sd_nearest_group(position);
+        creature = (u_attribute_count > 0
+                    && u_attribute_count == u_primitive_count)
+            ? sd_group_albedo(position, group)
+            : sd_group_colour(group);
+    } else {
+        creature = u_surface_colour;
+    }
+    return sd_terrain(position) < sd_field(position)
+        ? u_terrain_colour
+        : creature;
+}
+
 // Anti-aliased grid coverage at a floor point, in [0, 1]. Screen-space
 // derivatives turn the line width into pixels, so lines stay one line wide at
 // any distance and dissolve on their own where a cell is thinner than a pixel.
@@ -209,6 +232,16 @@ void main() {
     }
     if (u_debug_mode == 3) {
         frag_colour = vec4(vec3(float(result.steps) / float(u_max_steps)), 1.0);
+        return;
+    }
+    // Raw albedo, unlit. A miss writes white, mode 2's sentinel convention.
+    if (u_debug_mode == 4) {
+        frag_colour = vec4(
+            result.hit
+                ? scene_albedo(origin + direction * result.t)
+                : vec3(1.0),
+            1.0
+        );
         return;
     }
 
@@ -252,18 +285,11 @@ void main() {
         return;
     }
 
-    // The hard min has no blend weight to interpolate colour by, so the hit
-    // belongs entirely to whichever field is closer at the landing point —
-    // the same comparison min() made when the ray stopped. Absent terrain sits
-    // at SDF_FAR and can never win, so the creature keeps its colour. With
-    // blend groups uploaded the creature's colour is its group's; without
-    // them it is the single authored surface colour, exactly as before.
-    vec3 creature = u_group_count > 0
-        ? sd_group_colour(sd_nearest_group(position))
-        : u_surface_colour;
-    vec3 albedo = sd_terrain(position) < sd_field(position)
-        ? u_terrain_colour
-        : creature;
+    // The hard min against terrain has no blend weight to interpolate colour
+    // by, so the hit belongs entirely to whichever field is closer at the
+    // landing point — the same comparison min() made when the ray stopped;
+    // scene_albedo owns that split and the creature's own colour ladder.
+    vec3 albedo = scene_albedo(position);
 
     vec3 light = normalize(u_light_direction);
     float lambert = max(dot(normal, light), 0.0);

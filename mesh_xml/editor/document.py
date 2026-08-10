@@ -984,6 +984,16 @@ class Document(QObject):
         """
         return sdf.group_table(self.body, self.metaball.surface_colour)
 
+    def attribute_rows(self) -> np.ndarray:
+        """Per-primitive end colours — the weighted skin's table.
+
+        Empty when nothing varies, which is
+        :func:`~mesh_xml.render.sdf.pack_attributes`' contract: an
+        unpainted document uploads no attributes and shades by the flat
+        group colour on the code path it always ran, bit for bit.
+        """
+        return sdf.pack_attributes(self.body, self.metaball.surface_colour)
+
     # ------------------------------------------------------------------
     # the world
     # ------------------------------------------------------------------
@@ -1324,6 +1334,31 @@ class Document(QObject):
         else:
             self.do(Macro(commands, text="Creature Colour"))
         self.status.emit(f"Coloured {len(chunks)} chunk(s)")
+
+    def set_chunk_colour(self, rgb: tuple[float, float, float]) -> None:
+        """Paint exactly the selected chunks, as one undo step.
+
+        The per-part gesture (``docs/TEXTURES.md`` package 2), beside
+        :meth:`set_creature_colour` and deliberately narrower: a statement
+        about the chunks in hand, not their component. The weighted skin is
+        what makes the difference visible — unpainted neighbours keep their
+        palette colour, and the surface grades between them at the blend.
+        Same meta key, so the two gestures overwrite each other cleanly and
+        both round-trip through every format era that carries meta.
+        """
+        if not self.selection:
+            self.status.emit("Select the chunks to paint first")
+            return
+        value = " ".join(f"{min(max(float(v), 0.0), 1.0):.4f}" for v in rgb)
+        commands: list[Command] = [
+            SetMeta(cid, sdf.COLOUR_META, value, text="Paint Chunks")
+            for cid in sorted(self.selection)
+        ]
+        if len(commands) == 1:
+            self.do(commands[0])
+        else:
+            self.do(Macro(commands, text="Paint Chunks"))
+        self.status.emit(f"Painted {len(commands)} chunk(s)")
 
     def _selected_creatures(self) -> list[set[int]]:
         """The connected component of each selected chunk, deduplicated.

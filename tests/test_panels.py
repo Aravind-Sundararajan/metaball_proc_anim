@@ -221,7 +221,7 @@ class TestSurfacePanel:
 
     def test_the_debug_combo_offers_every_mode_and_selects_one(self, document):
         panel = panels.SurfacePanel(document)
-        assert panel._debug.count() == 4
+        assert panel._debug.count() == 5
 
         panel._debug.setCurrentIndex(2)
         assert document.metaball.debug_mode == 2
@@ -240,6 +240,23 @@ class TestSurfacePanel:
         assert document.metaball.background_colour == pytest.approx((0.0, 0.0, 1.0))
         assert panel._surface_colour.text() == "#ff0000"
         assert panel._background_colour.text() == "#0000ff"
+
+    def test_the_paint_buttons_route_to_their_gestures(self, document, monkeypatch):
+        """Two buttons, two scopes: the selection's chunks, or their whole
+        component. The dialog is stubbed; the routing is what is tested."""
+        panel = panels.SurfacePanel(document)
+        monkeypatch.setattr(panel, "_pick", lambda current, title: (1.0, 0.0, 0.0))
+        ids = document.body.chunk_ids()
+        document.set_selection(ids[:1])
+
+        panel._chunk_colour.click()
+        assert document.body.meta_of(ids[0])["colour"] == "1.0000 0.0000 0.0000"
+        assert "colour" not in document.body.meta_of(ids[1]), "selection only"
+
+        panel._creature_colour.click()
+        assert document.body.meta_of(ids[1])["colour"] == "1.0000 0.0000 0.0000", (
+            "the creature-wide button reaches the whole component"
+        )
 
     def test_the_overlay_is_panel_state_and_announces_itself(self, document):
         panel = panels.SurfacePanel(document)

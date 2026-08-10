@@ -344,6 +344,7 @@ class MetaballViewport(RaymarchView):
     ) -> None:
         from mesh_xml.render.gl.metaball import (
             SHADER_NAME,
+            AttributeTexture,
             BoundsTexture,
             GroupTexture,
             PrimitiveTexture,
@@ -364,6 +365,9 @@ class MetaballViewport(RaymarchView):
         self._groups: GroupTexture = GroupTexture()
         self._group_rows: np.ndarray | None = None
         self._pending_rows: np.ndarray | None = None
+        self._attributes: AttributeTexture = AttributeTexture()
+        self._attribute_rows: np.ndarray | None = None
+        self._pending_attribute_rows: np.ndarray | None = None
         self._bounds: BoundsTexture = BoundsTexture()
         self._tiles: TileTexture = TileTexture()
         # The Terrain object last sent to the GPU. Identity, not equality:
@@ -532,6 +536,19 @@ class MetaballViewport(RaymarchView):
         )
         if latest_rows is None or not np.array_equal(rows, latest_rows):
             self._pending_rows = rows
+        # The attribute table snapshots on the same terms: its rows pair the
+        # primitive rows one for one, and a mismatched pair would colour the
+        # wrong flesh for a frame exactly the way a stale group table did.
+        attribute_rows = self._document.attribute_rows()
+        latest_attributes = (
+            self._pending_attribute_rows
+            if self._pending_attribute_rows is not None
+            else self._attribute_rows
+        )
+        if latest_attributes is None or not np.array_equal(
+            attribute_rows, latest_attributes
+        ):
+            self._pending_attribute_rows = attribute_rows
         latest = self._pending if self._pending is not None else self._uploaded
         if latest is not None and np.array_equal(primitives, latest):
             return
@@ -571,11 +588,13 @@ class MetaballViewport(RaymarchView):
         self._flush_upload()
         self._flush_terrain()
         self._flush_groups()
+        self._flush_attributes()
         self._flush_bounds()
         self.uniforms.update(self._document.metaball.uniforms())
         self.uniforms.update(self._texture.uniforms())
         self.uniforms.update(self._terrain.uniforms())
         self.uniforms.update(self._groups.uniforms())
+        self.uniforms.update(self._attributes.uniforms())
         self.uniforms.update(self._bounds.uniforms())
         self.uniforms.update(self._tiles.uniforms())
         self.uniforms.update({"u_tile_size": tiles.TILE_SIZE})
@@ -583,6 +602,7 @@ class MetaballViewport(RaymarchView):
         self._texture.bind()
         self._terrain.bind()
         self._groups.bind()
+        self._attributes.bind()
         self._bounds.bind()
         self._tiles.bind()
         super().paintGL()
@@ -619,6 +639,23 @@ class MetaballViewport(RaymarchView):
         self._tiles.upload(
             tiles.tile_masks(rows, self.camera, width, height, slack=slack)
         )
+
+    def _flush_attributes(self) -> None:
+        """Upload the per-primitive albedo table when it changes.
+
+        The snapshot :meth:`_repack` captured beside the primitives, for the
+        group table's reason: the rows pair one for one, and reading the
+        document here instead would let an expose land a post-edit skin on
+        pre-edit flesh for a frame. An empty snapshot uploads count zero,
+        which disarms the fold in the shader — the flat path, exactly.
+        """
+        if self._pending_attribute_rows is None:
+            if self._attribute_rows is not None:
+                return
+            self._pending_attribute_rows = self._document.attribute_rows()
+        self._attributes.upload(self._pending_attribute_rows)
+        self._attribute_rows = self._pending_attribute_rows
+        self._pending_attribute_rows = None
 
     def _flush_groups(self) -> None:
         """Upload the blend-group table when it changes. Context must be current.
@@ -825,6 +862,7 @@ class MetaballViewport(RaymarchView):
         self._texture.dispose()
         self._terrain.dispose()
         self._groups.dispose()
+        self._attributes.dispose()
         self._bounds.dispose()
         self._tiles.dispose()
         self.doneCurrent()
@@ -834,6 +872,8 @@ class MetaballViewport(RaymarchView):
         self._terrain_source = None
         self._group_rows = None
         self._pending_rows = None
+        self._attribute_rows = None
+        self._pending_attribute_rows = None
 
     # ------------------------------------------------------------------
     # camera

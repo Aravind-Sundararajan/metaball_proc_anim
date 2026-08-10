@@ -213,6 +213,7 @@ class TestAgainstTheCpuReference:
         groups=None,
         bounds=None,
         tiles=None,
+        attributes=None,
     ):
         from PySide6.QtGui import QImage
 
@@ -248,6 +249,13 @@ class TestAgainstTheCpuReference:
             spheres.upload(bounds)
             view.doneCurrent()
             view.uniforms.update(spheres.uniforms())
+
+        if attributes is not None:
+            skin = metaball.AttributeTexture()
+            view.makeCurrent()
+            skin.upload(attributes)
+            view.doneCurrent()
+            view.uniforms.update(skin.uniforms())
 
         if tiles is not None:
             from mesh_xml.render.tiles import TILE_SIZE
@@ -362,6 +370,109 @@ class TestAgainstTheCpuReference:
 
         ungrouped = self.render(primitives, camera, settings, size)
         assert not np.array_equal(rgb, ungrouped), "grouping should remove the weld"
+
+    def test_albedo_matches_the_oracle(self):
+        """Debug mode 4 against field.albedo: colour joins depth in the
+        parity harness (docs/TEXTURES.md package 1)."""
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = Body()
+        palette = [
+            ("1 0 0", "1 1 0", "0 1 0", "0 1 1"),
+            ("0 0 1", "1 0 1", "1 1 1", "0.2 0.2 0.2"),
+        ]
+        for creature, y in enumerate((0.0, 1.1)):
+            ids = [
+                body.add_chunk(
+                    f"w{creature}c{i}",
+                    [i * 0.8 - 1.6, y, 0.0],
+                    radius=0.45,
+                    meta={sdf.COLOUR_META: palette[creature][i]},
+                )
+                for i in range(4)
+            ]
+            for a, b in zip(ids, ids[1:]):
+                body.add_link(a, b)
+
+        primitives = sdf.pack(body)
+        groups = sdf.group_table(body)
+        attributes = sdf.pack_attributes(body)
+        assert len(attributes) == len(primitives), "a painted body arms the table"
+
+        blend = 0.35
+        size = (160, 120)
+        camera = OrbitCamera(distance=8.0, yaw=20.0, pitch=12.0)
+        settings = metaball.MetaballSettings(
+            blend=blend, debug_mode=4, max_distance=20.0
+        )
+        rgb = self.render(
+            primitives, camera, settings, size, groups=groups, attributes=attributes
+        )
+
+        origin, directions = camera.ray_directions(*size)
+        unit = directions / np.linalg.norm(directions, axis=-1, keepdims=True)
+        t_cpu, hit_cpu = field.raymarch(
+            origin,
+            directions,
+            primitives,
+            blend,
+            max_distance=settings.max_distance,
+            max_steps=settings.max_steps,
+            surface_epsilon=settings.surface_epsilon,
+            step_relaxation=settings.step_relaxation,
+            groups=groups[:, :2],
+        )
+        # Mode 4's miss sentinel is pure white; a hit of pure white cannot
+        # occur here because every authored colour keeps a channel below 1.
+        hit_gpu = ~np.all(rgb >= 254.0, axis=-1)
+        agreement = (hit_gpu == hit_cpu).mean()
+        assert agreement > 0.99, f"hit masks agree on only {agreement:.3%}"
+
+        shared = hit_gpu & hit_cpu
+        assert shared.sum() > 500
+        points = origin + unit * t_cpu[..., None]
+        cpu = field.albedo(
+            points[shared], primitives, attributes, blend, groups=groups[:, :2]
+        )
+        gpu = rgb[shared] / 255.0
+        error = np.abs(gpu - cpu)
+        assert np.percentile(error, 99) < 0.06
+        assert error.mean() < 0.02
+
+    def test_a_varied_skin_changes_the_shaded_frame(self):
+        """Arming the attribute table is visible; leaving it empty is not."""
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = worm()
+        primitives = sdf.pack(body)
+        groups = sdf.group_table(body)
+        size = (128, 96)
+        camera = OrbitCamera(distance=8.0, yaw=25.0, pitch=18.0)
+        settings = metaball.MetaballSettings(blend=0.3, debug_mode=0, max_distance=20.0)
+
+        flat = self.render(primitives, camera, settings, size, groups=groups)
+
+        # An empty table — what pack_attributes emits for any unpainted
+        # body — disarms the fold: the frame is the flat path byte for byte.
+        empty = self.render(
+            primitives,
+            camera,
+            settings,
+            size,
+            groups=groups,
+            attributes=np.zeros((0, 8), dtype=np.float32),
+        )
+        assert np.array_equal(flat, empty)
+
+        # Paint the head; the armed fold changes pixels.
+        head = body.chunk_ids()[0]
+        body.meta_of(head)[sdf.COLOUR_META] = "1 0 0"
+        painted = sdf.pack_attributes(body)
+        assert len(painted) == len(primitives)
+        varied = self.render(
+            primitives, camera, settings, size, groups=groups, attributes=painted
+        )
+        assert not np.array_equal(flat, varied)
 
     def test_the_bounds_cull_changes_nothing_at_all(self):
         """The whole justification for the cull is that it is invisible.
