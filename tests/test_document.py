@@ -968,3 +968,61 @@ class TestSettingsPersistence:
         assert rig.solver.damping == pytest.approx(0.5)
         assert rig.blend == pytest.approx(0.4)
         assert not document.room_dirty(meadow)
+
+
+class TestPlacementRefusals:
+    """create_chunk refuses rather than guesses, and declines without lying."""
+
+    def test_a_wrong_arity_at_is_refused_by_name(self, document):
+        with pytest.raises(ValueError, match="components"):
+            document.create_chunk(at=(1.0, 2.0))
+        assert document.body.n_chunks == 5
+        assert not document.can_undo
+
+    def test_an_abstracted_room_declines_without_lying(self, document):
+        document.set_room_abstracted(document.room, True)
+        kept = set(document.selection)
+        count = document.body.n_chunks
+
+        result = document.create_chunk()
+
+        assert result is None, "no id is invented for a chunk that never existed"
+        assert document.body.n_chunks == count
+        assert set(document.selection) == kept, "the refusal must not clear it"
+        assert not document.can_undo
+
+
+class TestNewIsAdoptsNullCase:
+    def test_new_resets_solver_and_blend(self, document):
+        document.solver_config = SolverConfig(gravity=(0.0, -3.0, 0.0), iterations=8)
+        document.metaball.blend = 0.5
+        heard = []
+        document.settings_changed.connect(lambda: heard.append(True))
+
+        document.new()
+
+        assert document.solver_config == Room.founding_config()
+        assert document.metaball.blend == MetaballSettings().blend
+        assert not document.dirty
+        assert heard, "panels must re-read after the reset"
+
+
+class TestRefusalsSurface:
+    def test_a_solver_typo_surfaces_its_own_refusal(self, document, tmp_path):
+        """The legacy ladder is for eras, not for a v3 file with a typo: the
+        crafted SchemaError must reach the author, not an armature complaint."""
+        path = tmp_path / "typo.xml"
+        path.write_text(
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<body version="3" name="stub" dim="3">\n'
+            '    <chunks>\n'
+            '        <chunk id="0" name="a" pos="0.0 0.0 0.0" radius="0.25" mass="1.0"/>\n'
+            "    </chunks>\n"
+            "    <links/>\n"
+            '    <solver damping="nan"/>\n'
+            "</body>\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(xml_v2.SchemaError, match="finite"):
+            document.open(path)

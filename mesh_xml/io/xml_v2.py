@@ -339,8 +339,15 @@ def save(
     # spelling for "no floor". Floats at full float64 precision: these numbers
     # are inputs to every tick. See the module docstring.
     if solver is not None:
+        # Trimmed or zero-padded to the root's dim — the projection the
+        # solver itself applies at tick time (``_gravity_vector``), because
+        # the file must state a gravity its own reader can accept: a dim-2
+        # room carrying core's 3-D default would otherwise save a document
+        # that reopens as a refusal.
+        shared = tuple(float(v) for v in solver.gravity[: body.dim])
+        gravity = shared + (0.0,) * (body.dim - len(shared))
         attrs = {
-            "gravity": " ".join(repr(float(v)) for v in solver.gravity),
+            "gravity": " ".join(repr(v) for v in gravity),
             "damping": repr(float(solver.damping)),
             "iterations": str(solver.iterations),
             "max_velocity": repr(float(solver.max_velocity)),

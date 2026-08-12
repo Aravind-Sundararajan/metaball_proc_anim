@@ -140,6 +140,26 @@ def test_a_written_solver_record_is_complete_except_terrain(tmp_path: Path) -> N
     }
 
 
+def test_a_dim2_body_saves_a_gravity_its_own_reader_accepts(tmp_path: Path) -> None:
+    """core's 3-D default gravity is trimmed to the root's dim on write — the
+    solver's own ``_gravity_vector`` projection applied at save time — so the
+    editor can always reopen what it just saved."""
+    path = tmp_path / "flat.xml"
+    xml_v2.save(stub_body(dim=2), path, solver=SolverConfig())
+
+    config = xml_v2.read(path).solver
+
+    assert config is not None
+    assert config.gravity == (0.0, -9.81)
+
+
+def test_a_short_gravity_zero_pads_to_the_body(tmp_path: Path) -> None:
+    path = tmp_path / "padded.xml"
+    xml_v2.save(stub_body(), path, solver=SolverConfig(gravity=(0.0, -5.0)))
+
+    assert xml_v2.read(path).solver.gravity == (0.0, -5.0, 0.0)
+
+
 # ----------------------------------------------------------------------
 # absence, on each of its three levels
 # ----------------------------------------------------------------------

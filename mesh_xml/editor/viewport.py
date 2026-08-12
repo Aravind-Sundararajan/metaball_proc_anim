@@ -873,6 +873,26 @@ class MetaballViewport(RaymarchView):
         self._group_rows = self._pending_rows
         self._pending_rows = None
 
+    def _floor_state(self) -> tuple[bool, float]:
+        """The reference grid as actually drawn: shown, unvetoed, undebugged.
+
+        One derivation for the frame and the pick — :meth:`_floor_uniforms`
+        and :meth:`surface_hit` both read it, so the grid the author sees and
+        the grid a Ctrl+click answers cannot drift apart (the
+        agreement-instead-of-construction hazard :func:`primitive_chunks`
+        names). Height is ``ground_y``, or the zero the shader has always
+        substituted for a floorless world.
+        """
+        terrain = self._document.terrain
+        settings = self._document.metaball
+        drawn = (
+            settings.show_floor
+            and settings.debug_mode == 0
+            and (terrain is None or terrain.is_empty)
+        )
+        height = self._document.solver_config.ground_y
+        return drawn, float(height if height is not None else 0.0)
+
     def _floor_uniforms(self) -> dict[str, object]:
         """The reference grid's uniforms, owned here rather than by settings.
 
@@ -881,14 +901,10 @@ class MetaballViewport(RaymarchView):
         the world, and a grid plane slicing through its hills would read as a
         second, contradictory floor.
         """
-        terrain = self._document.terrain
-        enabled = self._document.metaball.show_floor and (
-            terrain is None or terrain.is_empty
-        )
-        height = self._document.solver_config.ground_y
+        drawn, height = self._floor_state()
         return {
-            "u_floor_enabled": int(enabled),
-            "u_floor_height": float(height if height is not None else 0.0),
+            "u_floor_enabled": int(drawn),
+            "u_floor_height": height,
         }
 
     def _flush_upload(self) -> None:
@@ -1126,20 +1142,16 @@ class MetaballViewport(RaymarchView):
 
         The other pick: :meth:`pick` asks the analytic body spheres, this
         marches the surface the author is looking at — the creature fold at
-        the draw positions, the terrain, and the reference floor under the
-        frame's own gating (:meth:`_floor_uniforms`' terms: shown, not vetoed
-        by a loaded world, and at the frame's own height — ``ground_y``, or
-        the zero the shader substitutes when the solver has none). The grid
-        the author sees is the grid the pick answers: a chunk placed on that
-        reference furniture in a floorless world falls, which is what it
-        reads as. Costs one CPU march, only when called; the frame loop
-        never pays it.
+        the draw positions, the terrain, and the reference floor exactly as
+        drawn (:meth:`_floor_state`: shown, no world veto, no debug view, at
+        the frame's height). The grid the author sees is the grid the pick
+        answers: a chunk placed on that reference furniture in a floorless
+        world falls, which is what it reads as. Costs one CPU march, only
+        when called; the frame loop never pays it.
         """
         document = self._document
         settings = document.metaball
-        terrain = document.terrain
-        ground_y = document.solver_config.ground_y
-        floor_shown = settings.show_floor and (terrain is None or terrain.is_empty)
+        drawn, height = self._floor_state()
         origin, direction = self.ray_through(x, y)
         return surface_hit(
             origin,
@@ -1148,8 +1160,8 @@ class MetaballViewport(RaymarchView):
             primitive_chunks(document.body),
             settings.blend,
             groups=document.group_rows()[:, :2],
-            terrain=terrain,
-            floor_y=(0.0 if ground_y is None else ground_y) if floor_shown else None,
+            terrain=document.terrain,
+            floor_y=height if drawn else None,
             max_steps=settings.max_steps,
             max_distance=settings.max_distance,
             surface_epsilon=settings.surface_epsilon,
@@ -1197,16 +1209,23 @@ class MetaballViewport(RaymarchView):
         else:
             radius = 0.5
             attach_to = None
-        at = tuple(float(v) for v in hit.point + normal * radius)
+        # Truncated to the body's dimensionality, the drag path's own rule
+        # (:meth:`_drag_to`): a widened 2-D surface point carries z ≈ 0, and
+        # the body it lands in has no z to state.
+        centre = (hit.point + normal * radius)[: self._document.body.dim]
+        at = tuple(float(v) for v in centre)
         self._document.create_chunk(at=at, attach_to=attach_to, radius=radius)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and bool(
-            event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and event.modifiers() == Qt.KeyboardModifier.ControlModifier
         ):
             # Ahead of the whole ladder and consuming hit and miss alike: a
             # failed place that spun the camera would punish the author for
-            # missing by a pixel (docs/PICK.md §4).
+            # missing by a pixel (docs/PICK.md §4). Exactly Ctrl — a chord
+            # carrying Shift is a selection gesture and falls through to the
+            # ladder that owns it.
             position = event.position()
             self._place_at(position.x(), position.y())
             return

@@ -931,6 +931,12 @@ class TestViewport:
         )
         assert hit.point[1] == pytest.approx(0.0)
 
+        view.document.metaball.debug_mode = 1
+        assert view.surface_hit(*centre) is None, (
+            "a debug view draws no grid, so the pick answers sky"
+        )
+        view.document.metaball.debug_mode = 0
+
         view.document.solver_config.ground_y = -1.0
         view.document.set_terrain(Terrain.flat(-3.0))
         hit = view.surface_hit(*centre)
@@ -1008,6 +1014,23 @@ class TestViewport:
         assert view.document.body.n_chunks == 0
         assert view.camera.yaw == yaw, "a missed place must not orbit"
         assert view.document.selection == set()
+
+    def test_ctrl_shift_click_is_still_a_selection_gesture(self):
+        """Exactly Ctrl places; a chord carrying Shift belongs to the ladder."""
+        view = self.viewport()
+        body = view.document.body
+        chunk_id = body.chunk_ids()[2]
+        x, y = view.rig_screen_points()[chunk_id]
+        chord = (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+        )
+        count = body.n_chunks
+
+        press(view, x, y, modifiers=chord)
+        release(view, x, y, modifiers=chord)
+
+        assert body.n_chunks == count, "a chord carrying Shift must not place"
+        assert chunk_id in view.document.selection, "Shift's toggle won"
 
     # -- dragging ----------------------------------------------------
 

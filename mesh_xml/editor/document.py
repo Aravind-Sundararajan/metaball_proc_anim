@@ -24,6 +24,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
+import xml.etree.ElementTree as ET
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal
@@ -1050,21 +1051,24 @@ class Document(QObject):
     # editing
     # ------------------------------------------------------------------
 
-    def do(self, command: Command) -> None:
+    def do(self, command: Command) -> bool:
         """Apply a command and push it onto the active room's history.
 
         Refused while the room is abstracted: its creatures are parked
         data, and a command landing on the anchors-only body could orphan
         what :meth:`Room.realize` expects to find. Abstraction is a
-        simulation state, not an edit state.
+        simulation state, not an edit state. Returns whether the command
+        applied, so a caller with follow-up state of its own — a selection
+        to move, an id to hand out — can decline along with it.
         """
         if self.room.abstracted:
             self.status.emit(f"Realize {self.room.name!r} to edit it")
-            return
+            return False
         command.apply(self)
         self._undo.append(command)
         self._redo.clear()
         self._after_edit(command)
+        return True
 
     def undo(self) -> None:
         if not self.can_undo:
@@ -1147,8 +1151,11 @@ class Document(QObject):
         at: tuple[float, ...] | None = None,
         attach_to: int | None = None,
         radius: float | None = None,
-    ) -> int:
-        """Add a chunk, growing from the selection or at ``at``. Returns its id.
+    ) -> int | None:
+        """Add a chunk, growing from the selection or at ``at``. Returns its id,
+        or ``None`` when the room declined the edit (:meth:`do`'s abstracted
+        refusal) — the selection stands, and no id is invented for a chunk
+        that never existed.
 
         The rule, in three sentences. With exactly one chunk selected the new
         chunk is linked to it, inherits its radius, and continues the chain —
@@ -1234,6 +1241,11 @@ class Document(QObject):
         else:
             if attach_to is not None and not body.has_chunk(attach_to):
                 raise ValueError(f"attach_to names no chunk {attach_to}")
+            if len(at) != body.dim:
+                raise ValueError(
+                    f"at has {len(at)} components, expected {body.dim}; a "
+                    "placement is stated in the body's own dimensionality"
+                )
             pos = at
             if radius is None:
                 radius = (
@@ -1250,9 +1262,13 @@ class Document(QObject):
         )
         if anchors:
             links: list[Command] = [AddLink(new_id, s) for s in anchors]
-            self.do(Macro([added, *links], text="Add Chunk"))
+            applied = self.do(Macro([added, *links], text="Add Chunk"))
         else:
-            self.do(added)
+            applied = self.do(added)
+        if not applied:
+            # do() declined — an abstracted room — and nothing was built:
+            # there is no chunk to select and no id to hand out.
+            return None
         self.set_selection((new_id,))
         return new_id
 
@@ -1757,9 +1773,13 @@ class Document(QObject):
         return any(state.dirty for state in self._states.values())
 
     def new(self) -> None:
-        self._replace(Body(), None)
-        self.set_terrain(None)
-        self.room.doors = []
+        """A fresh rig on today's defaults — :meth:`adopt`'s null case, exactly.
+
+        Routed through adopt so the solver and blend reset with everything
+        else: New after a tuned file must not carry that file's physics into
+        a rig that never stated it (docs/SETTINGS.md §5).
+        """
+        self.adopt(Body())
         self.status.emit("New rig")
 
     def open(self, path) -> None:
@@ -1825,9 +1845,10 @@ class Document(QObject):
         room.controllers = (
             controllers if controllers is not None else ControllerStack(body)
         )
-        room.solver_config = (
-            solver if solver is not None else SolverConfig(ground_y=0.0)
-        )
+        # A fresh Room is already founded; only a file that states its
+        # physics overrides that, so the opinion stays spelled once, in Room.
+        if solver is not None:
+            room.solver_config = solver
         room.solver_config.terrain = terrain
         room.doors = list(doors)
         self.add_room(room)
@@ -1872,7 +1893,7 @@ class Document(QObject):
         if controllers is not None:
             self.controllers = controllers
             self.controllers_changed.emit()
-        config = solver if solver is not None else SolverConfig(ground_y=0.0)
+        config = solver if solver is not None else Room.founding_config()
         # The incoming config carries the *old* world across the swap, so
         # :meth:`set_terrain` still judges — and announces — the world change
         # itself, including a terrain cleared by a file that has none.
@@ -1933,9 +1954,8 @@ class Document(QObject):
             room.controllers = (
                 controllers if controllers is not None else ControllerStack(body)
             )
-            room.solver_config = (
-                solver if solver is not None else SolverConfig(ground_y=0.0)
-            )
+            if solver is not None:
+                room.solver_config = solver
             room.solver_config.terrain = terrain
             room.doors = list(doors)
             scene.add_room(room)
@@ -2084,11 +2104,28 @@ def _read_rig(
     except Exception:
         # A scene manifest is not an older rig era; falling through to the
         # legacy reader would bury the one error message that says what to
-        # do instead.
-        if scene_xml.is_manifest(path):
+        # do instead. A versioned <body> is not one either: it failed as the
+        # format it names, and the refusal that says how — a solver arity, a
+        # NaN damping — is the message worth surfacing.
+        if scene_xml.is_manifest(path) or _is_versioned_body(path):
             raise
         result = xml_legacy.read_legacy(path)
         note = f"Opened {path.name} (legacy, {result.coords} coordinates)"
         if result.missing_mesh:
             note += f"; {len(result.missing_mesh)} bone(s) had no mesh"
         return result.body, None, None, (), None, None, note
+
+
+def _is_versioned_body(path: Path) -> bool:
+    """Whether the file's root tag says ``<body>`` — ``is_manifest``'s sniff.
+
+    Decides only "did the v3/v2 reader already own this file"; an
+    unparseable file is not a versioned body, and the legacy ladder that
+    then runs produces the real error.
+    """
+    try:
+        for _event, element in ET.iterparse(path, events=("start",)):
+            return element.tag == "body"
+    except (OSError, ET.ParseError):
+        return False
+    return False

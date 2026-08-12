@@ -228,6 +228,20 @@ def _spin(
     return box
 
 
+def _admit(box, value) -> None:
+    """Widen a spin box's range to include a loaded value before showing it.
+
+    A panel's range is an authoring suggestion; the format's domain is wider
+    (a damping of 1.02 rings, and the reader admits it — docs/SETTINGS.md
+    §4). Clamping the display would show physics the room is not running,
+    and the next nudge would silently commit the clamp to the file.
+    """
+    if value < box.minimum():
+        box.setMinimum(value)
+    if value > box.maximum():
+        box.setMaximum(value)
+
+
 def _note(text: str) -> QLabel:
     """Small print that belongs next to a control, not in a manual nobody opens."""
     label = QLabel(text)
@@ -684,6 +698,7 @@ class SurfacePanel(_Panel):
 
     def _refresh(self) -> None:
         settings = self._document.metaball
+        _admit(self._blend, float(settings.blend))
         self._blend.setValue(float(settings.blend))
         self._blend_slider.setValue(
             round(float(settings.blend) * _BLEND_STEPS / _BLEND_MAX)
@@ -877,14 +892,20 @@ class SolverPanel(_Panel):
         gravity = self._authored_gravity()
         zero = not any(gravity)
 
+        _admit(self._iterations, int(config.iterations))
         self._iterations.setValue(int(config.iterations))
+        _admit(self._damping, float(config.damping))
         self._damping.setValue(float(config.damping))
+        _admit(self._max_velocity, float(config.max_velocity))
         self._max_velocity.setValue(float(config.max_velocity))
+        _admit(self._friction, float(config.ground_friction))
         self._friction.setValue(float(config.ground_friction))
         self._self_contact.setChecked(bool(config.self_contact))
+        _admit(self._contact_elasticity, float(config.self_contact_elasticity))
         self._contact_elasticity.setValue(float(config.self_contact_elasticity))
         self._contact_elasticity.setEnabled(bool(config.self_contact))
         for spin, value in zip(self._gravity, gravity):
+            _admit(spin, value)
             spin.setValue(value)
             spin.setEnabled(not zero)
         self._zero_g.setChecked(zero)

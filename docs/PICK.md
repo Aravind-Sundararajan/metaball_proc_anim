@@ -99,9 +99,10 @@ position sources, not two rules that drift.
 full and empty clicks, and right-click cannot distinguish click from
 pan-drag without inventing a threshold. Ctrl is unclaimed, chords with
 nothing, and reads as "apply here" everywhere else in the desktop
-idiom. On press with Ctrl: run the pick; on a hit, place and consume
-the click — no drag begins, no orbit; on a **miss, consume and do
-nothing**. Not the legacy origin fallback (indicted), not a fall-through
+idiom. Exactly Ctrl — a chord carrying Shift is a selection gesture
+and falls through to the ladder that owns it. On press with Ctrl: run
+the pick; on a hit, place and consume the click — no drag begins, no
+orbit; on a **miss, consume and do nothing**. Not the legacy origin fallback (indicted), not a fall-through
 to orbit (a failed place that spins the camera punishes the author for
 missing by a pixel). Sky means no.
 

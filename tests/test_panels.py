@@ -1145,3 +1145,26 @@ class TestSettingsDirty:
         assert document.metaball.max_steps == 256
         assert not document.metaball.show_floor
         assert not document.dirty
+
+
+class TestLoadedValuesDisplayed:
+    """The panel's range is an authoring suggestion; the file's domain is
+    wider, and a loaded value must be displayed, not clamped into a lie the
+    next nudge would commit."""
+
+    def test_an_admitted_damping_shows_unclamped(self, document):
+        panel = panels.SolverPanel(document)
+        document.solver_config.damping = 1.02
+        document.settings_changed.emit()
+
+        assert panel._damping.value() == pytest.approx(1.02)
+        assert document.solver_config.damping == pytest.approx(1.02)
+        assert not document.dirty
+
+    def test_an_admitted_blend_shows_unclamped(self, document):
+        panel = panels.SurfacePanel(document)
+        document.metaball.blend = 3.5
+        document.settings_changed.emit()
+
+        assert panel._blend.value() == pytest.approx(3.5)
+        assert not document.dirty
