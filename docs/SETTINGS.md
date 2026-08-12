@@ -1,6 +1,7 @@
 # Settings persistence: the file states its physics and its blend
 
-**Status:** designed — no packages landed.
+**Status:** landed — both packages. A tuned file reopens exactly as
+tuned, and the shipped quadruped's bytes did not change.
 **Arc:** first half of the authoring-completeness branch; SDF-pick chunk
 placement is the second half and gets its own design.
 **North star:** a saved creature reopens exactly as tuned, and a file can

@@ -1,6 +1,7 @@
 # The surface pick: a click that states a position
 
-**Status:** designed — no packages landed.
+**Status:** landed — all three packages; the ortho repair rode package
+1, and §2's floor paragraph was corrected against the shader mid-arc.
 **Arc:** second half of the authoring-completeness branch, beside
 docs/SETTINGS.md.
 **North star:** clicking the thing you see puts a chunk on the thing you
