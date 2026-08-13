@@ -1473,3 +1473,64 @@ class TestSelfFriction:
         run(deep, 40, still(self_contact=True, self_friction=1.0))
 
         assert self._travel(deep, d1) < self._travel(shallow, s1) - 1e-3
+
+
+class TestReviewProbes:
+    """The two failures the adversarial review proved with probes, pinned."""
+
+    def test_a_corner_crossing_is_not_invisible(self):
+        """The cone's shoulder protrudes past the endpoint sphere: a stranger
+        crossing at the corner is visible to no sphere, and the capsule
+        family keeps it rather than deferring to one that cannot see it."""
+        body = Body(dim=3)
+        a1 = body.add_chunk("a1", (0.0, 0.0, 0.0), radius=0.2)
+        a2 = body.add_chunk("a2", (8.0, 0.0, 0.0), radius=0.2)
+        b1 = body.add_chunk("b1", (0.2, 0.3, 0.2), radius=0.2)
+        b2 = body.add_chunk("b2", (0.2, 0.3, 8.2), radius=0.2)
+        body.add_link(a1, a2)
+        body.add_link(b1, b2)
+
+        run(body, 80, still(self_contact=True))
+
+        pa = np.linspace(body.pos[body.slot(a1)], body.pos[body.slot(a2)], 129)
+        pb = np.linspace(body.pos[body.slot(b1)], body.pos[body.slot(b2)], 129)
+        gap = float(
+            np.linalg.norm(pa[:, None, :] - pb[None, :, :], axis=2).min()
+        )
+        assert gap >= 0.4 - 2e-2
+
+    def test_static_grip_holds_mid_span(self):
+        """scale == 1 is static grip at the contact, mid-span included: under
+        a sustained tangential load the late-time creep is zero — the
+        floor's own promise, between parts. The first-power undo failed
+        this at every mu; delivery, not budget, was the shortfall."""
+
+        def rig():
+            body = Body(dim=3)
+            p1 = body.add_chunk("p1", (-4.0, 0.0, 0.0), radius=0.2, pinned=True)
+            p2 = body.add_chunk("p2", (4.0, 0.0, 0.0), radius=0.2, pinned=True)
+            body.add_link(p1, p2)
+            r1 = body.add_chunk("r1", (0.0, 0.35, -2.0), radius=0.2)
+            r2 = body.add_chunk("r2", (0.0, 0.35, 2.0), radius=0.2)
+            body.add_link(r1, r2)
+            return body, r1
+
+        tilted = dict(gravity=(0.5, -9.81, 0.0), self_contact=True)
+
+        gripped, g1 = rig()
+        held = SolverConfig(self_friction=5.0, **tilted)
+        run(gripped, 250, held)
+        settled = float(gripped.pos[gripped.slot(g1)][0])
+        run(gripped, 50, held)
+        assert float(gripped.pos[gripped.slot(g1)][0]) == pytest.approx(
+            settled, abs=1e-5
+        )
+
+        greased, l1 = rig()
+        loose = SolverConfig(**tilted)
+        run(greased, 250, loose)
+        drifted = float(greased.pos[greased.slot(l1)][0])
+        run(greased, 50, loose)
+        assert float(greased.pos[greased.slot(l1)][0]) > drifted + 1e-4, (
+            "without grip the same load must keep creeping"
+        )

@@ -220,11 +220,7 @@ def _collide_ground(body: Body, config: SolverConfig) -> None:
     slid = np.linalg.norm(slide, axis=1)
     grip = np.float32(mu) * depth[contact]
 
-    # A zero slide needs no undoing and must stay out of the division; its
-    # untouched lane scales a zero vector by one, which is still zero.
-    scale = np.ones_like(slid)
-    np.divide(grip, slid, out=scale, where=slid > 0.0)
-    np.minimum(scale, np.float32(1.0), out=scale)
+    scale = _grip_scale(grip, slid)
     pos[at] -= slide * scale[:, None]
 
 
@@ -288,11 +284,7 @@ def _collide_terrain(body: Body, config: SolverConfig) -> None:
     slid = np.linalg.norm(slide, axis=1)
     grip = mu * depth
 
-    # A zero slide needs no undoing and must stay out of the division; its
-    # untouched lane scales a zero vector by one, which is still zero.
-    scale = np.ones_like(slid)
-    np.divide(grip, slid, out=scale, where=slid > 0.0)
-    np.minimum(scale, 1.0, out=scale)
+    scale = _grip_scale(grip, slid)
     pos[contact] -= slide * scale[:, None]
 
 
@@ -367,6 +359,33 @@ def _end_owner(
     take1 = in1 & (~in2 | (param <= 0.5))
     owner[take1] = slot1[take1]
     return owner
+
+
+def _contact_axis(
+    delta: np.ndarray, dist: np.ndarray, fallback: np.ndarray
+) -> np.ndarray:
+    """Unit contact axis, the coincident lane taking the stated fallback.
+
+    The landed sphere idiom, shared by every family: a zero distance has no
+    direction to report, and the first basis vector is the one deterministic
+    answer that cannot be NaN.
+    """
+    coincident = dist < _COINCIDENT_EPS
+    axis = delta / np.where(coincident, np.float32(1.0), dist)[:, None]
+    axis[coincident] = fallback
+    return axis
+
+
+def _grip_scale(grip: np.ndarray, slid: np.ndarray) -> np.ndarray:
+    """Coulomb's clamp: undo up to ``grip`` of ``slid``, never more than all.
+
+    A zero slide needs no undoing and must stay out of the division; its
+    untouched lane scales a zero vector by one, which is still zero.
+    """
+    scale = np.ones_like(slid)
+    np.divide(grip, slid, out=scale, where=slid > 0.0)
+    np.minimum(scale, np.float32(1.0), out=scale)
+    return scale
 
 
 def _collide_self(body: Body, config: SolverConfig) -> None:
@@ -454,11 +473,7 @@ def _collide_self(body: Body, config: SolverConfig) -> None:
     ai, bi = np.nonzero(np.triu(overlapping & ~near & movable, k=1))
     if ai.size:
         dist = np.sqrt(dist_sq[ai, bi])
-        coincident = dist < _COINCIDENT_EPS
-        axis = (pos[ai] - pos[bi]) / np.where(coincident, np.float32(1.0), dist)[
-            :, None
-        ]
-        axis[coincident] = fallback
+        axis = _contact_axis(pos[ai] - pos[bi], dist, fallback)
         zero = np.zeros(ai.size, dtype=np.float32)
         parts.append((ai, ai, zero, bi, bi, zero, axis, dist - reach[ai, bi]))
 
@@ -500,24 +515,27 @@ def _collide_self(body: Body, config: SolverConfig) -> None:
                 + (np.float32(1.0) - t) * r1[jj]
                 + t * r2[jj]
             )
-            # A landing with both sides in end zones is a chunk pair's
-            # contact whatever the graph says: exempt when the owners are
-            # second neighbours, and the sphere family's own discovery when
-            # they are strangers. Either way it is not this family's
-            # business — the spheres own the ends, the spans own the middle,
-            # and emitting the end case here would perturb the sphere
-            # family's exact arithmetic with a fatter duplicate.
+            # A landing with both sides in end zones belongs to its owner
+            # chunks: exempt when the chunk rule exempts, and handed to the
+            # sphere family only where the sphere pair can actually SEE the
+            # overlap — the cone's shoulder protrudes past the endpoint
+            # sphere, so a stranger crossing at the corner is visible to no
+            # sphere, and that band stays this family's. Where the spheres
+            # do see it, emitting a fatter duplicate here would perturb
+            # their exact arithmetic.
             owner_a = _end_owner(s, length[ii], r1[ii], r2[ii], la[ii], lb[ii])
             owner_b = _end_owner(t, length[jj], r1[jj], r2[jj], la[jj], lb[jj])
-            deferred = (owner_a >= 0) & (owner_b >= 0)
+            owned = (owner_a >= 0) & (owner_b >= 0)
+            oa = np.where(owned, owner_a, 0)
+            ob = np.where(owned, owner_b, 0)
+            spheres_see = dist_sq[oa, ob] < reach[oa, ob] * reach[oa, ob]
+            deferred = owned & (near[oa, ob] | spheres_see)
             keep = (dist < span_reach) & ~deferred
             if keep.any():
                 ii, jj, s, t = ii[keep], jj[keep], s[keep], t[keep]
                 delta, dist = delta[keep], dist[keep]
                 span_reach = span_reach[keep]
-                coincident = dist < _COINCIDENT_EPS
-                axis = delta / np.where(coincident, np.float32(1.0), dist)[:, None]
-                axis[coincident] = fallback
+                axis = _contact_axis(delta, dist, fallback)
                 parts.append(
                     (la[ii], lb[ii], s, la[jj], lb[jj], t, axis, dist - span_reach)
                 )
@@ -534,12 +552,11 @@ def _collide_self(body: Body, config: SolverConfig) -> None:
         sweep = half[None, :] + rmax[None, :] + radius[:, None]
         ci, kk = np.nonzero((mid_sq < sweep * sweep) & ~endpoint & ~whole_near)
         if ci.size:
-            e = np.einsum("id,id->i", seg[kk], seg[kk])
-            e_deg = e <= np.float32(_COINCIDENT_EPS * _COINCIDENT_EPS)
-            e_safe = np.where(e_deg, np.float32(1.0), e)
-            t = np.einsum("id,id->i", pos[ci] - p1[kk], seg[kk]) / e_safe
-            t = np.where(e_deg, np.float32(0.0), t)
-            t = np.clip(t, 0.0, 1.0).astype(np.float32)
+            # A chunk is a zero-length segment; the shared cascade's
+            # degenerate lane IS the clamped point projection.
+            _, t = _segment_params(
+                np.zeros_like(seg[kk]), seg[kk], pos[ci] - p1[kk]
+            )
             cb = p1[kk] + t[:, None] * seg[kk]
             delta = pos[ci] - cb
             dist = np.sqrt(np.einsum("id,id->i", delta, delta))
@@ -547,17 +564,20 @@ def _collide_self(body: Body, config: SolverConfig) -> None:
                 radius[ci] + (np.float32(1.0) - t) * r1[kk] + t * r2[kk]
             )
             # An end-zone landing is the chunk pair (chunk, owner) — sphere
-            # jurisdiction on the same terms as above; only a mid-span
-            # landing is this family's contact.
+            # jurisdiction on the terms above: exempt when near, handed over
+            # only where the sphere pair sees the overlap, kept where the
+            # cone's shoulder hides it from every sphere.
             owner_b = _end_owner(t, length[kk], r1[kk], r2[kk], la[kk], lb[kk])
-            keep = (dist < span_reach) & (owner_b < 0)
+            owned = owner_b >= 0
+            ob = np.where(owned, owner_b, 0)
+            spheres_see = dist_sq[ci, ob] < reach[ci, ob] * reach[ci, ob]
+            handled = owned & (near[ci, ob] | spheres_see)
+            keep = (dist < span_reach) & ~handled
             if keep.any():
                 ci, kk, t = ci[keep], kk[keep], t[keep]
                 delta, dist = delta[keep], dist[keep]
                 span_reach = span_reach[keep]
-                coincident = dist < _COINCIDENT_EPS
-                axis = delta / np.where(coincident, np.float32(1.0), dist)[:, None]
-                axis[coincident] = fallback
+                axis = _contact_axis(delta, dist, fallback)
                 zero = np.zeros(ci.size, dtype=np.float32)
                 parts.append(
                     (ci, ci, zero, la[kk], lb[kk], t, axis, dist - span_reach)
@@ -628,15 +648,13 @@ def _collide_self(body: Body, config: SolverConfig) -> None:
     # the relative normal closure this contact actually applied — share and
     # weight and both sides' barycentric mass shares included — never the
     # discovered overlap.
-    applied = (
-        -(share * weight)
-        * (
-            (one - s) * (one - s) * inv_mass[i1]
-            + s * s * inv_mass[i2]
-            + (one - t) * (one - t) * inv_mass[j1]
-            + t * t * inv_mass[j2]
-        )
+    q = (
+        (one - s) * (one - s) * inv_mass[i1]
+        + s * s * inv_mass[i2]
+        + (one - t) * (one - t) * inv_mass[j1]
+        + t * t * inv_mass[j2]
     )
+    applied = -(share * weight) * q
     moved_a = (one - s)[:, None] * (pos[i1] - prev[i1]) + s[:, None] * (
         pos[i2] - prev[i2]
     )
@@ -648,14 +666,22 @@ def _collide_self(body: Body, config: SolverConfig) -> None:
     slid = np.sqrt(np.einsum("id,id->i", slide, slide))
 
     grip = np.float32(mu) * applied
-    scale = np.ones_like(slid)
-    np.divide(grip, slid, out=scale, where=slid > 0.0)
-    np.minimum(scale, np.float32(1.0), out=scale)
-    # The undo is a share like the normal one — divided by the same
-    # first-power denominator so the scatter's inverse masses cancel back to
-    # a displacement, and tempered by the same convex weight, because grips
-    # pile on a chunk where the floor only ever lands one.
-    undo = slide * (scale * weight / denom)[:, None]
+    scale = _grip_scale(grip, slid)
+    # Full delivery, not the first-power share: the undo divides by the
+    # same squared-barycentric form that measured the applied closure, so
+    # scale == 1 is static grip at the contact, mid-span included — the
+    # first-power form under-delivers by half there, and the shortfall
+    # replays as implicit velocity, a creep no mu can stop. The squared
+    # form's pinned-end lever is capped with ONE bound per contact — both
+    # sides together, so momentum stays exact — at no more than the whole
+    # slide per endpoint: grip near a pin degrades with the lever arm
+    # instead of flinging.
+    lever = np.maximum(
+        np.maximum((one - s) * inv_mass[i1], s * inv_mass[i2]),
+        np.maximum((one - t) * inv_mass[j1], t * inv_mass[j2]),
+    )
+    u = np.minimum(scale / q, np.float32(1.0) / lever)
+    undo = slide * (u * weight)[:, None]
 
     correction = np.zeros_like(pos)
     np.add.at(correction, i1, (-inv_mass[i1] * (one - s))[:, None] * undo)

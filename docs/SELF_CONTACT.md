@@ -98,12 +98,16 @@ renounces. So the exemption moves down a level, onto the contact itself:
   fold's own geometry, and the fold's governed form is the brace.
 - **Everywhere else, jurisdiction decides at the landing.** The stretch
   of cone an endpoint's own sphere dominates is that chunk's flesh — its
-  end zone — and a contact landing with every side in an end zone is the
-  *sphere family's* outright: exempt where the chunk rule exempts,
-  discovered there where it does not, and never emitted by the capsule
-  families, whose fatter duplicate would perturb the sphere family's
-  exact arithmetic. Any side landing on a stranger's mid-span makes the
-  contact real. On a well-chunked body the end zones tile every span and
+  end zone — and a contact landing with every side in an end zone
+  belongs to its owner chunks: exempt where the chunk rule exempts, and
+  handed to the sphere family only where the sphere pair can actually
+  *see* the overlap. The cone's shoulder protrudes past the endpoint
+  sphere, so a stranger crossing at the corner is visible to no sphere —
+  review proved a permanent standing overlap there, nearly a third of
+  combined radii at a perpendicular corner — and that band stays the
+  capsule family's; where the spheres do see it, a fatter duplicate
+  would perturb their exact arithmetic. Any side landing on a
+  stranger's mid-span makes the contact real. On a well-chunked body the end zones tile every span and
   the capsule families go silent — the landed behaviour exactly, which
   is what keeps every pre-arc test bit-identical; they speak where the
   body is sparse, which is the gap they exist to close.
@@ -207,11 +211,25 @@ exactly the approach and leaves exactly the slide. Corrections arriving
 from *other* contacts at shared chunks read as slide; the floor already
 tolerates precisely this from the passes ahead of it, and rediscovery
 absorbs it. The tangential undo is split equal and opposite in
-mass-weighted terms like the normal share, capped at `μ·d`, acting on
-`pos` and never on `prev` — §2's whole fix, applied between parts —
-and it runs under the same convex per-contact weight, because several
-grips can pile on one chunk where the floor only ever lands one.
-Zero-slide lanes stay out of the division, the floor's own guard.
+mass-weighted terms, capped at `μ·d`, acting on `pos` and never on
+`prev` — §2's whole fix, applied between parts — and it runs under the
+same convex per-contact weight, because several grips can pile on one
+chunk where the floor only ever lands one. Zero-slide lanes stay out of
+the division, the floor's own guard.
+
+Delivery, review-proven: the undo's denominator is the *squared*
+barycentric form — the same one that measured the applied closure — not
+the normal share's first power, because a saturated cap must *be*
+static grip at the contact, mid-span included. The first-power form
+delivers half there, and the shortfall replays as implicit velocity: a
+creep no `μ` can stop, which a probe measured perfectly linear for a
+thousand ticks. The squared form's pinned-end lever is capped with one
+bound per contact — both sides together, so momentum stays exact — at
+no more than the whole slide per endpoint: grip near a pin degrades
+with the lever arm instead of flinging. The two passes split the
+tradeoff on their own terms: penetration is re-measured every tick, so
+the normal share may under-deliver and stay bounded; slide has no such
+integral, so friction must deliver in full and cap the lever instead.
 
 ## 6. Riding the landed rails
 
@@ -265,14 +283,20 @@ of mass stationary on a *fully free* tangle;
 `test_contact_cannot_push_a_chunk_underground`,
 `test_a_free_cluster_does_not_drift`,
 `test_a_pile_stays_finite_and_resolves`, and
-`test_off_by_default_overlapping_strangers_stay_put` unchanged.
+`test_off_by_default_overlapping_strangers_stay_put` unchanged; and the
+review probe pinned as a regression: a perpendicular corner crossing —
+end zones both sides, spheres blind — separates instead of standing
+interpenetrated forever.
 
 **Package 2 — self-friction.** `SolverConfig.self_friction`, the
 Coulomb undo at the contact points on §5's exact terms. Tests: `μ=0`
 byte-identical to package 1; a two-turn coil under gravity holds its
 wrap at high `μ` and sheds it at zero; holdable tangential load scales
 with the applied closure; several grips piling on one chunk stay
-convex; every ground and terrain friction test untouched. Retires
+convex; every ground and terrain friction test untouched; and the
+review probe pinned as a regression — under a sustained tangential
+load a mid-span grip's late-time creep is exactly zero, because static
+means static. Retires
 `_collide_self`'s closing no-grip paragraph in the same commit — the
 docstring must not outlive the truth it states.
 
