@@ -182,11 +182,11 @@ contact push can never end a tick with a chunk underground. Measured: two
 overlapping strangers dropped under gravity stack at exactly one and three
 radii above the floor, every tick of the way down.
 
-What it deliberately is not: there is no friction between a body's own parts
-(strangers separate without grip — a creature holding onto its own body is a
-controller feature); there is no capsule-capsule test (chunk spheres only, so
-two long links can still cross between sparsely-chunked spans); and the
-surface is untouched — the SDF still smooth-mins everything, so nearby limbs
-merge visually at blend distance `k` before their chunks ever touch. Keeping
-limbs visually distinct needs margin authored into radii or blend groups in
-the field, and that is a render decision, not a contact one.
+What it deliberately is not: of the three non-features this paragraph once
+named, two have since landed on their own arc — self-friction
+(`SolverConfig.self_friction`) and the capsule-capsule test are
+docs/SELF_CONTACT.md's work; and the surface is untouched — the SDF still
+smooth-mins everything, so nearby limbs merge visually at blend distance `k`
+before their chunks ever touch. Keeping limbs visually distinct needs margin
+authored into radii or blend groups in the field, and that is a render
+decision, not a contact one.

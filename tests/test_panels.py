@@ -388,17 +388,22 @@ class TestSolverPanel:
         assert document.solver_config.gravity == pytest.approx((0.0, -9.81, 0.0))
         assert panel._gravity[1].isEnabled()
 
-    def test_self_contact_reaches_the_config_and_gates_its_knob(self, document):
+    def test_self_contact_reaches_the_config_and_gates_its_knobs(self, document):
         panel = panels.SolverPanel(document)
         assert not document.solver_config.self_contact
         assert not panel._contact_elasticity.isEnabled()
+        assert not panel._self_friction.isEnabled()
 
         panel._self_contact.setChecked(True)
         assert document.solver_config.self_contact
         assert panel._contact_elasticity.isEnabled()
+        assert panel._self_friction.isEnabled()
 
         panel._contact_elasticity.setValue(0.8)
         assert document.solver_config.self_contact_elasticity == pytest.approx(0.8)
+
+        panel._self_friction.setValue(0.4)
+        assert document.solver_config.self_friction == pytest.approx(0.4)
 
     def test_a_config_change_reflects_into_the_controls(self, document):
         panel = panels.SolverPanel(document)
@@ -1134,6 +1139,15 @@ class TestSettingsDirty:
         assert document.solver_config.iterations == 8
         assert document.dirty
 
+    def test_a_self_friction_edit_dirties_the_document(self, document):
+        panel = panels.SolverPanel(document)
+        assert not document.dirty
+
+        panel._self_friction.setValue(0.4)
+
+        assert document.solver_config.self_friction == pytest.approx(0.4)
+        assert document.dirty
+
     def test_view_only_edits_keep_the_file_clean(self, document):
         panel = panels.SurfacePanel(document)
 
@@ -1159,6 +1173,15 @@ class TestLoadedValuesDisplayed:
 
         assert panel._damping.value() == pytest.approx(1.02)
         assert document.solver_config.damping == pytest.approx(1.02)
+        assert not document.dirty
+
+    def test_an_admitted_self_friction_shows_unclamped(self, document):
+        panel = panels.SolverPanel(document)
+        document.solver_config.self_friction = 7.5
+        document.settings_changed.emit()
+
+        assert panel._self_friction.value() == pytest.approx(7.5)
+        assert document.solver_config.self_friction == pytest.approx(7.5)
         assert not document.dirty
 
     def test_an_admitted_blend_shows_unclamped(self, document):

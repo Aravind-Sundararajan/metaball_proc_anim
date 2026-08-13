@@ -357,6 +357,7 @@ def save(
         attrs["ground_friction"] = repr(float(solver.ground_friction))
         attrs["self_contact"] = "true" if solver.self_contact else "false"
         attrs["self_contact_elasticity"] = repr(float(solver.self_contact_elasticity))
+        attrs["self_friction"] = repr(float(solver.self_friction))
         ET.SubElement(root, "solver", attrs)
 
     # The number rather than MetaballSettings: that class lives beside the
@@ -623,6 +624,9 @@ def _read_solver(root: ET.Element, dim: int) -> SolverConfig | None:
             "self_contact_elasticity",
             default=defaults.self_contact_elasticity,
         ),
+        self_friction=_float_attr(
+            element, "self_friction", default=defaults.self_friction
+        ),
     )
 
     if config.iterations < 0:
@@ -637,6 +641,7 @@ def _read_solver(root: ET.Element, dim: int) -> SolverConfig | None:
         ("ground_y", () if config.ground_y is None else (config.ground_y,)),
         ("ground_friction", (config.ground_friction,)),
         ("self_contact_elasticity", (config.self_contact_elasticity,)),
+        ("self_friction", (config.self_friction,)),
     ):
         for value in values:
             if not np.isfinite(value):

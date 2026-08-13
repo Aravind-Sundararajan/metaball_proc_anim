@@ -1258,3 +1258,279 @@ class TestSelfContact:
         step(body, TICK_DT, still(self_contact=True, self_contact_elasticity=1.0))
 
         assert separation(body, 0, 1) == pytest.approx(1.0, abs=1e-5)
+
+
+class TestCapsuleContact:
+    """The flesh between chunks collides (docs/SELF_CONTACT.md).
+
+    Geometry throughout keeps the families honest: spans are long enough
+    (radius 0.2, rest 8) that end zones are a fortieth of the run and every
+    chunk-sphere pair is provably out of reach, so what separates here is
+    the capsule manifold and nothing else.
+    """
+
+    def _crossing(self, dim: int = 3) -> tuple:
+        body = Body(dim=dim)
+        if dim == 3:
+            a1 = body.add_chunk("a1", (-4.0, 0.0, 0.0), radius=0.2)
+            a2 = body.add_chunk("a2", (4.0, 0.0, 0.0), radius=0.2)
+            b1 = body.add_chunk("b1", (0.0, 0.3, -4.0), radius=0.2)
+            b2 = body.add_chunk("b2", (0.0, 0.3, 4.0), radius=0.2)
+        else:
+            a1 = body.add_chunk("a1", (-4.0, 0.0), radius=0.5)
+            a2 = body.add_chunk("a2", (4.0, 0.0), radius=0.5)
+            b1 = body.add_chunk("b1", (-1.0, 0.6), radius=0.5)
+            b2 = body.add_chunk("b2", (7.0, 0.6), radius=0.5)
+        body.add_link(a1, a2)
+        body.add_link(b1, b2)
+        return body, a1, a2, b1, b2
+
+    def _gap(self, body: Body, a1, a2, b1, b2) -> float:
+        mid_a = 0.5 * (body.pos[body.slot(a1)] + body.pos[body.slot(a2)])
+        mid_b = 0.5 * (body.pos[body.slot(b1)] + body.pos[body.slot(b2)])
+        return float(mid_b[1] - mid_a[1])
+
+    def test_sparse_spans_no_longer_cross(self):
+        """The named non-feature, retired: mid-span flesh stops a stranger."""
+        body, a1, a2, b1, b2 = self._crossing()
+        com = body.pos.mean(axis=0).copy()
+
+        run(body, 50, still(self_contact=True))
+
+        assert self._gap(body, a1, a2, b1, b2) >= 0.4 - 1e-2
+        assert np.isfinite(body.pos).all()
+        assert np.linalg.norm(body.pos.mean(axis=0) - com) < 1e-3, (
+            "a free tangle must not gain momentum from its own contact"
+        )
+
+    def test_sparse_spans_separate_in_two_dimensions(self):
+        """Exactly parallel and in-plane - the tie-break lands mid-run."""
+        body, a1, a2, b1, b2 = self._crossing(dim=2)
+
+        run(body, 50, still(self_contact=True))
+
+        assert self._gap(body, a1, a2, b1, b2) >= 1.0 - 2e-2
+        assert np.isfinite(body.pos).all()
+
+    def test_the_skew_scissor_separates(self):
+        """Two folds crossing second-neighbour spans mid-length: the case a
+        pair-level exemption cannot test, caught at the contact."""
+        body = Body(dim=3)
+        c0 = body.add_chunk("c0", (-2.0, 0.0, 0.0), radius=0.2)
+        c1 = body.add_chunk("c1", (2.0, 0.0, 0.0), radius=0.2)
+        c2 = body.add_chunk("c2", (0.0, 0.3, -2.0), radius=0.2)
+        c3 = body.add_chunk("c3", (0.0, 0.3, 2.0), radius=0.2)
+        for u, v in ((c0, c1), (c1, c2), (c2, c3)):
+            body.add_link(u, v)
+
+        run(body, 50, still(self_contact=True))
+
+        mid_a = 0.5 * (body.pos[body.slot(c0)] + body.pos[body.slot(c1)])
+        mid_b = 0.5 * (body.pos[body.slot(c2)] + body.pos[body.slot(c3)])
+        assert float(mid_b[1] - mid_a[1]) >= 0.4 - 5e-2
+
+    def test_an_authored_fold_is_not_fought(self):
+        """End-zone landings are sphere jurisdiction: where the chunk rule
+        exempts, the capsule families stay silent too."""
+        body = Body(dim=3)
+        ids = [
+            body.add_chunk(name, pos)
+            for name, pos in (
+                ("a", (0.0, 0.0, 0.0)),
+                ("b", (1.0, 0.0, 0.0)),
+                ("c", (1.0, 1.0, 0.0)),
+                ("d", (1.2, 0.2, 0.0)),
+            )
+        ]
+        for u, v in zip(ids, ids[1:]):
+            body.add_link(u, v)
+        before = body.pos.copy()
+
+        step(body, TICK_DT, still(self_contact=True, self_contact_elasticity=1.0))
+
+        assert (body.pos == before).all()
+
+    def test_a_head_rests_on_a_stranger_span(self):
+        body = Body(dim=3)
+        a1 = body.add_chunk("a1", (-4.0, 0.0, 0.0))
+        a2 = body.add_chunk("a2", (4.0, 0.0, 0.0))
+        body.add_link(a1, a2)
+        head = body.add_chunk("head", (0.0, 0.7, 0.0))
+
+        run(body, 50, still(self_contact=True))
+
+        lift = float(
+            body.pos[body.slot(head)][1]
+            - 0.5 * (body.pos[body.slot(a1)][1] + body.pos[body.slot(a2)][1])
+        )
+        assert lift >= 1.0 - 2e-2
+
+    def test_mechanism_links_collide_with_nothing(self):
+        body = Body(dim=3)
+        a1 = body.add_chunk("a1", (-4.0, 0.0, 0.0))
+        a2 = body.add_chunk("a2", (4.0, 0.0, 0.0))
+        body.add_link(a1, a2, render=False)
+        body.add_chunk("head", (0.0, 0.7, 0.0))
+        before = body.pos.copy()
+
+        run(body, 10, still(self_contact=True))
+
+        assert (body.pos == before).all()
+
+    def test_a_contact_beside_a_pin_stays_bounded(self):
+        """First power, not squared: no endpoint moves farther than the
+        depth, however close to a pinned end the contact lands."""
+        body = Body(dim=3)
+        p = body.add_chunk("p", (0.0, 0.0, 0.0), radius=0.2, pinned=True)
+        q = body.add_chunk("q", (8.0, 0.0, 0.0), radius=0.2)
+        body.add_link(p, q)
+        body.add_chunk("c", (0.4, 0.25, 0.0), radius=0.2, pinned=True)
+        depth = 0.4 - 0.25
+        q_before = body.pos[body.slot(q)].copy()
+
+        step(body, TICK_DT, still(self_contact=True, self_contact_elasticity=1.0))
+
+        moved = float(np.linalg.norm(body.pos[body.slot(q)] - q_before))
+        assert moved <= depth + 1e-4
+        assert moved > 0.0, "the free end is the only place the push can go"
+
+    def test_a_pile_of_families_stays_convex(self):
+        """Sphere pairs and a mid-span contact on the same chunks: shared
+        counting keeps the sum bounded by the largest single error."""
+        body = Body(dim=3)
+        a1 = body.add_chunk("a1", (-4.0, 0.0, 0.0))
+        a2 = body.add_chunk("a2", (4.0, 0.0, 0.0))
+        b1 = body.add_chunk("b1", (-4.0, 0.6, 0.0))
+        b2 = body.add_chunk("b2", (4.0, 0.6, 0.0))
+        body.add_link(a1, a2)
+        body.add_link(b1, b2)
+        before = body.pos.copy()
+
+        step(body, TICK_DT, still(self_contact=True, self_contact_elasticity=1.0))
+
+        stepped = np.linalg.norm(body.pos - before, axis=1)
+        assert float(stepped.max()) <= 0.4 + 1e-4
+        assert np.isfinite(body.pos).all()
+
+
+class TestSelfFriction:
+    """Coulomb between a body's own parts: grip by the load actually
+    crossing the contact, and none at all at zero."""
+
+    def _press(self, gap: float = 0.8) -> tuple:
+        body = Body(dim=3)
+        p1 = body.add_chunk("p1", (-4.0, 0.0, 0.0), pinned=True)
+        p2 = body.add_chunk("p2", (4.0, 0.0, 0.0), pinned=True)
+        body.add_link(p1, p2)
+        r1 = body.add_chunk("r1", (-1.0, gap, -2.0))
+        r2 = body.add_chunk("r2", (-1.0, gap, 2.0))
+        body.add_link(r1, r2)
+        for rider in (r1, r2):
+            body.prev_pos[body.slot(rider)][0] -= 0.05
+        return body, r1, r2
+
+    def _travel(self, body: Body, r1) -> float:
+        return float(body.pos[body.slot(r1)][0] - (-1.0))
+
+    def test_zero_mu_leaves_the_slide_alone(self):
+        body, r1, _ = self._press()
+
+        step(
+            body,
+            TICK_DT,
+            still(self_contact=True, self_friction=0.0, damping=1.0),
+        )
+
+        assert self._travel(body, r1) == pytest.approx(0.05, abs=1e-6)
+
+    def test_grip_holds_what_zero_sheds(self):
+        """Under gravity, the way a wrap actually presses: the contact
+        persists, so the grip keeps eating the slide until it is gone."""
+        gripped, g1, _ = self._press(gap=0.98)
+        loose, l1, _ = self._press(gap=0.98)
+
+        run(
+            gripped,
+            40,
+            SolverConfig(self_contact=True, self_friction=50.0, damping=1.0),
+        )
+        run(
+            loose,
+            40,
+            SolverConfig(self_contact=True, self_friction=0.0, damping=1.0),
+        )
+
+        assert self._travel(gripped, g1) <= 0.25
+        assert self._travel(loose, l1) >= 1.8
+
+    def test_grip_scales_with_the_applied_closure(self):
+        """Same slide, same mu: the deeper press holds harder - the floor's
+        load law, indoors."""
+        shallow, s1, _ = self._press(gap=0.9)
+        deep, d1, _ = self._press(gap=0.7)
+
+        run(shallow, 40, still(self_contact=True, self_friction=1.0))
+        run(deep, 40, still(self_contact=True, self_friction=1.0))
+
+        assert self._travel(deep, d1) < self._travel(shallow, s1) - 1e-3
+
+
+class TestReviewProbes:
+    """The two failures the adversarial review proved with probes, pinned."""
+
+    def test_a_corner_crossing_is_not_invisible(self):
+        """The cone's shoulder protrudes past the endpoint sphere: a stranger
+        crossing at the corner is visible to no sphere, and the capsule
+        family keeps it rather than deferring to one that cannot see it."""
+        body = Body(dim=3)
+        a1 = body.add_chunk("a1", (0.0, 0.0, 0.0), radius=0.2)
+        a2 = body.add_chunk("a2", (8.0, 0.0, 0.0), radius=0.2)
+        b1 = body.add_chunk("b1", (0.2, 0.3, 0.2), radius=0.2)
+        b2 = body.add_chunk("b2", (0.2, 0.3, 8.2), radius=0.2)
+        body.add_link(a1, a2)
+        body.add_link(b1, b2)
+
+        run(body, 80, still(self_contact=True))
+
+        pa = np.linspace(body.pos[body.slot(a1)], body.pos[body.slot(a2)], 129)
+        pb = np.linspace(body.pos[body.slot(b1)], body.pos[body.slot(b2)], 129)
+        gap = float(
+            np.linalg.norm(pa[:, None, :] - pb[None, :, :], axis=2).min()
+        )
+        assert gap >= 0.4 - 2e-2
+
+    def test_static_grip_holds_mid_span(self):
+        """scale == 1 is static grip at the contact, mid-span included: under
+        a sustained tangential load the late-time creep is zero — the
+        floor's own promise, between parts. The first-power undo failed
+        this at every mu; delivery, not budget, was the shortfall."""
+
+        def rig():
+            body = Body(dim=3)
+            p1 = body.add_chunk("p1", (-4.0, 0.0, 0.0), radius=0.2, pinned=True)
+            p2 = body.add_chunk("p2", (4.0, 0.0, 0.0), radius=0.2, pinned=True)
+            body.add_link(p1, p2)
+            r1 = body.add_chunk("r1", (0.0, 0.35, -2.0), radius=0.2)
+            r2 = body.add_chunk("r2", (0.0, 0.35, 2.0), radius=0.2)
+            body.add_link(r1, r2)
+            return body, r1
+
+        tilted = dict(gravity=(0.5, -9.81, 0.0), self_contact=True)
+
+        gripped, g1 = rig()
+        held = SolverConfig(self_friction=5.0, **tilted)
+        run(gripped, 250, held)
+        settled = float(gripped.pos[gripped.slot(g1)][0])
+        run(gripped, 50, held)
+        assert float(gripped.pos[gripped.slot(g1)][0]) == pytest.approx(
+            settled, abs=1e-5
+        )
+
+        greased, l1 = rig()
+        loose = SolverConfig(**tilted)
+        run(greased, 250, loose)
+        drifted = float(greased.pos[greased.slot(l1)][0])
+        run(greased, 50, loose)
+        assert float(greased.pos[greased.slot(l1)][0]) > drifted + 1e-4, (
+            "without grip the same load must keep creeping"
+        )

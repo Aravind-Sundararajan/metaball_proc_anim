@@ -158,11 +158,11 @@ authoring act, no undo stack, but they DO dirty, because they save with
 the room's file and a clean flag over an unsaved tuning is a lie Save
 All would act on. Mechanically: `Document` grows one method,
 `settings_edited()` — dirty the active room, then emit — and exactly
-nine panel sites call it instead of emitting raw: `_write_blend` and
-the eight solver-panel handlers (one each for iterations, damping,
+ten panel sites call it instead of emitting raw: `_write_blend` and
+the nine solver-panel handlers (one each for iterations, damping,
 max_velocity, ground_friction, self_contact,
-self_contact_elasticity; two for gravity — the vector edit and the
-zero-G toggle). Every view-only site
+self_contact_elasticity, self_friction; two for gravity — the vector
+edit and the zero-G toggle). Every view-only site
 (debug_mode, max_steps, show_floor, surface/background colour, overlay,
 ortho) keeps emitting raw and keeps the file clean, which is the
 document/view split of §6 enforced where edits happen.

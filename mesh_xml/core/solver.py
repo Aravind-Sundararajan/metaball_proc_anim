@@ -81,16 +81,18 @@ class SolverConfig:
     terrain simply wins. An empty terrain defers to ``ground_y`` instead: "no
     primitives yet" is an authoring state, not a request to repeal the floor.
 
-    ``self_contact`` turns on collision between a body's own chunks when they
-    are strangers in the graph — three or more links apart, or in different
-    components. Off by default for the same reason ``ground_y`` is ``None``: a
-    rig's own overlap is authored, not accidental. Chunks along a limb are
-    placed overlapping so the surface reads as one volume, and a solver that
-    silently pushed them apart would reshape every body on load. Linked pairs
-    and second neighbours stay exempt even when the pass is on — a folding
-    joint drives its second neighbours into contact by design, and the authored
-    way to govern that pair is an angle-limit brace, which is itself a link and
-    therefore already exempt.
+    ``self_contact`` turns on collision between a body's own flesh — chunk
+    spheres and the round cones along rendered links (docs/SELF_CONTACT.md) —
+    wherever the touching regions are strangers in the graph. Off by default
+    for the same reason ``ground_y`` is ``None``: a rig's own overlap is
+    authored, not accidental. Chunks along a limb are placed overlapping so
+    the surface reads as one volume, and a solver that silently pushed them
+    apart would reshape every body on load. Linked pairs and second
+    neighbours stay exempt even when the pass is on — a folding joint drives
+    its second neighbours into contact by design, and the authored way to
+    govern that pair is an angle-limit brace, which is itself a link and
+    therefore already exempt. Spans inherit the same rule at their end zones,
+    and a stranger's mid-span is always real.
 
     ``self_contact_elasticity`` is the fraction of an overlap closed per tick —
     a restoring force spelled in position-solver terms. ``1.0`` separates an
@@ -98,6 +100,15 @@ class SolverConfig:
     lets limbs squash into each other and recover over a few ticks, which reads
     as flesh. Discovery repeats every tick, so residual overlap is found again
     until it is gone.
+
+    ``self_friction`` is the Coulomb ``mu`` between a body's own parts, the
+    ground's law brought indoors: a self-contact may undo up to ``mu`` times
+    the normal closure it actually applied this tick of the relative
+    tangential slide at the contact. ``0.0`` — the default, and the old
+    behaviour exactly — separates without grip; raised, a coiled body holds
+    its wrap by the load actually crossing the contact. This is passive
+    non-slip only: choosing to hold and let go stays a controller feature
+    (docs/SELF_CONTACT.md §5).
 
     ``ground_friction`` is the Coulomb coefficient ``mu``. Each contact tick
     the floor may undo up to ``mu`` times the chunk's penetration depth of its
@@ -119,6 +130,7 @@ class SolverConfig:
     terrain: Terrain | None = None
     self_contact: bool = False
     self_contact_elasticity: float = 0.5
+    self_friction: float = 0.0
 
 
 def step(
@@ -208,11 +220,7 @@ def _collide_ground(body: Body, config: SolverConfig) -> None:
     slid = np.linalg.norm(slide, axis=1)
     grip = np.float32(mu) * depth[contact]
 
-    # A zero slide needs no undoing and must stay out of the division; its
-    # untouched lane scales a zero vector by one, which is still zero.
-    scale = np.ones_like(slid)
-    np.divide(grip, slid, out=scale, where=slid > 0.0)
-    np.minimum(scale, np.float32(1.0), out=scale)
+    scale = _grip_scale(grip, slid)
     pos[at] -= slide * scale[:, None]
 
 
@@ -276,49 +284,172 @@ def _collide_terrain(body: Body, config: SolverConfig) -> None:
     slid = np.linalg.norm(slide, axis=1)
     grip = mu * depth
 
-    # A zero slide needs no undoing and must stay out of the division; its
-    # untouched lane scales a zero vector by one, which is still zero.
-    scale = np.ones_like(slid)
-    np.divide(grip, slid, out=scale, where=slid > 0.0)
-    np.minimum(scale, 1.0, out=scale)
+    scale = _grip_scale(grip, slid)
     pos[contact] -= slide * scale[:, None]
 
 
+def _segment_params(
+    d1: np.ndarray, d2: np.ndarray, r: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Clamped closest-point parameters for segment pairs, one lane each.
+
+    The Ericson cascade as lane selects — no data-dependent iteration. Two
+    disciplines the lanes owe their callers: the parallel guard is *relative*
+    (``denom <= eps * a * e``), because ``a`` and ``e`` are squared lengths
+    and an absolute threshold misfires at both large and small scales; and a
+    degenerate denominator resolves by projecting the *other* segment's
+    midpoint before ``t`` is recomputed — one stated tie-break, deterministic
+    instead of wandering the flat valley on numeric noise, and landing inside
+    the shared run so an exactly-parallel overlap is found mid-span rather
+    than deferred off the end (axis-aligned authoring makes exact
+    parallelism common, not measure-zero). Zero-length
+    segments are legal inputs (coincident chunks exist transiently, and a
+    ``rest=0`` link passes validation); they fall out as the point cases.
+    """
+    a = np.einsum("id,id->i", d1, d1)
+    e = np.einsum("id,id->i", d2, d2)
+    b = np.einsum("id,id->i", d1, d2)
+    c = np.einsum("id,id->i", d1, r)
+    f = np.einsum("id,id->i", d2, r)
+
+    point_eps = np.float32(_COINCIDENT_EPS * _COINCIDENT_EPS)
+    a_deg = a <= point_eps
+    e_deg = e <= point_eps
+    a_safe = np.where(a_deg, np.float32(1.0), a)
+    e_safe = np.where(e_deg, np.float32(1.0), e)
+
+    denom = a * e - b * b
+    parallel = denom <= np.float32(1e-6) * a * e
+    denom_safe = np.where(parallel, np.float32(1.0), denom)
+
+    s = np.clip((b * f - c * e) / denom_safe, 0.0, 1.0)
+    midpoint = np.clip((np.float32(0.5) * b - c) / a_safe, 0.0, 1.0)
+    s = np.where(parallel, midpoint, s)
+    t = (b * s + f) / e_safe
+    s = np.where(t < 0.0, np.clip(-c / a_safe, 0.0, 1.0), s)
+    s = np.where(t > 1.0, np.clip((b - c) / a_safe, 0.0, 1.0), s)
+    t = np.clip(t, 0.0, 1.0)
+
+    s = np.where(e_deg, np.clip(-c / a_safe, 0.0, 1.0), s)
+    t = np.where(e_deg, np.float32(0.0), t)
+    t = np.where(a_deg & ~e_deg, np.clip(f / e_safe, 0.0, 1.0), t)
+    s = np.where(a_deg, np.float32(0.0), s)
+    return s.astype(np.float32), t.astype(np.float32)
+
+
+def _end_owner(
+    param: np.ndarray,
+    length: np.ndarray,
+    r1: np.ndarray,
+    r2: np.ndarray,
+    slot1: np.ndarray,
+    slot2: np.ndarray,
+) -> np.ndarray:
+    """The chunk whose sphere owns this landing, or ``-1`` for the span's mid.
+
+    An end zone is the stretch of centreline within one endpoint radius of
+    its end — the cone that endpoint's own sphere dominates, which is the
+    flesh the chunk exclusion rule already governs. A parameter inside both
+    zones (a short span) belongs to the nearer end.
+    """
+    in1 = param * length <= r1
+    in2 = (np.float32(1.0) - param) * length <= r2
+    owner = np.full(param.shape, -1, dtype=np.int64)
+    owner[in2] = slot2[in2]
+    take1 = in1 & (~in2 | (param <= 0.5))
+    owner[take1] = slot1[take1]
+    return owner
+
+
+def _contact_axis(
+    delta: np.ndarray, dist: np.ndarray, fallback: np.ndarray
+) -> np.ndarray:
+    """Unit contact axis, the coincident lane taking the stated fallback.
+
+    The landed sphere idiom, shared by every family: a zero distance has no
+    direction to report, and the first basis vector is the one deterministic
+    answer that cannot be NaN.
+    """
+    coincident = dist < _COINCIDENT_EPS
+    axis = delta / np.where(coincident, np.float32(1.0), dist)[:, None]
+    axis[coincident] = fallback
+    return axis
+
+
+def _grip_scale(grip: np.ndarray, slid: np.ndarray) -> np.ndarray:
+    """Coulomb's clamp: undo up to ``grip`` of ``slid``, never more than all.
+
+    A zero slide needs no undoing and must stay out of the division; its
+    untouched lane scales a zero vector by one, which is still zero.
+    """
+    scale = np.ones_like(slid)
+    np.divide(grip, slid, out=scale, where=slid > 0.0)
+    np.minimum(scale, np.float32(1.0), out=scale)
+    return scale
+
+
 def _collide_self(body: Body, config: SolverConfig) -> None:
-    """Push overlapping graph-strangers apart: the body may not pass through itself.
+    """Keep the flesh from passing through itself, and let it grip.
 
-    Contacts are discovered fresh each call — every chunk pair that overlaps in
-    space while sitting at graph distance three or more — and resolved as
-    transient PUSH constraints: corrections shared by inverse mass along the
-    pair axis, scaled by ``self_contact_elasticity``. One Jacobi pass, not
-    ``config.iterations``: discovery re-runs next tick, so a pile-up resolves
-    over ticks rather than within one, and that spread *is* the squash the
-    elasticity knob promises.
+    The manifold is the rendered flesh (docs/SELF_CONTACT.md): chunk spheres,
+    the round cones along rendered links, and the crossings between them.
+    Three families discover fresh each call — sphere–sphere on the landed
+    stranger rule, capsule–capsule between rendered spans, sphere–capsule for
+    a chunk against a stranger's span — and resolve together as transient
+    PUSH constraints in one Jacobi pass: rediscovery next tick is what
+    spreads a pile-up over ticks, and that spread *is* the squash the
+    elasticity knob promises. Mechanism links carry no flesh and are never
+    candidates.
 
-    The exclusion is structural, not spatial. Distance one is the constraint
-    set itself; distance two is the pair every folding joint drives into
-    contact, whose governed form is an angle-limit brace — itself a link, and
-    so already at distance one. Exclusions and candidates are recomputed from
-    the live arrays on every call, like every other derived view of the graph:
-    the adjacency matmul is O(n^3) in chunks, microseconds at the body sizes
-    the renderer caps out at, and nothing here loops in Python.
+    The exclusion is structural, decided at the *contact*: distance one is
+    the constraint set, distance two is the pair a folding joint drives
+    together (governed, when governed at all, by an angle-limit brace). A
+    landing in a span's end zone belongs to that endpoint chunk and is the
+    sphere family's jurisdiction outright — exempt or discovered there by
+    the chunk rule — while any landing on a mid-span is real, which is what
+    closes the two-fold scissor a pair-level exemption lets through. On a
+    well-chunked body the end zones tile every span and the capsule
+    families go silent, which is the landed behaviour exactly; they speak
+    where the body is sparse, which is the gap they exist to close.
+    Candidates and exclusions are recomputed from the live arrays per call —
+    derived views, dense masks at renderer scales — but the closest-point
+    cascade runs only on prefiltered, compressed survivors: a twenty-step
+    cascade over a dense pair grid is the one place the dense idiom must not
+    be copied.
 
-    Corrections reuse ``_project``'s symmetric per-pair weight — one over the
-    larger of the two endpoints' contact counts — for the same two reasons
-    written there: a pile-up must stay a convex combination, and the two ends
-    must move equal and opposite in mass-weighted terms or contact becomes a
-    momentum source, the artifact that once supplied a fifth of a walker's
-    thrust.
+    Every contact is a segment pair — a sphere is a zero-length segment — so
+    one resolution serves all three families. The share's denominator is the
+    *first-power* interpolated inverse mass, not the textbook squared form:
+    squared is exact at the contact point but flings the free end of a
+    nearly-pinned span by ``error/s``, unbounded, and every correction this
+    module applies is bounded by its own error. The price — a mid-span
+    contact closes up to half as fast as an endpoint one — is under-closure
+    only, and rediscovery absorbs it. One scalar per contact, signs flipped
+    between the sides, keeps momentum exact for arbitrary masses (barycentric
+    coefficients sum to one and ``m * inv_m == 1``); per-side normalization
+    is the natural refactoring mistake and breaks exactly that. The convex
+    weight is one shared incidence gather across all families — each contact
+    counts one full incidence against each of its chunks, a graze counting a
+    whole one on purpose, because weighted counts would forfeit the convexity
+    proof — and shared counting is also what lets a clamped capsule contact
+    that re-finds a sphere pair sum convexly instead of correcting twice.
 
-    What this pass deliberately does not do is grip: strangers separate
-    without friction. A creature holding onto its own body is a controller
-    feature, not a contact one.
+    ``self_friction`` is the ground's Coulomb law between a body's own parts:
+    after the normal scatter lands, each contact may undo up to ``mu`` times
+    the normal closure it actually applied of the relative tangential slide
+    at its contact points — read from the settled positions against ``prev``
+    with the discovery-time parameters and normal frozen, split equal and
+    opposite in mass-weighted terms under the same convex weight, acting on
+    ``pos`` and never ``prev``. The budget is the *applied* closure, not the
+    discovered overlap: grip must not inflate as elasticity drops, or ``mu``
+    becomes a function of solver tuning.
     """
     n = body.n_chunks
     if not config.self_contact or n < 2:
         return
 
     pos = body.pos
+    prev = body.prev_pos
     radius = body.radius
     inv_mass = body.inv_mass
 
@@ -327,6 +458,12 @@ def _collide_self(body: Body, config: SolverConfig) -> None:
     linked[body.link_b, body.link_a] = 1.0
     near = (linked + linked @ linked) > 0.0
 
+    fallback = np.zeros(body.dim, dtype=np.float32)
+    fallback[0] = 1.0
+
+    parts: list[tuple[np.ndarray, ...]] = []
+
+    # -- sphere–sphere: the landed family, discovery untouched --------------
     delta_all = pos[:, None, :] - pos[None, :, :]
     dist_sq = np.einsum("ijd,ijd->ij", delta_all, delta_all)
     reach = radius[:, None] + radius[None, :]
@@ -334,37 +471,223 @@ def _collide_self(body: Body, config: SolverConfig) -> None:
     movable = (inv_mass[:, None] + inv_mass[None, :]) > 0.0
 
     ai, bi = np.nonzero(np.triu(overlapping & ~near & movable, k=1))
-    if ai.size == 0:
+    if ai.size:
+        dist = np.sqrt(dist_sq[ai, bi])
+        axis = _contact_axis(pos[ai] - pos[bi], dist, fallback)
+        zero = np.zeros(ai.size, dtype=np.float32)
+        parts.append((ai, ai, zero, bi, bi, zero, axis, dist - reach[ai, bi]))
+
+    # -- the rendered spans, shared by both capsule families ----------------
+    ridx = np.nonzero(body.link_render)[0]
+    if ridx.size:
+        la = body.link_a[ridx]
+        lb = body.link_b[ridx]
+        p1 = pos[la]
+        seg = pos[lb] - pos[la]
+        length = np.sqrt(np.einsum("id,id->i", seg, seg))
+        r1 = radius[la]
+        r2 = radius[lb]
+        mid = p1 + np.float32(0.5) * seg
+        half = np.float32(0.5) * length
+        rmax = np.maximum(r1, r2)
+
+    # -- capsule–capsule: spans of strangers crossing ------------------------
+    if ridx.size >= 2:
+        shares = (
+            (la[:, None] == la[None, :])
+            | (la[:, None] == lb[None, :])
+            | (lb[:, None] == la[None, :])
+            | (lb[:, None] == lb[None, :])
+        )
+        dmid = mid[:, None, :] - mid[None, :, :]
+        mid_sq = np.einsum("ijd,ijd->ij", dmid, dmid)
+        sweep = half[:, None] + half[None, :] + rmax[:, None] + rmax[None, :]
+        ii, jj = np.nonzero(np.triu((mid_sq < sweep * sweep) & ~shares, k=1))
+        if ii.size:
+            s, t = _segment_params(seg[ii], seg[jj], p1[ii] - p1[jj])
+            ca = p1[ii] + s[:, None] * seg[ii]
+            cb = p1[jj] + t[:, None] * seg[jj]
+            delta = ca - cb
+            dist = np.sqrt(np.einsum("id,id->i", delta, delta))
+            span_reach = (
+                (np.float32(1.0) - s) * r1[ii]
+                + s * r2[ii]
+                + (np.float32(1.0) - t) * r1[jj]
+                + t * r2[jj]
+            )
+            # A landing with both sides in end zones belongs to its owner
+            # chunks: exempt when the chunk rule exempts, and handed to the
+            # sphere family only where the sphere pair can actually SEE the
+            # overlap — the cone's shoulder protrudes past the endpoint
+            # sphere, so a stranger crossing at the corner is visible to no
+            # sphere, and that band stays this family's. Where the spheres
+            # do see it, emitting a fatter duplicate here would perturb
+            # their exact arithmetic.
+            owner_a = _end_owner(s, length[ii], r1[ii], r2[ii], la[ii], lb[ii])
+            owner_b = _end_owner(t, length[jj], r1[jj], r2[jj], la[jj], lb[jj])
+            owned = (owner_a >= 0) & (owner_b >= 0)
+            oa = np.where(owned, owner_a, 0)
+            ob = np.where(owned, owner_b, 0)
+            spheres_see = dist_sq[oa, ob] < reach[oa, ob] * reach[oa, ob]
+            deferred = owned & (near[oa, ob] | spheres_see)
+            keep = (dist < span_reach) & ~deferred
+            if keep.any():
+                ii, jj, s, t = ii[keep], jj[keep], s[keep], t[keep]
+                delta, dist = delta[keep], dist[keep]
+                span_reach = span_reach[keep]
+                axis = _contact_axis(delta, dist, fallback)
+                parts.append(
+                    (la[ii], lb[ii], s, la[jj], lb[jj], t, axis, dist - span_reach)
+                )
+
+    # -- sphere–capsule: a chunk against a stranger's span ------------------
+    if ridx.size:
+        slots = np.arange(n)
+        endpoint = (slots[:, None] == la[None, :]) | (slots[:, None] == lb[None, :])
+        # Both endpoints within distance two means the whole span is
+        # second-neighbour flesh — the joint's own geometry, never fought.
+        whole_near = near[:, la] & near[:, lb]
+        dmid = pos[:, None, :] - mid[None, :, :]
+        mid_sq = np.einsum("ijd,ijd->ij", dmid, dmid)
+        sweep = half[None, :] + rmax[None, :] + radius[:, None]
+        ci, kk = np.nonzero((mid_sq < sweep * sweep) & ~endpoint & ~whole_near)
+        if ci.size:
+            # A chunk is a zero-length segment; the shared cascade's
+            # degenerate lane IS the clamped point projection.
+            _, t = _segment_params(
+                np.zeros_like(seg[kk]), seg[kk], pos[ci] - p1[kk]
+            )
+            cb = p1[kk] + t[:, None] * seg[kk]
+            delta = pos[ci] - cb
+            dist = np.sqrt(np.einsum("id,id->i", delta, delta))
+            span_reach = (
+                radius[ci] + (np.float32(1.0) - t) * r1[kk] + t * r2[kk]
+            )
+            # An end-zone landing is the chunk pair (chunk, owner) — sphere
+            # jurisdiction on the terms above: exempt when near, handed over
+            # only where the sphere pair sees the overlap, kept where the
+            # cone's shoulder hides it from every sphere.
+            owner_b = _end_owner(t, length[kk], r1[kk], r2[kk], la[kk], lb[kk])
+            owned = owner_b >= 0
+            ob = np.where(owned, owner_b, 0)
+            spheres_see = dist_sq[ci, ob] < reach[ci, ob] * reach[ci, ob]
+            handled = owned & (near[ci, ob] | spheres_see)
+            keep = (dist < span_reach) & ~handled
+            if keep.any():
+                ci, kk, t = ci[keep], kk[keep], t[keep]
+                delta, dist = delta[keep], dist[keep]
+                span_reach = span_reach[keep]
+                axis = _contact_axis(delta, dist, fallback)
+                zero = np.zeros(ci.size, dtype=np.float32)
+                parts.append(
+                    (ci, ci, zero, la[kk], lb[kk], t, axis, dist - span_reach)
+                )
+
+    if not parts:
+        return
+
+    i1 = np.concatenate([p[0] for p in parts])
+    i2 = np.concatenate([p[1] for p in parts])
+    s = np.concatenate([p[2] for p in parts])
+    j1 = np.concatenate([p[3] for p in parts])
+    j2 = np.concatenate([p[4] for p in parts])
+    t = np.concatenate([p[5] for p in parts])
+    axis = np.concatenate([p[6] for p in parts])
+    error = np.concatenate([p[7] for p in parts])
+
+    one = np.float32(1.0)
+    # First power, not squared: the squared form is exact at the contact
+    # point but flings the free end of a nearly-pinned span by error/s,
+    # unbounded — every correction here stays bounded by its own error.
+    denom = (
+        (one - s) * inv_mass[i1]
+        + s * inv_mass[i2]
+        + (one - t) * inv_mass[j1]
+        + t * inv_mass[j2]
+    )
+    live = denom > 0.0
+    if not live.all():
+        i1, i2, s = i1[live], i2[live], s[live]
+        j1, j2, t = j1[live], j2[live], t[live]
+        axis, error, denom = axis[live], error[live], denom[live]
+    if i1.size == 0:
         return
 
     elasticity = np.float32(min(max(config.self_contact_elasticity, 0.0), 1.0))
-    inv_a = inv_mass[ai]
-    inv_b = inv_mass[bi]
+    share = elasticity * error / denom
 
-    dist = np.sqrt(dist_sq[ai, bi])
-    coincident = dist < _COINCIDENT_EPS
-    axis = (pos[ai] - pos[bi]) / np.where(coincident, np.float32(1.0), dist)[:, None]
-    fallback = np.zeros(body.dim, dtype=np.float32)
-    fallback[0] = 1.0
-    axis[coincident] = fallback
-
-    # Negative by construction — the depth still to open — so the correction
-    # points the ends apart, exactly a PUSH link whose rest is the radii sum.
-    error = dist - reach[ai, bi]
-    share = elasticity * error / (inv_a + inv_b)
-
-    # Every discovered pair acts, so each endpoint's count is at least one and
-    # the weight needs no clamp.
+    # One incidence per distinct chunk per contact, gathered across every
+    # family at once — shared counting is what keeps a duplicated end-zone
+    # discovery convex instead of double-correcting.
     hits = np.zeros(n, dtype=np.float32)
-    np.add.at(hits, ai, np.float32(1.0))
-    np.add.at(hits, bi, np.float32(1.0))
-    weight = np.float32(1.0) / np.maximum(hits[ai], hits[bi])
+    np.add.at(hits, i1, np.float32(1.0))
+    np.add.at(hits, i2, (i2 != i1).astype(np.float32))
+    np.add.at(hits, j1, np.float32(1.0))
+    np.add.at(hits, j2, (j2 != j1).astype(np.float32))
+    weight = np.float32(1.0) / np.maximum(
+        np.maximum(hits[i1], hits[i2]), np.maximum(hits[j1], hits[j2])
+    )
 
+    # One scalar per contact, signs flipped between the sides: per-side
+    # normalization would make contact a momentum source.
     weighted = axis * (share * weight)[:, None]
     correction = np.zeros_like(pos)
-    np.add.at(correction, ai, -inv_a[:, None] * weighted)
-    np.add.at(correction, bi, inv_b[:, None] * weighted)
+    np.add.at(correction, i1, (-inv_mass[i1] * (one - s))[:, None] * weighted)
+    np.add.at(correction, i2, (-inv_mass[i2] * s)[:, None] * weighted)
+    np.add.at(correction, j1, (inv_mass[j1] * (one - t))[:, None] * weighted)
+    np.add.at(correction, j2, (inv_mass[j2] * t)[:, None] * weighted)
     free = inv_mass != 0.0
+    pos[free] += correction[free]
+
+    mu = max(config.self_friction, 0.0)
+    if mu == 0.0:
+        return
+
+    # Grip, on the ground's terms: slide is read from the settled positions
+    # with the discovery-time parameters and normal frozen, and the budget is
+    # the relative normal closure this contact actually applied — share and
+    # weight and both sides' barycentric mass shares included — never the
+    # discovered overlap.
+    q = (
+        (one - s) * (one - s) * inv_mass[i1]
+        + s * s * inv_mass[i2]
+        + (one - t) * (one - t) * inv_mass[j1]
+        + t * t * inv_mass[j2]
+    )
+    applied = -(share * weight) * q
+    moved_a = (one - s)[:, None] * (pos[i1] - prev[i1]) + s[:, None] * (
+        pos[i2] - prev[i2]
+    )
+    moved_b = (one - t)[:, None] * (pos[j1] - prev[j1]) + t[:, None] * (
+        pos[j2] - prev[j2]
+    )
+    slide = moved_a - moved_b
+    slide -= np.einsum("id,id->i", slide, axis)[:, None] * axis
+    slid = np.sqrt(np.einsum("id,id->i", slide, slide))
+
+    grip = np.float32(mu) * applied
+    scale = _grip_scale(grip, slid)
+    # Full delivery, not the first-power share: the undo divides by the
+    # same squared-barycentric form that measured the applied closure, so
+    # scale == 1 is static grip at the contact, mid-span included — the
+    # first-power form under-delivers by half there, and the shortfall
+    # replays as implicit velocity, a creep no mu can stop. The squared
+    # form's pinned-end lever is capped with ONE bound per contact — both
+    # sides together, so momentum stays exact — at no more than the whole
+    # slide per endpoint: grip near a pin degrades with the lever arm
+    # instead of flinging.
+    lever = np.maximum(
+        np.maximum((one - s) * inv_mass[i1], s * inv_mass[i2]),
+        np.maximum((one - t) * inv_mass[j1], t * inv_mass[j2]),
+    )
+    u = np.minimum(scale / q, np.float32(1.0) / lever)
+    undo = slide * (u * weight)[:, None]
+
+    correction = np.zeros_like(pos)
+    np.add.at(correction, i1, (-inv_mass[i1] * (one - s))[:, None] * undo)
+    np.add.at(correction, i2, (-inv_mass[i2] * s)[:, None] * undo)
+    np.add.at(correction, j1, (inv_mass[j1] * (one - t))[:, None] * undo)
+    np.add.at(correction, j2, (inv_mass[j2] * t)[:, None] * undo)
     pos[free] += correction[free]
 
 
