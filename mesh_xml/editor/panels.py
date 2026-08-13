@@ -747,6 +747,7 @@ class SolverPanel(_Panel):
         self._friction = _spin(0.0, 5.0, 0.05, decimals=2)
         self._self_contact = QCheckBox("Self-contact")
         self._contact_elasticity = _spin(0.0, 1.0, 0.05, decimals=2)
+        self._self_friction = _spin(0.0, 5.0, 0.05, decimals=2)
         self._gravity = tuple(_spin(-1000.0, 1000.0, 0.1, decimals=2) for _ in _AXES)
         self._zero_g = QCheckBox("Zero gravity")
 
@@ -766,6 +767,7 @@ class SolverPanel(_Panel):
         self._contact_elasticity.valueChanged.connect(
             self._on_contact_elasticity_changed
         )
+        self._self_friction.valueChanged.connect(self._on_self_friction_changed)
         for spin in self._gravity:
             spin.valueChanged.connect(self._on_gravity_changed)
         self._zero_g.toggled.connect(self._on_zero_g_toggled)
@@ -783,6 +785,7 @@ class SolverPanel(_Panel):
         layout.addRow("Friction (mu)", self._friction)
         layout.addRow(self._self_contact)
         layout.addRow("Contact elasticity", self._contact_elasticity)
+        layout.addRow("Self-friction (mu)", self._self_friction)
 
         self._iterations.setToolTip(
             "Relaxation passes per tick. This is a per-creature softness knob, "
@@ -807,15 +810,23 @@ class SolverPanel(_Panel):
             "above 1 are legal and simply very grippy."
         )
         self._self_contact.setToolTip(
-            "Push overlapping chunks apart when they are strangers in the "
-            "graph — three or more links from each other. Neighbours are "
-            "exempt: within a limb, overlap is what makes the surface read as "
-            "one volume. Off by default because rigs overlap on purpose."
+            "Keep the flesh from passing through itself: chunks and rendered "
+            "spans collide when they belong to strangers in the graph — "
+            "three or more links apart. Neighbours are exempt: within a "
+            "limb, overlap is what makes the surface read as one volume. "
+            "Off by default because rigs overlap on purpose."
         )
         self._contact_elasticity.setToolTip(
             "Fraction of an overlap closed per tick. 1.0 separates a lone "
             "pair in one tick and reads as billiard balls; lower values let "
             "limbs squash into each other and recover, which reads as flesh."
+        )
+        self._self_friction.setToolTip(
+            "Coulomb coefficient between a body's own parts. Grip scales "
+            "with the load actually crossing the contact, so a coiled body "
+            "holds its wrap instead of sliding off itself. Zero separates "
+            "without grip. Choosing to hold — and to let go — stays a "
+            "controller feature."
         )
         return box
 
@@ -865,6 +876,11 @@ class SolverPanel(_Panel):
         self._document.settings_edited()
 
     @_user_edit
+    def _on_self_friction_changed(self, value: float) -> None:
+        self._document.solver_config.self_friction = float(value)
+        self._document.settings_edited()
+
+    @_user_edit
     def _on_gravity_changed(self, _value: float) -> None:
         gravity = tuple(spin.value() for spin in self._gravity)
         if any(gravity):
@@ -904,6 +920,9 @@ class SolverPanel(_Panel):
         _admit(self._contact_elasticity, float(config.self_contact_elasticity))
         self._contact_elasticity.setValue(float(config.self_contact_elasticity))
         self._contact_elasticity.setEnabled(bool(config.self_contact))
+        _admit(self._self_friction, float(config.self_friction))
+        self._self_friction.setValue(float(config.self_friction))
+        self._self_friction.setEnabled(bool(config.self_contact))
         for spin, value in zip(self._gravity, gravity):
             _admit(spin, value)
             spin.setValue(value)

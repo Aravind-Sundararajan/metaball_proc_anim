@@ -62,6 +62,7 @@ def tuned_config() -> SolverConfig:
         ground_friction=0.6,
         self_contact=True,
         self_contact_elasticity=0.25,
+        self_friction=0.4,
     )
 
 
@@ -103,6 +104,7 @@ def test_a_tuned_config_and_blend_round_trip(tmp_path: Path) -> None:
     assert rig.solver.ground_friction == 0.6
     assert rig.solver.self_contact is True
     assert rig.solver.self_contact_elasticity == 0.25
+    assert rig.solver.self_friction == 0.4
     assert rig.solver.terrain is None, "the world rides as <terrain>, never here"
     assert rig.blend == 0.4
 
@@ -137,6 +139,7 @@ def test_a_written_solver_record_is_complete_except_terrain(tmp_path: Path) -> N
         "ground_friction",
         "self_contact",
         "self_contact_elasticity",
+        "self_friction",
     }
 
 
@@ -273,6 +276,14 @@ def test_negative_iterations_are_refused(tmp_path: Path) -> None:
 def test_a_nan_damping_is_refused(tmp_path: Path) -> None:
     """A NaN here poisons every position in the room by the second tick."""
     path = hand_authored(tmp_path, '<solver damping="nan"/>')
+
+    with pytest.raises(xml_v2.SchemaError, match="finite"):
+        xml_v2.read(path)
+
+
+def test_a_nan_self_friction_is_refused(tmp_path: Path) -> None:
+    """A mu answers to the same finiteness gate as every other solver float."""
+    path = hand_authored(tmp_path, '<solver self_friction="nan"/>')
 
     with pytest.raises(xml_v2.SchemaError, match="finite"):
         xml_v2.read(path)
