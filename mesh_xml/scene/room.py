@@ -85,11 +85,21 @@ def _anchor_of(members: set[int], stack: list[Controller]) -> int:
 class Room:
     """A space, its population, and the simulation that runs it."""
 
+    @staticmethod
+    def founding_config() -> SolverConfig:
+        """The room's founding opinion as a value: a floor at zero.
+
+        Spelled once so the editor's open paths can restate it when a file
+        carries no physics — several drifting copies of one opinion is the
+        "rarely-exercised spelling rots first" hazard one layer up.
+        """
+        return SolverConfig(ground_y=0.0)
+
     def __init__(self, name: str = "room") -> None:
         self.name = name
         self.body = Body()
         self.controllers = ControllerStack(self.body)
-        self.solver_config = SolverConfig(ground_y=0.0)
+        self.solver_config = self.founding_config()
         self.clock = Clock()
         #: The room's exits (:class:`~mesh_xml.scene.door.Door`), authored
         #: like terrain is authored: data the room owns and the tick

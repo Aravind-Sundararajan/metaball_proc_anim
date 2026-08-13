@@ -228,6 +228,20 @@ def _spin(
     return box
 
 
+def _admit(box, value) -> None:
+    """Widen a spin box's range to include a loaded value before showing it.
+
+    A panel's range is an authoring suggestion; the format's domain is wider
+    (a damping of 1.02 rings, and the reader admits it — docs/SETTINGS.md
+    §4). Clamping the display would show physics the room is not running,
+    and the next nudge would silently commit the clamp to the file.
+    """
+    if value < box.minimum():
+        box.setMinimum(value)
+    if value > box.maximum():
+        box.setMaximum(value)
+
+
 def _note(text: str) -> QLabel:
     """Small print that belongs next to a control, not in a manual nobody opens."""
     label = QLabel(text)
@@ -680,10 +694,11 @@ class SurfacePanel(_Panel):
 
     def _write_blend(self, value: float) -> None:
         self._document.metaball.blend = float(value)
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     def _refresh(self) -> None:
         settings = self._document.metaball
+        _admit(self._blend, float(settings.blend))
         self._blend.setValue(float(settings.blend))
         self._blend_slider.setValue(
             round(float(settings.blend) * _BLEND_STEPS / _BLEND_MAX)
@@ -822,32 +837,32 @@ class SolverPanel(_Panel):
     @_user_edit
     def _on_iterations_changed(self, value: int) -> None:
         self._document.solver_config.iterations = int(value)
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     @_user_edit
     def _on_damping_changed(self, value: float) -> None:
         self._document.solver_config.damping = float(value)
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     @_user_edit
     def _on_max_velocity_changed(self, value: float) -> None:
         self._document.solver_config.max_velocity = float(value)
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     @_user_edit
     def _on_friction_changed(self, value: float) -> None:
         self._document.solver_config.ground_friction = float(value)
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     @_user_edit
     def _on_self_contact_toggled(self, on: bool) -> None:
         self._document.solver_config.self_contact = bool(on)
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     @_user_edit
     def _on_contact_elasticity_changed(self, value: float) -> None:
         self._document.solver_config.self_contact_elasticity = float(value)
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     @_user_edit
     def _on_gravity_changed(self, _value: float) -> None:
@@ -855,7 +870,7 @@ class SolverPanel(_Panel):
         if any(gravity):
             self._gravity_memo = gravity
         self._document.solver_config.gravity = gravity
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     @_user_edit
     def _on_zero_g_toggled(self, zero: bool) -> None:
@@ -866,7 +881,7 @@ class SolverPanel(_Panel):
             self._document.solver_config.gravity = (0.0, 0.0, 0.0)
         else:
             self._document.solver_config.gravity = self._gravity_memo
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     def _authored_gravity(self) -> tuple[float, ...]:
         gravity = tuple(float(v) for v in self._document.solver_config.gravity)
@@ -877,14 +892,20 @@ class SolverPanel(_Panel):
         gravity = self._authored_gravity()
         zero = not any(gravity)
 
+        _admit(self._iterations, int(config.iterations))
         self._iterations.setValue(int(config.iterations))
+        _admit(self._damping, float(config.damping))
         self._damping.setValue(float(config.damping))
+        _admit(self._max_velocity, float(config.max_velocity))
         self._max_velocity.setValue(float(config.max_velocity))
+        _admit(self._friction, float(config.ground_friction))
         self._friction.setValue(float(config.ground_friction))
         self._self_contact.setChecked(bool(config.self_contact))
+        _admit(self._contact_elasticity, float(config.self_contact_elasticity))
         self._contact_elasticity.setValue(float(config.self_contact_elasticity))
         self._contact_elasticity.setEnabled(bool(config.self_contact))
         for spin, value in zip(self._gravity, gravity):
+            _admit(spin, value)
             spin.setValue(value)
             spin.setEnabled(not zero)
         self._zero_g.setChecked(zero)

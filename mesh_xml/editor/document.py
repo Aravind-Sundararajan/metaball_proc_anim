@@ -24,6 +24,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
+import xml.etree.ElementTree as ET
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal
@@ -427,7 +428,8 @@ class _RoomState:
     is one room's editing session: the easing springs with their per-point
     tuning, the pose Reset returns to, the selection, an undo history that
     structurally cannot contain another room's commands, the file this room
-    is, and the surface look (session-only — v3 does not carry it).
+    is, and the surface look (its blend saves with the room's file; the
+    rest — colours, march quality — stays session-only).
     """
 
     draw: DrawPoints
@@ -1029,24 +1031,44 @@ class Document(QObject):
         self.terrain_changed.emit()
 
     # ------------------------------------------------------------------
+    # settings
+    # ------------------------------------------------------------------
+
+    def settings_edited(self) -> None:
+        """A finished solver or blend edit — the doors rule for settings.
+
+        File-grade like a door edit: an explicit authoring act, immediate,
+        on no undo stack — but it DOES dirty the room, because solver and
+        blend save with the room's file and a clean flag over an unsaved
+        tuning is a lie Save All would act on. View-only settings (debug
+        modes, colours, march quality) stay off this path: panels emit
+        :attr:`settings_changed` raw for those and the file stays clean.
+        """
+        self._dirty_room(self._room)
+        self.settings_changed.emit()
+
+    # ------------------------------------------------------------------
     # editing
     # ------------------------------------------------------------------
 
-    def do(self, command: Command) -> None:
+    def do(self, command: Command) -> bool:
         """Apply a command and push it onto the active room's history.
 
         Refused while the room is abstracted: its creatures are parked
         data, and a command landing on the anchors-only body could orphan
         what :meth:`Room.realize` expects to find. Abstraction is a
-        simulation state, not an edit state.
+        simulation state, not an edit state. Returns whether the command
+        applied, so a caller with follow-up state of its own — a selection
+        to move, an id to hand out — can decline along with it.
         """
         if self.room.abstracted:
             self.status.emit(f"Realize {self.room.name!r} to edit it")
-            return
+            return False
         command.apply(self)
         self._undo.append(command)
         self._redo.clear()
         self._after_edit(command)
+        return True
 
     def undo(self) -> None:
         if not self.can_undo:
@@ -1123,8 +1145,17 @@ class Document(QObject):
     # authoring
     # ------------------------------------------------------------------
 
-    def create_chunk(self) -> int:
-        """Add a chunk, growing from the selection. Returns the new chunk's id.
+    def create_chunk(
+        self,
+        *,
+        at: tuple[float, ...] | None = None,
+        attach_to: int | None = None,
+        radius: float | None = None,
+    ) -> int | None:
+        """Add a chunk, growing from the selection or at ``at``. Returns its id,
+        or ``None`` when the room declined the edit (:meth:`do`'s abstracted
+        refusal) — the selection stands, and no id is invented for a chunk
+        that never existed.
 
         The rule, in three sentences. With exactly one chunk selected the new
         chunk is linked to it, inherits its radius, and continues the chain —
@@ -1134,6 +1165,20 @@ class Document(QObject):
         girdle or a palm closes. With nothing selected it is a free chunk just
         past the body's +x extent — origin on an empty body — because a new
         component is what an empty selection says you meant.
+
+        ``at`` is the same rule's second position source (``docs/PICK.md``
+        §3): a gesture that already knows where — the surface pick, its
+        offset along the normal already taken — states the position verbatim,
+        and the selection stands aside. The hit states the attachment:
+        ``attach_to`` earns exactly one link and, absent an explicit
+        ``radius``, lends its own — grown anatomy matches local anatomy, the
+        single-selection reasoning relocated to the cursor — while no
+        ``attach_to`` means the free chunk's 0.5. Without ``at`` the
+        overrides are refused rather than quietly dropped: the selection rule
+        chooses links and radius itself. An ``attach_to`` naming no chunk is
+        refused too, before any command applies — a live gesture hands over
+        a live hit, so a stale id is a caller bug better named here than
+        inside a half-applied :class:`Macro`.
 
         One call is one undo step: the chunk and its links arrive and leave
         together, via a :class:`Macro`. The new chunk becomes the selection, so
@@ -1146,46 +1191,67 @@ class Document(QObject):
         re-applies the same id on redo, so the links stay resolvable.
         """
         body = self.body
-        dim = body.dim
-        selected = sorted(self.selection)
-        along_x = np.zeros(dim)
-        along_x[0] = 1.0
-
-        def outward(origin: np.ndarray, away_from: np.ndarray) -> np.ndarray:
-            direction = origin - away_from
-            length = float(np.linalg.norm(direction))
-            return direction / length if length > 1e-6 else along_x
-
-        if not selected:
-            radius = 0.5
-            if body.n_chunks == 0:
-                pos = np.zeros(dim)
-            else:
-                pos = body.pos.mean(axis=0).astype(np.float64)
-                pos[0] = float(body.pos[:, 0].max()) + _GROW_SPACING * radius
-        elif len(selected) == 1:
-            anchor = np.asarray(body.chunk(selected[0]).pos)
-            radius = body.chunk(selected[0]).radius
-            neighbours = body.neighbors(selected[0])
-            if len(neighbours) == 1:
-                prev = np.asarray(body.chunk(neighbours[0]).pos)
-                step = anchor - prev
-                if float(np.linalg.norm(step)) <= 1e-6:
-                    step = along_x * _GROW_SPACING * radius
-                pos = anchor + step
-            else:
-                centre = (
-                    np.mean([body.chunk(n).pos for n in neighbours], axis=0)
-                    if neighbours
-                    else anchor
+        if at is None:
+            if attach_to is not None or radius is not None:
+                raise ValueError(
+                    "attach_to and radius state a placement; "
+                    "without at, the selection rule chooses both"
                 )
-                pos = anchor + outward(anchor, centre) * _GROW_SPACING * radius
+            dim = body.dim
+            selected = sorted(self.selection)
+            along_x = np.zeros(dim)
+            along_x[0] = 1.0
+
+            def outward(origin: np.ndarray, away_from: np.ndarray) -> np.ndarray:
+                direction = origin - away_from
+                length = float(np.linalg.norm(direction))
+                return direction / length if length > 1e-6 else along_x
+
+            if not selected:
+                radius = 0.5
+                if body.n_chunks == 0:
+                    pos = np.zeros(dim)
+                else:
+                    pos = body.pos.mean(axis=0).astype(np.float64)
+                    pos[0] = float(body.pos[:, 0].max()) + _GROW_SPACING * radius
+            elif len(selected) == 1:
+                anchor = np.asarray(body.chunk(selected[0]).pos)
+                radius = body.chunk(selected[0]).radius
+                neighbours = body.neighbors(selected[0])
+                if len(neighbours) == 1:
+                    prev = np.asarray(body.chunk(neighbours[0]).pos)
+                    step = anchor - prev
+                    if float(np.linalg.norm(step)) <= 1e-6:
+                        step = along_x * _GROW_SPACING * radius
+                    pos = anchor + step
+                else:
+                    centre = (
+                        np.mean([body.chunk(n).pos for n in neighbours], axis=0)
+                        if neighbours
+                        else anchor
+                    )
+                    pos = anchor + outward(anchor, centre) * _GROW_SPACING * radius
+            else:
+                radius = float(np.mean([body.chunk(s).radius for s in selected]))
+                centre = np.mean([body.chunk(s).pos for s in selected], axis=0)
+                pos = centre + outward(centre, body.pos.mean(axis=0)) * (
+                    _GROW_SPACING * radius
+                )
+            anchors = selected
         else:
-            radius = float(np.mean([body.chunk(s).radius for s in selected]))
-            centre = np.mean([body.chunk(s).pos for s in selected], axis=0)
-            pos = centre + outward(centre, body.pos.mean(axis=0)) * (
-                _GROW_SPACING * radius
-            )
+            if attach_to is not None and not body.has_chunk(attach_to):
+                raise ValueError(f"attach_to names no chunk {attach_to}")
+            if len(at) != body.dim:
+                raise ValueError(
+                    f"at has {len(at)} components, expected {body.dim}; a "
+                    "placement is stated in the body's own dimensionality"
+                )
+            pos = at
+            if radius is None:
+                radius = (
+                    body.chunk(attach_to).radius if attach_to is not None else 0.5
+                )
+            anchors = [attach_to] if attach_to is not None else []
 
         new_id = max(body.chunk_ids(), default=-1) + 1
         added = AddChunk(
@@ -1194,11 +1260,15 @@ class Document(QObject):
             radius=radius,
             chunk_id=new_id,
         )
-        if selected:
-            links: list[Command] = [AddLink(new_id, s) for s in selected]
-            self.do(Macro([added, *links], text="Add Chunk"))
+        if anchors:
+            links: list[Command] = [AddLink(new_id, s) for s in anchors]
+            applied = self.do(Macro([added, *links], text="Add Chunk"))
         else:
-            self.do(added)
+            applied = self.do(added)
+        if not applied:
+            # do() declined — an abstracted room — and nothing was built:
+            # there is no chunk to select and no id to hand out.
+            return None
         self.set_selection((new_id,))
         return new_id
 
@@ -1703,17 +1773,27 @@ class Document(QObject):
         return any(state.dirty for state in self._states.values())
 
     def new(self) -> None:
-        self._replace(Body(), None)
-        self.set_terrain(None)
-        self.room.doors = []
+        """A fresh rig on today's defaults — :meth:`adopt`'s null case, exactly.
+
+        Routed through adopt so the solver and blend reset with everything
+        else: New after a tuned file must not carry that file's physics into
+        a rig that never stated it (docs/SETTINGS.md §5).
+        """
+        self.adopt(Body())
         self.status.emit("New rig")
 
     def open(self, path) -> None:
         """Load a rig and its gait into the *active room*, replacing its contents."""
         path = Path(path)
-        body, controllers, terrain, doors, note = _read_rig(path)
+        body, controllers, terrain, doors, solver, blend, note = _read_rig(path)
         self.adopt(
-            body, controllers=controllers, path=path, terrain=terrain, doors=doors
+            body,
+            controllers=controllers,
+            path=path,
+            terrain=terrain,
+            doors=doors,
+            solver=solver,
+            blend=blend,
         )
         self._adopt_room_name(path)
         self.status.emit(note)
@@ -1755,7 +1835,7 @@ class Document(QObject):
         stay one value.
         """
         path = Path(path)
-        body, controllers, terrain, doors, note = _read_rig(path)
+        body, controllers, terrain, doors, solver, blend, note = _read_rig(path)
         base = body.name if body.name and body.name != "body" else path.stem
         name = self.unique_room_name(base)
 
@@ -1765,10 +1845,16 @@ class Document(QObject):
         room.controllers = (
             controllers if controllers is not None else ControllerStack(body)
         )
+        # A fresh Room is already founded; only a file that states its
+        # physics overrides that, so the opinion stays spelled once, in Room.
+        if solver is not None:
+            room.solver_config = solver
         room.solver_config.terrain = terrain
         room.doors = list(doors)
         self.add_room(room)
         self._states[room].path = path
+        if blend is not None:
+            self._states[room].metaball.blend = blend
         self.set_active_room(room)
         if name != base:
             note += f" as room {name!r}"
@@ -1782,6 +1868,8 @@ class Document(QObject):
         path=None,
         terrain: Terrain | None = None,
         doors: Sequence[Door] = (),
+        solver: SolverConfig | None = None,
+        blend: float | None = None,
     ) -> None:
         """Take over a rig, optionally with the gait driving it and its world.
 
@@ -1795,14 +1883,31 @@ class Document(QObject):
         previous document stood on means nothing to this one, and a stale
         floor under a fresh rig would be drawn and collided with silently.
         ``doors`` defaults to none on the same terms — an exit into the old
-        file's world is a promise the new one never made.
+        file's world is a promise the new one never made. ``solver=None`` and
+        ``blend=None`` reset on the same terms again, to the room's founding
+        floor-at-zero config and the dataclass blend: the file is the truth
+        about both records, and the previous session's tuning under a fresh
+        rig would be a physics it never stated.
         """
         self._replace(body, Path(path) if path else None)
         if controllers is not None:
             self.controllers = controllers
             self.controllers_changed.emit()
+        config = solver if solver is not None else Room.founding_config()
+        # The incoming config carries the *old* world across the swap, so
+        # :meth:`set_terrain` still judges — and announces — the world change
+        # itself, including a terrain cleared by a file that has none.
+        config.terrain = self.solver_config.terrain
+        self.solver_config = config
         self.set_terrain(terrain)
         self.room.doors = list(doors)
+        self._state.metaball.blend = (
+            blend if blend is not None else MetaballSettings().blend
+        )
+        # _replace stops short of settings on SCENE_BINDING.md §2.1's terms —
+        # open used to reset them, and a reset needed no announcement. Solver
+        # and blend restore from the file, so the panels must re-read.
+        self.settings_changed.emit()
 
     def save(self, path) -> None:
         """Write the active room to ``path``: body, gait, world, and doors.
@@ -1836,7 +1941,9 @@ class Document(QObject):
         for ref in refs:
             src = path.parent / ref.src
             try:
-                body, controllers, terrain, doors, _note = _read_rig(src)
+                body, controllers, terrain, doors, solver, blend, _note = (
+                    _read_rig(src)
+                )
             except Exception as exc:
                 raise ValueError(
                     f"room {ref.name!r}: {src.name}: {exc}"
@@ -1847,12 +1954,17 @@ class Document(QObject):
             room.controllers = (
                 controllers if controllers is not None else ControllerStack(body)
             )
+            if solver is not None:
+                room.solver_config = solver
             room.solver_config.terrain = terrain
             room.doors = list(doors)
             scene.add_room(room)
+            metaball = MetaballSettings()
+            if blend is not None:
+                metaball.blend = blend
             states[room] = _RoomState(
                 draw=DrawPoints(body),
-                metaball=MetaballSettings(),
+                metaball=metaball,
                 rest_pose={
                     cid: body.chunk(cid).pos for cid in body.chunk_ids()
                 },
@@ -1915,6 +2027,8 @@ class Document(QObject):
             room.controllers,
             terrain=room.solver_config.terrain,
             doors=tuple(room.doors),
+            solver=room.solver_config,
+            blend=state.metaball.blend,
         )
         state.path = target
         if state.dirty:
@@ -1955,13 +2069,22 @@ class Document(QObject):
 
 def _read_rig(
     path: Path,
-) -> tuple[Body, ControllerStack | None, Terrain | None, Sequence[Door], str]:
+) -> tuple[
+    Body,
+    ControllerStack | None,
+    Terrain | None,
+    Sequence[Door],
+    SolverConfig | None,
+    float | None,
+    str,
+]:
     """Read any supported rig file, v3 down to the legacy eras.
 
     The one reader both :meth:`Document.open` and :meth:`Document.open_as_room`
     share, so the fallback ladder cannot fork between them. Returns the body,
     the gait (``None`` for files that cannot describe one), the world, the
-    doors, and the status line the read earned.
+    doors, the solver tuning and the blend (``None`` each for eras that could
+    not describe them), and the status line the read earned.
     """
     try:
         rig = xml_v2.read(path)
@@ -1969,15 +2092,40 @@ def _read_rig(
         driven = len(rig.controllers.controllers)
         if driven:
             note += f" ({driven} controller(s))"
-        return rig.body, rig.controllers, rig.terrain, rig.doors, note
+        return (
+            rig.body,
+            rig.controllers,
+            rig.terrain,
+            rig.doors,
+            rig.solver,
+            rig.blend,
+            note,
+        )
     except Exception:
         # A scene manifest is not an older rig era; falling through to the
         # legacy reader would bury the one error message that says what to
-        # do instead.
-        if scene_xml.is_manifest(path):
+        # do instead. A versioned <body> is not one either: it failed as the
+        # format it names, and the refusal that says how — a solver arity, a
+        # NaN damping — is the message worth surfacing.
+        if scene_xml.is_manifest(path) or _is_versioned_body(path):
             raise
         result = xml_legacy.read_legacy(path)
         note = f"Opened {path.name} (legacy, {result.coords} coordinates)"
         if result.missing_mesh:
             note += f"; {len(result.missing_mesh)} bone(s) had no mesh"
-        return result.body, None, None, (), note
+        return result.body, None, None, (), None, None, note
+
+
+def _is_versioned_body(path: Path) -> bool:
+    """Whether the file's root tag says ``<body>`` — ``is_manifest``'s sniff.
+
+    Decides only "did the v3/v2 reader already own this file"; an
+    unparseable file is not a versioned body, and the legacy ladder that
+    then runs produces the real error.
+    """
+    try:
+        for _event, element in ET.iterparse(path, events=("start",)):
+            return element.tag == "body"
+    except (OSError, ET.ParseError):
+        return False
+    return False

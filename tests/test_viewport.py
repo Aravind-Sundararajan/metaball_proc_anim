@@ -1,10 +1,11 @@
 """Tests for the editing viewport.
 
 Split deliberately in two. The geometry — pixel rays, ray/sphere picking, the
-drag plane, overlay projection — is plain numpy against a known camera and runs
-anywhere, because that is the half most likely to be silently wrong: a picking
-ray that is off by a half pixel or a flipped row still selects *something*, and
-the bug only shows up as the wrong chunk near a silhouette.
+surface march, the drag plane, overlay projection — is plain numpy against a
+known camera and runs anywhere, because that is the half most likely to be
+silently wrong: a picking ray that is off by a half pixel or a flipped row
+still selects *something*, and the bug only shows up as the wrong chunk near a
+silhouette.
 
 The other half needs a real widget and skips without a core-profile context,
 following ``tests/test_metaball.py``. Two things there cannot be established any
@@ -19,6 +20,7 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QMouseEvent
 
 from mesh_xml.core import Body
+from mesh_xml.core.terrain import Terrain
 from mesh_xml.editor.document import Document, MoveChunk
 from mesh_xml.editor.viewport import (
     GIZMO_HANDLE_PX,
@@ -30,9 +32,12 @@ from mesh_xml.editor.viewport import (
     gizmo_hit,
     nearest_hit,
     plane_hit,
+    primitive_chunks,
     project,
     ray_through,
+    surface_hit,
 )
+from mesh_xml.render import sdf
 from mesh_xml.render.gl.camera import OrbitCamera
 
 gl_context = pytest.importorskip("mesh_xml.render.gl.context")
@@ -111,6 +116,26 @@ class TestPixelRays:
             origin, direction = ray_through(camera, x, y, width, height)
             assert origin == pytest.approx(camera.position, abs=1e-6)
             assert direction == pytest.approx(grid[height - 1 - y, x], abs=1e-6)
+
+    def test_matches_the_camera_row_for_row_in_orthographic(self):
+        """The stated contract's other half, which the O toggle exposes.
+
+        Under orthographic the halves of the pair swap roles: the direction
+        holds on the camera forward and the *origin* walks the image plane.
+        A ray_through that keeps fanning perspective directions here picks
+        against a render it no longer matches.
+        """
+        camera = OrbitCamera(
+            distance=6.0, yaw=31.0, pitch=-17.0, target=(0.4, 1.0, -2.0),
+            orthographic=True,
+        )
+        width, height = 33, 21
+        origins, directions = camera.ray_directions(width, height)
+
+        for x, y in ((0, 0), (width - 1, 0), (0, height - 1), (16, 10), (7, 13)):
+            origin, direction = ray_through(camera, x, y, width, height)
+            assert origin == pytest.approx(origins[height - 1 - y, x], abs=1e-6)
+            assert direction == pytest.approx(directions[height - 1 - y, x], abs=1e-6)
 
     def test_the_centre_pixel_looks_down_the_view_axis(self):
         camera = OrbitCamera(yaw=44.0, pitch=22.0)
@@ -202,8 +227,33 @@ class TestOverlayProjection:
         body = worm()
         centres = chunk_centres(body)
 
-        matrix = camera.view_projection_matrix(width, height)
-        screen, visible = project(matrix, centres, width, height)
+        screen, visible = project(camera, centres, width, height)
+        assert visible.all()
+
+        for slot in range(body.n_chunks):
+            x, y = screen[slot]
+            origin, direction = ray_through(camera, x - 0.5, y - 0.5, width, height)
+            hit = nearest_hit(origin, direction, centres, np.asarray(body.radius, float))
+            assert hit is not None, f"chunk {slot} projected off its own sphere"
+            assert hit[0] == slot
+
+    def test_projection_and_picking_agree_in_orthographic_too(self):
+        """The same two derivations under the O toggle's parallel rays.
+
+        The perspective matrix would put each dot where the *fanned* ray met
+        the chunk; the parallel ray through that pixel then lands on a
+        neighbour or on nothing. Both sides have to branch together, which is
+        exactly what this asserts.
+        """
+        camera = OrbitCamera(
+            distance=7.0, yaw=37.0, pitch=-21.0, target=(0.2, 0.1, 0.0),
+            orthographic=True,
+        )
+        width, height = SIZE
+        body = worm()
+        centres = chunk_centres(body)
+
+        screen, visible = project(camera, centres, width, height)
         assert visible.all()
 
         for slot in range(body.n_chunks):
@@ -216,9 +266,7 @@ class TestOverlayProjection:
     def test_the_centre_of_the_view_projects_to_the_centre_of_the_widget(self):
         camera = OrbitCamera(distance=5.0, yaw=63.0, pitch=12.0, target=(1.0, -2.0, 3.0))
         width, height = 200, 100
-        screen, visible = project(
-            camera.view_projection_matrix(width, height), camera.target[None, :], width, height
-        )
+        screen, visible = project(camera, camera.target[None, :], width, height)
         assert visible[0]
         assert screen[0] == pytest.approx([width / 2.0, height / 2.0], abs=1e-4)
 
@@ -226,13 +274,20 @@ class TestOverlayProjection:
         """Without the w test it would project to a ghost in front of the camera."""
         camera = OrbitCamera(distance=5.0)
         behind = np.array([[0.0, 0.0, 20.0]])
-        _, visible = project(camera.view_projection_matrix(*SIZE), behind, *SIZE)
+        _, visible = project(camera, behind, *SIZE)
+        assert not visible[0]
+
+    def test_a_point_behind_the_eye_plane_is_masked_in_orthographic_too(self):
+        """Parallel rays march forward from the eye plane; nothing behind it draws."""
+        camera = OrbitCamera(distance=5.0, orthographic=True)
+        behind = np.array([[0.0, 0.0, 20.0]])
+        _, visible = project(camera, behind, *SIZE)
         assert not visible[0]
 
     def test_moving_up_in_the_world_moves_up_the_screen(self):
         camera = OrbitCamera(distance=8.0)
         points = np.array([[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]])
-        screen, _ = project(camera.view_projection_matrix(*SIZE), points, *SIZE)
+        screen, _ = project(camera, points, *SIZE)
         assert screen[1, 1] < screen[0, 1]
 
 
@@ -308,6 +363,182 @@ class TestDragPlane:
         origin = np.array([0.0, 0.0, 10.0])
         direction = np.array([1.0, 0.0, 0.0])
         assert plane_hit(origin, direction, np.zeros(3), np.array([0.0, 0.0, -1.0])) is None
+
+
+class TestSurfacePick:
+    """The composite march a Ctrl-click will consult, held to the CPU oracle.
+
+    Everything here goes through the module-level :func:`surface_hit`, which
+    is the point of its shape: the trace is provable against
+    :mod:`mesh_xml.render.field`'s conventions without a widget, a context,
+    or a document.
+    """
+
+    DOWN = np.array([0.0, -1.0, 0.0])
+
+    @staticmethod
+    def lone(radius: float = 0.5) -> tuple[Body, int]:
+        body = Body()
+        return body, body.add_chunk("a", [0.0, 0.0, 0.0], radius=radius)
+
+    def test_a_ray_at_a_lone_sphere_lands_at_its_radius(self):
+        body, chunk = self.lone()
+        origin = np.array([0.0, 0.0, 10.0])
+        hit = surface_hit(
+            origin,
+            np.array([0.0, 0.0, -1.0]),
+            sdf.pack(body),
+            primitive_chunks(body),
+        )
+        assert hit is not None
+        assert hit.kind == "flesh"
+        assert hit.chunk_id == chunk
+        assert np.linalg.norm(hit.point - origin) == pytest.approx(9.5, abs=1e-3)
+        assert hit.normal == pytest.approx([0.0, 0.0, 1.0], abs=1e-3)
+
+    def test_fused_flesh_answers_where_the_sphere_pick_misses(self):
+        """The two picks disagree between blended chunks, by construction.
+
+        Two chunks braced into one creature (a mechanism link: one blend
+        group, two sphere primitives) fuse into a waist under a large blend.
+        The analytic sphere pick has a gap there; the surface pick must not,
+        or the click lands on visible flesh and does nothing.
+        """
+        body = Body()
+        a = body.add_chunk("a", [-0.5, 0.0, 0.0], radius=0.3)
+        b = body.add_chunk("b", [0.5, 0.0, 0.0], radius=0.3)
+        body.add_link(a, b, render=False)
+        origin = np.array([0.05, 3.0, 0.0])
+
+        misses = nearest_hit(
+            origin, self.DOWN, chunk_centres(body), np.asarray(body.radius, float)
+        )
+        assert misses is None, "the gap between the analytic spheres closed"
+
+        hit = surface_hit(
+            origin,
+            self.DOWN,
+            sdf.pack(body),
+            primitive_chunks(body),
+            1.0,
+            groups=sdf.group_table(body)[:, :2],
+        )
+        assert hit is not None
+        assert hit.kind == "flesh"
+        assert hit.point[1] > 0.0, "landed past the waist, not on it"
+        assert hit.chunk_id == b, "the nearer chunk owns the fused surface here"
+
+    def test_a_cone_hit_names_the_nearer_endpoint(self):
+        body = Body()
+        a = body.add_chunk("a", [-1.0, 0.0, 0.0], radius=0.3)
+        b = body.add_chunk("b", [1.0, 0.0, 0.0], radius=0.3)
+        body.add_link(a, b)
+        prims = sdf.pack(body)
+        chunks = primitive_chunks(body)
+        assert len(prims) == 1, "two linked chunks pack to one cone"
+
+        toward_b = surface_hit(np.array([0.6, 4.0, 0.0]), self.DOWN, prims, chunks)
+        assert toward_b is not None and toward_b.kind == "flesh"
+        assert toward_b.chunk_id == b
+
+        toward_a = surface_hit(np.array([-0.6, 4.0, 0.0]), self.DOWN, prims, chunks)
+        assert toward_a is not None
+        assert toward_a.chunk_id == a
+
+    def test_terrain_wins_where_it_is_nearer(self):
+        body, _ = self.lone()
+        hit = surface_hit(
+            np.array([0.0, 8.0, 0.0]),
+            self.DOWN,
+            sdf.pack(body),
+            primitive_chunks(body),
+            terrain=Terrain.flat(2.0),
+        )
+        assert hit is not None
+        assert hit.kind == "terrain"
+        assert hit.chunk_id is None
+        assert hit.point[1] == pytest.approx(2.0, abs=1e-3)
+        assert hit.normal == pytest.approx([0.0, 1.0, 0.0], abs=1e-3)
+
+    def test_flesh_wins_where_it_is_nearer(self):
+        body, chunk = self.lone()
+        hit = surface_hit(
+            np.array([0.0, 8.0, 0.0]),
+            self.DOWN,
+            sdf.pack(body),
+            primitive_chunks(body),
+            terrain=Terrain.flat(-2.0),
+        )
+        assert hit is not None
+        assert hit.kind == "flesh"
+        assert hit.chunk_id == chunk
+        assert hit.point[1] == pytest.approx(0.5, abs=1e-3)
+
+    def test_the_floor_answers_when_nothing_else_is_the_world(self):
+        hit = surface_hit(
+            np.array([0.0, 5.0, 0.0]),
+            self.DOWN,
+            np.zeros((0, 8), dtype=np.float32),
+            np.zeros((0, 2), dtype=np.int64),
+            floor_y=-1.0,
+        )
+        assert hit is not None
+        assert hit.kind == "floor"
+        assert hit.chunk_id is None
+        assert hit.point[1] == pytest.approx(-1.0, abs=1e-9), "analytic, not marched"
+        assert hit.normal == pytest.approx([0.0, 1.0, 0.0])
+
+    def test_no_floor_means_sky(self):
+        """The indicted legacy fallback: a miss must be None, never the origin."""
+        hit = surface_hit(
+            np.array([0.0, 5.0, 0.0]),
+            self.DOWN,
+            np.zeros((0, 8), dtype=np.float32),
+            np.zeros((0, 2), dtype=np.int64),
+            floor_y=None,
+        )
+        assert hit is None
+
+    def test_the_floor_beyond_the_march_budget_stops_nothing(self):
+        """The shader gates its grid at u_max_distance; the pick must agree."""
+        hit = surface_hit(
+            np.array([0.0, 5.0, 0.0]),
+            self.DOWN,
+            np.zeros((0, 8), dtype=np.float32),
+            np.zeros((0, 2), dtype=np.int64),
+            floor_y=-1.0,
+            max_distance=4.0,
+        )
+        assert hit is None
+
+    def test_a_nearer_surface_beats_the_floor(self):
+        body, chunk = self.lone()
+        hit = surface_hit(
+            np.array([0.0, 8.0, 0.0]),
+            self.DOWN,
+            sdf.pack(body),
+            primitive_chunks(body),
+            floor_y=-1.0,
+        )
+        assert hit is not None
+        assert hit.kind == "flesh"
+        assert hit.chunk_id == chunk
+
+    def test_a_ray_born_at_a_gradient_sink_carries_the_zero_normal(self):
+        """The record keeps field.normal's zero vector; substituting a
+        direction is the gesture's job, because only the gesture has the ray."""
+        body, chunk = self.lone()
+        hit = surface_hit(
+            np.array([0.0, 0.0, 0.0]),
+            np.array([0.0, 0.0, -1.0]),
+            sdf.pack(body),
+            primitive_chunks(body),
+        )
+        assert hit is not None
+        assert hit.kind == "flesh"
+        assert hit.chunk_id == chunk
+        assert hit.point == pytest.approx([0.0, 0.0, 0.0])
+        assert np.all(hit.normal == 0.0)
 
 
 # ----------------------------------------------------------------------
@@ -665,6 +896,142 @@ class TestViewport:
         release(view, 42, 2)
         assert view.camera.yaw != before
 
+    # -- the surface pick --------------------------------------------
+
+    def test_the_surface_pick_lands_on_the_drawn_flesh(self):
+        view = self.viewport()
+        chunk_id = view.document.body.chunk_ids()[2]
+        x, y = view.rig_screen_points()[chunk_id]
+        hit = view.surface_hit(x - 0.5, y - 0.5)
+        assert hit is not None
+        assert hit.kind == "flesh"
+        assert hit.chunk_id == chunk_id
+
+    def test_the_surface_pick_mirrors_the_visible_floor(self):
+        """The method's gating is the frame's: shown, not vetoed by a world,
+        and at the frame's height — the shader's zero substitution included."""
+        view = self.viewport(Document())
+        view.camera.snap_view("top")
+        view.document.solver_config.ground_y = -1.0
+        centre = (view.width() / 2.0, view.height() / 2.0)
+
+        hit = view.surface_hit(*centre)
+        assert hit is not None and hit.kind == "floor"
+        assert hit.point[1] == pytest.approx(-1.0)
+
+        view.document.metaball.show_floor = False
+        assert view.surface_hit(*centre) is None
+
+        view.document.metaball.show_floor = True
+        view.document.solver_config.ground_y = None
+        hit = view.surface_hit(*centre)
+        assert hit is not None and hit.kind == "floor", (
+            "the grid the shader sketches for a floorless world is still the "
+            "thing the author sees"
+        )
+        assert hit.point[1] == pytest.approx(0.0)
+
+        view.document.metaball.debug_mode = 1
+        assert view.surface_hit(*centre) is None, (
+            "a debug view draws no grid, so the pick answers sky"
+        )
+        view.document.metaball.debug_mode = 0
+
+        view.document.solver_config.ground_y = -1.0
+        view.document.set_terrain(Terrain.flat(-3.0))
+        hit = view.surface_hit(*centre)
+        assert hit is not None and hit.kind == "terrain", "a loaded world replaces the floor"
+        assert hit.point[1] == pytest.approx(-3.0, abs=1e-3)
+
+        view.document.set_terrain(Terrain())
+        hit = view.surface_hit(*centre)
+        assert hit is not None and hit.kind == "floor", "an empty world defers to the floor"
+
+    # -- placing -----------------------------------------------------
+
+    def test_ctrl_click_grows_the_creature_where_it_was_struck(self):
+        view = self.viewport()
+        body = view.document.body
+        x, y = view.rig_screen_points()[body.chunk_ids()[2]]
+        hit = view.surface_hit(x, y)
+        assert hit is not None and hit.kind == "flesh"
+        struck = body.chunk(hit.chunk_id)
+        expected = hit.point + hit.normal * struck.radius
+
+        before = set(body.chunk_ids())
+        press(view, x, y, modifiers=Qt.KeyboardModifier.ControlModifier)
+        release(view, x, y, modifiers=Qt.KeyboardModifier.ControlModifier)
+
+        (new_id,) = set(body.chunk_ids()) - before
+        placed = body.chunk(new_id)
+        assert placed.pos == pytest.approx(tuple(expected))
+        assert placed.radius == struck.radius
+        assert body.neighbors(new_id) == [hit.chunk_id]
+        assert view.document.selection == {new_id}
+
+        view.document.undo()
+        assert set(body.chunk_ids()) == before, (
+            "one step: the chunk and its link leave together"
+        )
+
+    def test_ctrl_click_on_the_grid_starts_a_new_beginning(self):
+        view = self.viewport(Document())
+        view.camera.snap_view("top")
+        view.document.solver_config.ground_y = -1.0
+        centre = (view.width() / 2.0, view.height() / 2.0)
+
+        press(view, *centre, modifiers=Qt.KeyboardModifier.ControlModifier)
+        release(view, *centre, modifiers=Qt.KeyboardModifier.ControlModifier)
+
+        (new_id,) = view.document.body.chunk_ids()
+        placed = view.document.body.chunk(new_id)
+        assert placed.pos[1] == pytest.approx(-0.5), "one radius of clearance"
+        assert placed.radius == 0.5
+        assert view.document.body.neighbors(new_id) == []
+        assert view.document.selection == {new_id}
+
+    def test_ctrl_click_on_sky_does_nothing_at_all(self):
+        """Not the legacy origin fallback, and not an orbit: sky means no."""
+        view = self.viewport(Document())
+        view.document.metaball.show_floor = False
+        centre = (view.width() / 2.0, view.height() / 2.0)
+        yaw = view.camera.yaw
+
+        press(view, *centre, modifiers=Qt.KeyboardModifier.ControlModifier)
+        move(
+            view,
+            centre[0] + 40,
+            centre[1] + 2,
+            modifiers=Qt.KeyboardModifier.ControlModifier,
+        )
+        release(
+            view,
+            centre[0] + 40,
+            centre[1] + 2,
+            modifiers=Qt.KeyboardModifier.ControlModifier,
+        )
+
+        assert view.document.body.n_chunks == 0
+        assert view.camera.yaw == yaw, "a missed place must not orbit"
+        assert view.document.selection == set()
+
+    def test_ctrl_shift_click_is_still_a_selection_gesture(self):
+        """Exactly Ctrl places; a chord carrying Shift belongs to the ladder."""
+        view = self.viewport()
+        body = view.document.body
+        chunk_id = body.chunk_ids()[2]
+        x, y = view.rig_screen_points()[chunk_id]
+        chord = (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+        )
+        count = body.n_chunks
+
+        press(view, x, y, modifiers=chord)
+        release(view, x, y, modifiers=chord)
+
+        assert body.n_chunks == count, "a chord carrying Shift must not place"
+        assert chunk_id in view.document.selection, "Shift's toggle won"
+
     # -- dragging ----------------------------------------------------
 
     def test_one_drag_is_exactly_one_command(self):
@@ -795,8 +1162,9 @@ class TestViewport:
         view.frame_all()
 
         width, height = view.width(), view.height()
-        matrix = view.camera.view_projection_matrix(width, height)
-        screen, visible = project(matrix, chunk_centres(view.document.body), width, height)
+        screen, visible = project(
+            view.camera, chunk_centres(view.document.body), width, height
+        )
 
         assert visible.all()
         assert (screen[:, 0] >= 0).all() and (screen[:, 0] <= width).all()

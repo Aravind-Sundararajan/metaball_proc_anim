@@ -35,9 +35,9 @@ since it reads the current position when it applies.
 **The rig is drawn over the surface with QPainter.** The metaball shader has no
 per-primitive colour: everything melts into one blended field, which is the
 entire point of it and also means selection cannot be shown in the shader
-without giving up the blend. So the skeleton is projected with
-:meth:`OrbitCamera.view_projection_matrix` and painted on top, and it is
-toggleable because the surface is what the tool is for.
+without giving up the blend. So the skeleton is projected with :func:`project`
+and painted on top, and it is toggleable because the surface is what the tool
+is for.
 
 Picking and the overlay both use *body* positions, not the smoothed draw
 positions the surface is built from. The draw points deliberately lag — that lag
@@ -86,13 +86,16 @@ if TYPE_CHECKING:
 __all__ = [
     "FRAME_INTERVAL_MS",
     "MetaballViewport",
+    "SurfaceHit",
     "chunk_centres",
     "gizmo_handles",
     "gizmo_hit",
     "nearest_hit",
     "plane_hit",
+    "primitive_chunks",
     "project",
     "ray_through",
+    "surface_hit",
 ]
 
 #: Frame timer period. The ceiling on the refresh rate, not the rate itself:
@@ -205,17 +208,31 @@ def ray_through(
     has to stay one: a pick that disagrees with the render by half a pixel puts
     the selection on the wrong chunk near a silhouette. ``(x, y)`` is a pixel
     index and the ray goes through that pixel's centre, so
-    ``ray_through(cam, x, y, w, h)`` is ``ray_directions(w, h)[h - 1 - y, x]``.
+    ``ray_through(cam, x, y, w, h)`` is ``ray_directions(w, h)``'s answer for
+    the pixel at ``[h - 1 - y, x]`` — origin and direction both, in either
+    projection. The two projections vary opposite halves of the pair, exactly
+    as ray_directions' shapes say: perspective fans the directions out from
+    one shared eye, orthographic slides the origin across the image plane and
+    keeps every direction on the camera forward.
 
     Returns ``(origin, direction)`` in float64 with ``direction`` normalized.
     """
     right, up, forward = (v.astype(np.float64) for v in camera.basis())
-    scale = camera.tan_half_fov
     aspect = viewport_aspect(width, height)
 
     ndc_x = 2.0 * (float(x) + 0.5) / max(width, 1) - 1.0
     ndc_y = 1.0 - 2.0 * (float(y) + 0.5) / max(height, 1)
 
+    if camera.orthographic:
+        half = camera.ortho_height * 0.5
+        origin = (
+            camera.position.astype(np.float64)
+            + right * (ndc_x * aspect * half)
+            + up * (ndc_y * half)
+        )
+        return origin, forward / np.linalg.norm(forward)
+
+    scale = camera.tan_half_fov
     direction = forward + right * (ndc_x * aspect * scale) + up * (ndc_y * scale)
     return camera.position.astype(np.float64), direction / np.linalg.norm(direction)
 
@@ -267,24 +284,40 @@ def plane_hit(
 
 
 def project(
-    matrix: np.ndarray, points: np.ndarray, width: int, height: int
+    camera: OrbitCamera, points: np.ndarray, width: int, height: int
 ) -> tuple[np.ndarray, np.ndarray]:
     """World points to Qt window coordinates, with a mask of what is in front.
 
-    ``matrix`` is a view-projection in this codebase's ``M @ v`` row-major
-    sense. Points at or behind the eye have a non-positive clip ``w`` and would
-    project to a mirrored ghost in front of the camera, so they are masked out
-    rather than drawn.
+    :func:`ray_through` inverted, and held to it by the overlay tests: the dot
+    must sit on the pixel whose ray lands back on the point, in either
+    projection, or selection and its own feedback disagree. Under perspective
+    the camera's view-projection matrix does the work — points at or behind
+    the eye have a non-positive clip ``w`` and would project to a mirrored
+    ghost in front of the camera, so they are masked out rather than drawn.
+    Under orthographic there is no camera matrix to borrow
+    (:meth:`OrbitCamera.projection_matrix` is perspective), so the point is
+    resolved against the camera basis the same way the rays are built, and the
+    mask is the eye plane the parallel rays march forward from.
     """
     positions = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-    homogeneous = np.concatenate(
-        [positions, np.ones((len(positions), 1))], axis=1
-    )
-    clip = homogeneous @ np.asarray(matrix, dtype=np.float64).T
 
-    w = clip[:, 3]
-    visible = w > PARALLEL_EPSILON
-    ndc = clip[:, :3] / np.where(visible, w, 1.0)[:, None]
+    if camera.orthographic:
+        right, up, forward = (v.astype(np.float64) for v in camera.basis())
+        rel = positions - camera.position.astype(np.float64)
+        half = camera.ortho_height * 0.5
+        ndc = np.empty((len(positions), 2), dtype=np.float64)
+        ndc[:, 0] = (rel @ right) / (half * viewport_aspect(width, height))
+        ndc[:, 1] = (rel @ up) / half
+        visible = rel @ forward > PARALLEL_EPSILON
+    else:
+        matrix = camera.view_projection_matrix(width, height)
+        homogeneous = np.concatenate(
+            [positions, np.ones((len(positions), 1))], axis=1
+        )
+        clip = homogeneous @ np.asarray(matrix, dtype=np.float64).T
+        w = clip[:, 3]
+        visible = w > PARALLEL_EPSILON
+        ndc = clip[:, :2] / np.where(visible, w, 1.0)[:, None]
 
     screen = np.empty((len(positions), 2), dtype=np.float64)
     screen[:, 0] = (ndc[:, 0] + 1.0) * 0.5 * width
@@ -301,6 +334,170 @@ def chunk_centres(body: Body) -> np.ndarray:
     centres = np.zeros((body.n_chunks, 3), dtype=np.float64)
     centres[:, : body.dim] = body.pos
     return centres
+
+
+@dataclass
+class SurfaceHit:
+    """One landed surface pick: where, which way out, and what was struck.
+
+    ``kind`` is ``"flesh"``, ``"terrain"`` or ``"floor"``, and ``chunk_id``
+    names the chunk whose flesh took the hit — ``None`` for the world kinds.
+    ``normal`` is the field's own answer and carries its one caveat with it:
+    at a gradient sink :func:`mesh_xml.render.field.normal` reports the zero
+    vector, and the record keeps it rather than guessing. The placement
+    gesture, which knows the ray, substitutes back-along-the-ray there — the
+    one direction that is always defined and always faces the author.
+    """
+
+    point: np.ndarray
+    normal: np.ndarray
+    kind: str
+    chunk_id: int | None = None
+
+
+def primitive_chunks(body: Body) -> np.ndarray:
+    """Which two chunks each packed primitive spans: ``(P, 2) int64`` chunk ids.
+
+    Row ``i`` names the flesh :func:`mesh_xml.render.sdf.pack` row ``i``
+    carries — a rendered link's two endpoints, or a lonely chunk twice. The
+    table is derived by packing slot indices through :func:`pack` itself
+    rather than by restating its build-and-sort recipe, so it follows the row
+    order by construction instead of by agreement. Float32 lanes hold
+    integers exactly to ``2**24``, far past any editable body.
+    """
+    slots = np.zeros((body.n_chunks, body.dim), dtype=np.float32)
+    slots[:, 0] = np.arange(body.n_chunks)
+    rows = sdf.pack(
+        body, positions=slots, radii=np.zeros(body.n_chunks, dtype=np.float32)
+    )
+    out = np.empty((len(rows), 2), dtype=np.int64)
+    for row in range(len(rows)):
+        out[row, 0] = body.id_at(int(rows[row, 0]))
+        out[row, 1] = body.id_at(int(rows[row, 4]))
+    return out
+
+
+def surface_hit(
+    origin: np.ndarray,
+    direction: np.ndarray,
+    primitives: np.ndarray,
+    chunks: np.ndarray,
+    k: float = 0.0,
+    *,
+    groups: np.ndarray | None = None,
+    terrain: Terrain | None = None,
+    floor_y: float | None = None,
+    max_steps: int = 128,
+    max_distance: float = 100.0,
+    surface_epsilon: float = field.SURFACE_EPSILON,
+    step_relaxation: float = field.STEP_RELAXATION,
+) -> SurfaceHit | None:
+    """March one ray through the rendered composite and report what it struck.
+
+    The composite is the frag shader's, by construction rather than by
+    resemblance, because the gesture's whole claim is "where you clicked": the
+    creature fold (:func:`mesh_xml.render.field.field` over the packed
+    ``primitives``, smooth within a blend group and hard across ``groups``)
+    hard-minned against ``terrain``, sphere-traced in float64 on the caller's
+    step budget. The library deliberately owns no creature∪terrain composite —
+    "compositing against a creature is the consumer's job"
+    (:mod:`mesh_xml.core.terrain`) — so the loop is editor code, beside the
+    mouse that asks for it. The reference floor at ``floor_y`` is analytic,
+    exactly as the shader draws its grid: a ray-plane intersection raced
+    against the march, gated by the same ``max_distance``; ``None`` means no
+    floor is on screen and stops no ray.
+
+    A landing resolves the way the shading resolves: the point belongs to
+    whichever field is nearer there, and flesh names its chunk through
+    ``chunks`` (:func:`primitive_chunks`' table) — the winning group's nearest
+    primitive, whose nearer end names the chunk. A degenerate record's ends
+    coincide, so the same comparison names its lonely chunk. A miss returns
+    ``None``: sky means no.
+    """
+    origin = np.asarray(origin, dtype=np.float64).reshape(3)
+    direction = np.asarray(direction, dtype=np.float64).reshape(3)
+    length = float(np.linalg.norm(direction))
+    if length == 0.0:
+        raise ValueError("direction must be non-zero to measure t in world units")
+    direction = direction / length
+
+    t = 0.0
+    landed = False
+    for _ in range(max_steps):
+        point = origin + direction * t
+        d = float(field.field(point, primitives, k, groups))
+        if terrain is not None:
+            d = min(d, float(terrain.distance(point)))
+        if d < surface_epsilon:
+            landed = True
+            break
+        t += d * step_relaxation
+        if t > max_distance:
+            break
+
+    if floor_y is not None and abs(float(direction[1])) > PARALLEL_EPSILON:
+        floor_t = (float(floor_y) - origin[1]) / direction[1]
+        if 0.0 < floor_t < max_distance and (not landed or floor_t < t):
+            return SurfaceHit(
+                point=origin + direction * floor_t,
+                normal=np.array([0.0, 1.0, 0.0]),
+                kind="floor",
+            )
+
+    if not landed:
+        return None
+
+    point = origin + direction * t
+    creature = float(field.field(point, primitives, k, groups))
+    ground = float(terrain.distance(point)) if terrain is not None else np.inf
+    if ground < creature:
+        return SurfaceHit(
+            point=point,
+            normal=np.asarray(terrain.normal(point), dtype=np.float64).reshape(3),
+            kind="terrain",
+        )
+
+    row = _winning_primitive(point, primitives, k, groups)
+    record = np.asarray(primitives[row], dtype=np.float64)
+    near_a = np.linalg.norm(point - record[0:3]) <= np.linalg.norm(point - record[4:7])
+    return SurfaceHit(
+        point=point,
+        normal=field.normal(point, primitives, k, groups=groups),
+        kind="flesh",
+        chunk_id=int(chunks[row, 0] if near_a else chunks[row, 1]),
+    )
+
+
+def _winning_primitive(
+    point: np.ndarray,
+    primitives: np.ndarray,
+    k: float,
+    groups: np.ndarray | None,
+) -> int:
+    """The packed row whose flesh owns ``point``: the winning group's nearest.
+
+    The group resolves first, by the least folded field — the same answer
+    ``sd_nearest_group`` gives the shading and :func:`field.albedo`'s grouped
+    path takes — because a raw argmin across groups can name a neighbouring
+    creature's row wherever two skins nearly touch: a blend can hold the
+    winner's fold at zero while its every row sits ``k / 4`` away, nearer
+    than which another group's row may legitimately pass.
+    """
+    prims = np.asarray(primitives, dtype=np.float64)
+    distances = np.array([float(field.round_cone(point, record)) for record in prims])
+    if groups is None:
+        return int(np.argmin(distances))
+
+    best_row = 0
+    best = np.inf
+    for start, count in np.asarray(groups, dtype=np.int64):
+        if count == 0:
+            continue
+        d = float(field.field(point, prims[start : start + count], k))
+        if d < best:
+            best = d
+            best_row = int(start) + int(np.argmin(distances[start : start + count]))
+    return best_row
 
 
 @dataclass
@@ -676,6 +873,26 @@ class MetaballViewport(RaymarchView):
         self._group_rows = self._pending_rows
         self._pending_rows = None
 
+    def _floor_state(self) -> tuple[bool, float]:
+        """The reference grid as actually drawn: shown, unvetoed, undebugged.
+
+        One derivation for the frame and the pick — :meth:`_floor_uniforms`
+        and :meth:`surface_hit` both read it, so the grid the author sees and
+        the grid a Ctrl+click answers cannot drift apart (the
+        agreement-instead-of-construction hazard :func:`primitive_chunks`
+        names). Height is ``ground_y``, or the zero the shader has always
+        substituted for a floorless world.
+        """
+        terrain = self._document.terrain
+        settings = self._document.metaball
+        drawn = (
+            settings.show_floor
+            and settings.debug_mode == 0
+            and (terrain is None or terrain.is_empty)
+        )
+        height = self._document.solver_config.ground_y
+        return drawn, float(height if height is not None else 0.0)
+
     def _floor_uniforms(self) -> dict[str, object]:
         """The reference grid's uniforms, owned here rather than by settings.
 
@@ -684,14 +901,10 @@ class MetaballViewport(RaymarchView):
         the world, and a grid plane slicing through its hills would read as a
         second, contradictory floor.
         """
-        terrain = self._document.terrain
-        enabled = self._document.metaball.show_floor and (
-            terrain is None or terrain.is_empty
-        )
-        height = self._document.solver_config.ground_y
+        drawn, height = self._floor_state()
         return {
-            "u_floor_enabled": int(enabled),
-            "u_floor_height": float(height if height is not None else 0.0),
+            "u_floor_enabled": int(drawn),
+            "u_floor_height": height,
         }
 
     def _flush_upload(self) -> None:
@@ -751,8 +964,9 @@ class MetaballViewport(RaymarchView):
         painter = QPainter(self)
         try:
             if self._show_rig and body.n_chunks:
-                matrix = self.camera.view_projection_matrix(width, height)
-                screen, visible = project(matrix, chunk_centres(body), width, height)
+                screen, visible = project(
+                    self.camera, chunk_centres(body), width, height
+                )
                 self._stroke_rig(painter, body, screen, visible)
             self._stroke_gizmo(painter, width, height)
         finally:
@@ -923,12 +1137,42 @@ class MetaballViewport(RaymarchView):
         )
         return None if hit is None else body.id_at(hit[0])
 
+    def surface_hit(self, x: float, y: float) -> SurfaceHit | None:
+        """What the rendered composite shows under a mouse position.
+
+        The other pick: :meth:`pick` asks the analytic body spheres, this
+        marches the surface the author is looking at — the creature fold at
+        the draw positions, the terrain, and the reference floor exactly as
+        drawn (:meth:`_floor_state`: shown, no world veto, no debug view, at
+        the frame's height). The grid the author sees is the grid the pick
+        answers: a chunk placed on that reference furniture in a floorless
+        world falls, which is what it reads as. Costs one CPU march, only
+        when called; the frame loop never pays it.
+        """
+        document = self._document
+        settings = document.metaball
+        drawn, height = self._floor_state()
+        origin, direction = self.ray_through(x, y)
+        return surface_hit(
+            origin,
+            direction,
+            document.primitives(),
+            primitive_chunks(document.body),
+            settings.blend,
+            groups=document.group_rows()[:, :2],
+            terrain=document.terrain,
+            floor_y=height if drawn else None,
+            max_steps=settings.max_steps,
+            max_distance=settings.max_distance,
+            surface_epsilon=settings.surface_epsilon,
+            step_relaxation=settings.step_relaxation,
+        )
+
     def rig_screen_points(self) -> dict[int, tuple[float, float]]:
         """Where each chunk lands on screen. What the overlay draws, by chunk id."""
         body = self._document.body
         width, height = max(self.width(), 1), max(self.height(), 1)
-        matrix = self.camera.view_projection_matrix(width, height)
-        screen, visible = project(matrix, chunk_centres(body), width, height)
+        screen, visible = project(self.camera, chunk_centres(body), width, height)
         return {
             body.id_at(slot): (float(screen[slot, 0]), float(screen[slot, 1]))
             for slot in range(body.n_chunks)
@@ -939,7 +1183,52 @@ class MetaballViewport(RaymarchView):
     # mouse
     # ------------------------------------------------------------------
 
+    def _place_at(self, x: float, y: float) -> None:
+        """Ctrl+click's half of the Add rule: the click states the position.
+
+        The pick answers with the surface the author saw, and the hit states
+        the attachment (``docs/PICK.md`` §3): flesh earns a link to the
+        struck chunk and borrows its radius, the world starts a free 0.5.
+        The centre sits one radius out along the normal — the
+        ``Terrain.project`` clearance generalized, because aiming at the
+        surface itself is aiming underground. At a gradient sink the field
+        reports no normal, so the offset falls back to back-along-the-ray:
+        always defined, always facing the author. A miss does nothing at
+        all — sky means no.
+        """
+        hit = self.surface_hit(x, y)
+        if hit is None:
+            return
+        normal = np.asarray(hit.normal, dtype=np.float64)
+        if not normal.any():
+            _, direction = self.ray_through(x, y)
+            normal = -direction
+        if hit.kind == "flesh":
+            radius = float(self._document.body.chunk(hit.chunk_id).radius)
+            attach_to = hit.chunk_id
+        else:
+            radius = 0.5
+            attach_to = None
+        # Truncated to the body's dimensionality, the drag path's own rule
+        # (:meth:`_drag_to`): a widened 2-D surface point carries z ≈ 0, and
+        # the body it lands in has no z to state.
+        centre = (hit.point + normal * radius)[: self._document.body.dim]
+        at = tuple(float(v) for v in centre)
+        self._document.create_chunk(at=at, attach_to=attach_to, radius=radius)
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+        ):
+            # Ahead of the whole ladder and consuming hit and miss alike: a
+            # failed place that spun the camera would punish the author for
+            # missing by a pixel (docs/PICK.md §4). Exactly Ctrl — a chord
+            # carrying Shift is a selection gesture and falls through to the
+            # ladder that owns it.
+            position = event.position()
+            self._place_at(position.x(), position.y())
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             position = event.position()
             view = gizmo_hit(

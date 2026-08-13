@@ -10,7 +10,12 @@ import numpy as np
 import pytest
 
 from mesh_xml.core import Body, LinkType
+from mesh_xml.core.solver import SolverConfig
+from mesh_xml.core.terrain import Terrain
+from mesh_xml.io import xml_v2
+from mesh_xml.render.gl.metaball import MetaballSettings
 from mesh_xml.scene.door import Door
+from mesh_xml.scene.room import Room
 from mesh_xml.editor.document import (
     AddChunk,
     AddLink,
@@ -285,6 +290,85 @@ class TestCreateChunk:
         document.redo()
         assert document.body.has_chunk(new)
         assert document.body.has_link(new, end)
+
+
+class TestCreateChunkAt:
+    """Add with a stated position — the surface pick's half of the rule.
+
+    The click states where (docs/PICK.md §3): the position lands verbatim,
+    the selection stands aside, and the hit chunk — when there is one —
+    earns the link and lends its radius. Same command shapes, same undo
+    grain, and the placed chunk still takes the selection, so a click then
+    repeated Adds extrudes from where you pointed.
+    """
+
+    def test_a_flesh_hit_links_to_it_and_inherits_its_radius(self, document):
+        links = document.body.n_links
+        anchor = ids_of(document)[2]
+        new = document.create_chunk(at=(2.0, 1.5, 0.5), attach_to=anchor)
+
+        assert document.body.chunk(new).pos == pytest.approx((2.0, 1.5, 0.5))
+        assert document.body.chunk(new).radius == pytest.approx(0.3)
+        assert document.body.has_link(new, anchor)
+        assert document.body.n_links == links + 1
+
+    def test_a_world_hit_is_a_free_default_chunk_exactly_there(self, document):
+        """The selection does not participate — the click is the statement."""
+        links = document.body.n_links
+        document.set_selection((ids_of(document)[0],))
+        new = document.create_chunk(at=(-1.0, 0.25, 2.0))
+
+        assert document.body.chunk(new).pos == pytest.approx((-1.0, 0.25, 2.0))
+        assert document.body.chunk(new).radius == pytest.approx(0.5)
+        assert document.body.n_links == links
+
+    def test_an_explicit_radius_beats_the_inherited_one(self, document):
+        anchor = ids_of(document)[0]
+        new = document.create_chunk(
+            at=(0.0, 1.0, 0.0), attach_to=anchor, radius=0.8
+        )
+        assert document.body.chunk(new).radius == pytest.approx(0.8)
+
+    def test_a_placed_attachment_is_one_undo_step(self, document):
+        chunks, links = document.body.n_chunks, document.body.n_links
+        anchor = ids_of(document)[4]
+        new = document.create_chunk(at=(4.0, 1.0, 0.0), attach_to=anchor)
+
+        document.undo()
+        assert (document.body.n_chunks, document.body.n_links) == (chunks, links)
+        assert not document.body.has_chunk(new)
+
+        document.redo()
+        assert document.body.has_chunk(new)
+        assert document.body.has_link(new, anchor)
+
+    def test_the_placed_chunk_takes_the_selection(self, document):
+        document.set_selection(ids_of(document)[:2])
+        new = document.create_chunk(at=(0.0, 2.0, 0.0))
+        assert document.selection == {new}
+
+    def test_overrides_without_a_position_are_refused(self, document):
+        with pytest.raises(ValueError):
+            document.create_chunk(attach_to=ids_of(document)[0])
+        with pytest.raises(ValueError):
+            document.create_chunk(radius=0.8)
+        assert not document.can_undo
+
+    def test_a_stale_hit_is_refused_before_anything_applies(self, document):
+        chunks, links = document.body.n_chunks, document.body.n_links
+        with pytest.raises(ValueError):
+            document.create_chunk(at=(0.0, 0.0, 0.0), attach_to=99)
+        assert (document.body.n_chunks, document.body.n_links) == (chunks, links)
+        assert not document.can_undo
+
+    def test_no_overrides_still_grow_from_the_selection(self, document):
+        end = ids_of(document)[-1]
+        document.set_selection((end,))
+        new = document.create_chunk()
+
+        assert document.body.has_link(new, end)
+        assert document.body.chunk(new).pos == pytest.approx((5.0, 0.0, 0.0))
+        assert document.body.chunk(new).radius == pytest.approx(0.3)
 
 
 class TestHistory:
@@ -785,3 +869,160 @@ class TestExportMesh:
 
         welded = polygonise(document.primitives(), blend=0.4, resolution=48)
         assert len(vertices) != len(welded.vertices)
+
+
+class TestSettingsPersistence:
+    """Solver tuning and blend ride the room's file; the file is the truth."""
+
+    def test_a_tuned_room_reopens_as_tuned(self, document, tmp_path):
+        document.solver_config.iterations = 8
+        document.solver_config.gravity = (0.0, -3.0, 0.0)
+        document.solver_config.self_contact = True
+        document.metaball.blend = 0.5
+        document.set_terrain(Terrain.flat(0.25))
+        path = tmp_path / "tuned.xml"
+        document.save(path)
+
+        reopened = Document()
+        reopened.open(path)
+        config = reopened.solver_config
+        assert config.iterations == 8
+        assert tuple(config.gravity) == pytest.approx((0.0, -3.0, 0.0))
+        assert config.self_contact is True
+        assert reopened.metaball.blend == pytest.approx(0.5)
+        assert reopened.terrain is not None, "the fold lands in the loaded config"
+        assert reopened.terrain.planes == pytest.approx(document.terrain.planes)
+
+    def test_a_sectionless_file_resets_the_sessions_tuning(
+        self, document, tmp_path
+    ):
+        """Absent sections mean what every pre-arc document meant: defaults."""
+        path = tmp_path / "plain.xml"
+        xml_v2.save(document.body, path)
+
+        document.solver_config.iterations = 16
+        document.metaball.blend = 0.7
+        document.settings_edited()
+        assert document.dirty
+
+        document.open(path)
+        founding = SolverConfig(ground_y=0.0)
+        config = document.solver_config
+        assert config.iterations == founding.iterations
+        assert tuple(config.gravity) == pytest.approx(founding.gravity)
+        assert config.ground_y == pytest.approx(0.0)
+        assert document.metaball.blend == pytest.approx(MetaballSettings().blend)
+        assert not document.dirty
+
+    def test_settings_edited_dirties_and_a_raw_emit_does_not(self, document):
+        heard: list[bool] = []
+        document.dirty_changed.connect(heard.append)
+
+        document.settings_changed.emit()
+        assert not document.dirty, "a view-only refresh is not an edit"
+
+        document.settings_edited()
+        assert document.dirty
+        assert heard == [True]
+
+    def test_a_two_room_scene_reopens_each_rooms_own_tuning(
+        self, document, tmp_path
+    ):
+        meadow = document.add_room(Room(name="meadow"))
+        meadow.body.add_chunk("m0", (0.0, 0.5, 0.0), radius=0.3)
+
+        document.solver_config.iterations = 8
+        document.metaball.blend = 0.5
+        document.set_active_room(meadow)
+        document.solver_config.iterations = 12
+        document.metaball.blend = 0.1
+
+        manifest = tmp_path / "scene.xml"
+        document.save_scene_as(manifest)
+
+        reopened = Document()
+        reopened.open_scene(manifest)
+        rooms = {room.name: room for room in reopened.scene.rooms}
+        assert rooms["document"].solver_config.iterations == 8
+        assert rooms["meadow"].solver_config.iterations == 12
+
+        assert reopened.room is rooms["document"]
+        assert reopened.metaball.blend == pytest.approx(0.5)
+        reopened.set_active_room(rooms["meadow"])
+        assert reopened.metaball.blend == pytest.approx(0.1)
+
+    def test_save_room_carries_an_inactive_rooms_tuning(self, document, tmp_path):
+        meadow = document.add_room(Room(name="meadow"))
+        meadow.body.add_chunk("m0", (0.0, 0.5, 0.0), radius=0.3)
+        document.set_active_room(meadow)
+        document.solver_config.damping = 0.5
+        document.metaball.blend = 0.4
+        document.settings_edited()
+        document.set_active_room(document.scene.rooms[0])
+        assert document.room_dirty(meadow), "the tuning is owed to disk"
+
+        target = document.save_room(meadow, tmp_path / "meadow.xml")
+
+        rig = xml_v2.read(target)
+        assert rig.solver is not None
+        assert rig.solver.damping == pytest.approx(0.5)
+        assert rig.blend == pytest.approx(0.4)
+        assert not document.room_dirty(meadow)
+
+
+class TestPlacementRefusals:
+    """create_chunk refuses rather than guesses, and declines without lying."""
+
+    def test_a_wrong_arity_at_is_refused_by_name(self, document):
+        with pytest.raises(ValueError, match="components"):
+            document.create_chunk(at=(1.0, 2.0))
+        assert document.body.n_chunks == 5
+        assert not document.can_undo
+
+    def test_an_abstracted_room_declines_without_lying(self, document):
+        document.set_room_abstracted(document.room, True)
+        kept = set(document.selection)
+        count = document.body.n_chunks
+
+        result = document.create_chunk()
+
+        assert result is None, "no id is invented for a chunk that never existed"
+        assert document.body.n_chunks == count
+        assert set(document.selection) == kept, "the refusal must not clear it"
+        assert not document.can_undo
+
+
+class TestNewIsAdoptsNullCase:
+    def test_new_resets_solver_and_blend(self, document):
+        document.solver_config = SolverConfig(gravity=(0.0, -3.0, 0.0), iterations=8)
+        document.metaball.blend = 0.5
+        heard = []
+        document.settings_changed.connect(lambda: heard.append(True))
+
+        document.new()
+
+        assert document.solver_config == Room.founding_config()
+        assert document.metaball.blend == MetaballSettings().blend
+        assert not document.dirty
+        assert heard, "panels must re-read after the reset"
+
+
+class TestRefusalsSurface:
+    def test_a_solver_typo_surfaces_its_own_refusal(self, document, tmp_path):
+        """The legacy ladder is for eras, not for a v3 file with a typo: the
+        crafted SchemaError must reach the author, not an armature complaint."""
+        path = tmp_path / "typo.xml"
+        path.write_text(
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<body version="3" name="stub" dim="3">\n'
+            '    <chunks>\n'
+            '        <chunk id="0" name="a" pos="0.0 0.0 0.0" radius="0.25" mass="1.0"/>\n'
+            "    </chunks>\n"
+            "    <links/>\n"
+            '    <solver damping="nan"/>\n'
+            "</body>\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(xml_v2.SchemaError, match="finite"):
+            document.open(path)
