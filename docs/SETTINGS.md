@@ -157,15 +157,19 @@ fields become file-grade edits on the doors precedent — an explicit
 authoring act, no undo stack, but they DO dirty, because they save with
 the room's file and a clean flag over an unsaved tuning is a lie Save
 All would act on. Mechanically: `Document` grows one method,
-`settings_edited()` — dirty the active room, then emit — and exactly
-ten panel sites call it instead of emitting raw: `_write_blend` and
-the nine solver-panel handlers (one each for iterations, damping,
-max_velocity, ground_friction, self_contact,
-self_contact_elasticity, self_friction; two for gravity — the vector
-edit and the zero-G toggle). Every view-only site
-(debug_mode, max_steps, show_floor, surface/background colour, overlay,
-ortho) keeps emitting raw and keeps the file clean, which is the
-document/view split of §6 enforced where edits happen.
+`settings_edited()` — dirty the active room, then emit — and the panel
+sites that call it instead of emitting raw have grown with the record:
+`_write_blend` and the nine solver-panel handlers of this arc (one
+each for iterations, damping, max_velocity, ground_friction,
+self_contact, self_contact_elasticity, self_friction; two for gravity
+— the vector edit and the zero-G toggle), then the lighting arc's
+eight — the Surface panel's surface-colour setter and the Lighting
+panel's seven (the azimuth/elevation pair's one write, the swatch
+picker, the relocated horizon setter, and the four strengths) —
+eighteen in all (docs/LIGHTING.md §6). Every view-only site
+(debug_mode, max_steps, show_floor, overlay, ortho) keeps emitting raw
+and keeps the file clean, which is the document/view split of §6
+enforced where edits happen.
 
 **New rooms and New File** keep today's defaults and start clean; the
 sections appear at first save.
@@ -177,12 +181,15 @@ sections appear at first save.
   session preferences; a file must not reopen slow because it was saved
   on a fast machine, and `debug_mode`'s own panel comment already rules
   it "no business on the document".
-- **The look group**: `light_direction`, `surface_colour`,
-  `terrain_colour`, `background_colour`. This is the lighting arc's
-  design space, and persisting a flat `background_colour` today creates
-  a compat obligation for tomorrow's gradient, designed blind. The
-  lighting arc extends `<metaball>` or adds its own section on the same
-  additive terms, with the actual fields in hand.
+- **The look group** — `light_direction`, `surface_colour`,
+  `terrain_colour`, `background_colour` — was this list's one
+  deliberate deferral: persisting a flat `background_colour` blind
+  would have created a compat obligation for a gradient not yet
+  designed. The lighting arc kept the reservation's terms and landed
+  the group — grown to the full `Look` record (key colour and strength,
+  ambient, occlusion, glow, the gradient's second colour) — as
+  `<look>`, its own additive section beside `<metaball>`
+  (docs/LIGHTING.md §5).
 - **`max_velocity` rides, despite being "a backstop, not a tuning
   knob"**: the line is *whether a field changes the tick's arithmetic*,
   not whether changing it is wise — two machines opening one file must

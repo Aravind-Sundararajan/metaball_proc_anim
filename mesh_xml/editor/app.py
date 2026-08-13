@@ -82,7 +82,15 @@ class MainWindow(QMainWindow):
         # them too short to use.
         tabbed = [
             self._docks[t]
-            for t in ("Chunks", "Controllers", "Surface", "Solver", "Smoothing", "Curve")
+            for t in (
+                "Chunks",
+                "Controllers",
+                "Surface",
+                "Lighting",
+                "Solver",
+                "Smoothing",
+                "Curve",
+            )
             if t in self._docks
         ]
         for previous, dock in zip(tabbed, tabbed[1:]):

@@ -107,7 +107,7 @@ class _RoomState:
     redo: list[Command]
     path: Path | None         # a room is a file; the scene is several
     dirty: bool
-    metaball: MetaballSettings  # session-only today (v3 does not carry it)
+    metaball: MetaballSettings  # blend + look ride v3; march quality is session-only
 ```
 
 `document.draw`, `document.path`, `document.dirty`, `document.selection`,
@@ -239,6 +239,8 @@ authoring-time population is Open Into Scene and Duplicate). Cross-room
 undo or a scene-level history. Coupling the editor to `Scene.activate` (a
 "simulate like the game" mode can exist someday; it is a policy toggle,
 not this rework). Seamless cameras, split views, or a second viewport.
-Persisting `MetaballSettings`. Abstract-space migration — the transfer
-module names it as its own future work, and the closed door remains the
-honest behaviour until it lands.
+Persisting `MetaballSettings` — since landed for its file-grade half:
+the blend rides v3 by docs/SETTINGS.md and the look record by
+docs/LIGHTING.md; march quality stays session-only. Abstract-space
+migration — the transfer module names it as its own future work, and
+the closed door remains the honest behaviour until it lands.

@@ -80,7 +80,11 @@ derived per frame from the segment itself, so patterns built from
 ``(t, radial)`` ride the limb through translation *and* rotation with no
 frame to invent. Stripes, rings, gradients, and a countershade (mixing by
 the radial offset's world-``y``, which keeps a belly a belly) all live in
-that vocabulary. What does not: azimuthal detail (no stable perpendicular
+that vocabulary. Since the lighting arc, the shaded frame's ambient keys
+on the same world-up (docs/LIGHTING.md §2), so the pattern and the fill
+agree about which way the world is — the pale belly reads as pigment
+against quiet ground light instead of being cancelled twice. What does
+not live in the vocabulary: azimuthal detail (no stable perpendicular
 reference on a link) and true 3-D noise (needs the frame that does not
 exist). That is a real ceiling and the design names it rather than
 wallpapering it.

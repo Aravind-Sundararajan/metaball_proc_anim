@@ -124,6 +124,7 @@ class TestBuildPanels:
             "Creatures",
             "Controllers",
             "Surface",
+            "Lighting",
             "Solver",
             "Smoothing",
             "Curve",
@@ -231,15 +232,21 @@ class TestSurfacePanel:
         panel._max_steps.setValue(256)
         assert document.metaball.max_steps == 256
 
-    def test_colours_reach_the_document_and_the_swatches(self, document):
+    def test_the_surface_colour_reaches_the_document_and_dirties(self, document):
         panel = panels.SurfacePanel(document)
+        assert not document.dirty
         panel.set_surface_colour((1.0, 0.0, 0.0))
-        panel.set_background_colour((0.0, 0.0, 1.0))
 
         assert document.metaball.look.surface_colour == pytest.approx((1.0, 0.0, 0.0))
-        assert document.metaball.look.background_colour == pytest.approx((0.0, 0.0, 1.0))
         assert panel._surface_colour.text() == "#ff0000"
-        assert panel._background_colour.text() == "#0000ff"
+        assert document.dirty, "the colour rides the room's <look> record now"
+
+    def test_the_background_row_left_for_the_lighting_panel(self, document):
+        """The horizon is the fill light's source, not a surface preference;
+        the Surface panel keeps only what belongs to the flesh."""
+        panel = panels.SurfacePanel(document)
+        assert not hasattr(panel, "_background_colour")
+        assert not hasattr(panel, "set_background_colour")
 
     def test_the_paint_buttons_route_to_their_gestures(self, document, monkeypatch):
         """Two buttons, two scopes: the selection's chunks, or their whole
@@ -257,6 +264,68 @@ class TestSurfacePanel:
         assert document.body.meta_of(ids[1])["colour"] == "1.0000 0.0000 0.0000", (
             "the creature-wide button reaches the whole component"
         )
+
+
+class TestLightingPanel:
+    """The Look record's panel: spins are views, the vector is the record."""
+
+    def test_the_spins_fold_back_to_a_unit_vector(self, document):
+        panel = panels.LightingPanel(document)
+        panel._azimuth.setValue(90.0)
+        panel._elevation.setValue(30.0)
+
+        direction = document.metaball.look.light_direction
+        assert direction == pytest.approx(
+            (np.cos(np.radians(30.0)), np.sin(np.radians(30.0)), 0.0), abs=1e-9
+        )
+        assert np.linalg.norm(direction) == pytest.approx(1.0)
+        assert document.dirty
+
+    def test_a_document_change_moves_the_spins(self, document):
+        panel = panels.LightingPanel(document)
+        document.metaball.look.light_direction = (0.0, 0.5, 0.5)
+        document.settings_changed.emit()
+
+        assert panel._azimuth.value() == pytest.approx(0.0)
+        assert panel._elevation.value() == pytest.approx(45.0)
+
+    def test_the_azimuth_survives_a_pole_refresh(self, document):
+        """At the pole every azimuth folds back to (0, ±1, 0): the spin
+        keeps its last shown value rather than adopting atan2's arbitrary
+        answer, so a file-authored noon light survives unrelated nudges."""
+        panel = panels.LightingPanel(document)
+        panel._azimuth.setValue(120.0)
+
+        document.metaball.look.light_direction = (0.0, 1.0, 0.0)
+        document.settings_changed.emit()
+
+        assert panel._elevation.value() == pytest.approx(90.0)
+        assert panel._azimuth.value() == pytest.approx(120.0), "retained, not derived"
+
+    def test_the_horizon_reaches_the_document_and_the_swatch(self, document):
+        panel = panels.LightingPanel(document)
+        assert not document.dirty
+        panel.set_background_colour((0.0, 0.0, 1.0))
+
+        assert document.metaball.look.background_colour == pytest.approx(
+            (0.0, 0.0, 1.0)
+        )
+        panel.refresh()
+        assert panel._horizon.text() == "#0000ff"
+        assert document.dirty, "the horizon rides the room's <look> record"
+
+    def test_the_strengths_reach_the_record(self, document):
+        panel = panels.LightingPanel(document)
+        panel._light_strength.setValue(1.4)
+        panel._ambient.setValue(0.6)
+        panel._occlusion.setValue(0.9)
+        panel._glow.setValue(0.1)
+
+        look = document.metaball.look
+        assert look.light_strength == pytest.approx(1.4)
+        assert look.ambient_strength == pytest.approx(0.6)
+        assert look.ao_strength == pytest.approx(0.9)
+        assert look.glow_strength == pytest.approx(0.1)
 
     def test_the_pattern_row_explains_its_own_greyness(self, document):
         """A disabled combo reads as an empty one — found by a user asking
@@ -1118,8 +1187,9 @@ class TestRoomPanel:
 
 
 class TestSettingsDirty:
-    """The persistence line, enforced where edits happen: solver and blend
-    save with the room's file and must dirty it; view-only edits must not."""
+    """The persistence line, enforced where edits happen: solver, blend and
+    the look record save with the room's file and must dirty it; view-only
+    edits must not."""
 
     def test_a_blend_edit_dirties_the_document(self, document):
         panel = panels.SurfacePanel(document)
@@ -1146,6 +1216,23 @@ class TestSettingsDirty:
         panel._self_friction.setValue(0.4)
 
         assert document.solver_config.self_friction == pytest.approx(0.4)
+        assert document.dirty
+
+    def test_a_lighting_edit_dirties_the_document(self, document):
+        panel = panels.LightingPanel(document)
+        assert not document.dirty
+
+        panel._glow.setValue(0.6)
+
+        assert document.metaball.look.glow_strength == pytest.approx(0.6)
+        assert document.dirty
+
+    def test_a_key_direction_edit_dirties_the_document(self, document):
+        panel = panels.LightingPanel(document)
+        assert not document.dirty
+
+        panel._elevation.setValue(10.0)
+
         assert document.dirty
 
     def test_view_only_edits_keep_the_file_clean(self, document):
@@ -1190,4 +1277,13 @@ class TestLoadedValuesDisplayed:
         document.settings_changed.emit()
 
         assert panel._blend.value() == pytest.approx(3.5)
+        assert not document.dirty
+
+    def test_an_admitted_glow_strength_shows_unclamped(self, document):
+        panel = panels.LightingPanel(document)
+        document.metaball.look.glow_strength = 5.0
+        document.settings_changed.emit()
+
+        assert panel._glow.value() == pytest.approx(5.0)
+        assert document.metaball.look.glow_strength == pytest.approx(5.0)
         assert not document.dirty

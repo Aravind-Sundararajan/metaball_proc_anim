@@ -14,6 +14,7 @@ from mesh_xml.core.solver import SolverConfig
 from mesh_xml.core.terrain import Terrain
 from mesh_xml.io import xml_v2
 from mesh_xml.render.gl.metaball import MetaballSettings
+from mesh_xml.render.look import Look
 from mesh_xml.scene.door import Door
 from mesh_xml.scene.room import Room
 from mesh_xml.editor.document import (
@@ -957,6 +958,7 @@ class TestSettingsPersistence:
         document.set_active_room(meadow)
         document.solver_config.damping = 0.5
         document.metaball.blend = 0.4
+        document.metaball.look.ao_strength = 0.85
         document.settings_edited()
         document.set_active_room(document.scene.rooms[0])
         assert document.room_dirty(meadow), "the tuning is owed to disk"
@@ -967,7 +969,70 @@ class TestSettingsPersistence:
         assert rig.solver is not None
         assert rig.solver.damping == pytest.approx(0.5)
         assert rig.blend == pytest.approx(0.4)
+        assert rig.look is not None, "the editor writes the look record in full"
+        assert rig.look.ao_strength == pytest.approx(0.85)
         assert not document.room_dirty(meadow)
+
+    def test_a_tuned_look_survives_the_editor_round_trip(self, document, tmp_path):
+        look = document.metaball.look
+        look.light_direction = (0.0, 0.6, 0.8)
+        look.light_strength = 1.3
+        look.ao_strength = 0.9
+        look.background_top = (0.3, 0.1, 0.2)
+        document.settings_edited()
+        path = tmp_path / "lit.xml"
+        document.save(path)
+
+        reopened = Document()
+        reopened.open(path)
+        restored = reopened.metaball.look
+        assert restored.light_direction == pytest.approx((0.0, 0.6, 0.8))
+        assert restored.light_strength == pytest.approx(1.3)
+        assert restored.ao_strength == pytest.approx(0.9)
+        assert restored.background_top == pytest.approx((0.3, 0.1, 0.2))
+        assert not reopened.dirty
+
+    def test_a_sectionless_file_resets_the_sessions_look(self, document, tmp_path):
+        """The look is the file's to state; absence states the defaults."""
+        path = tmp_path / "plain.xml"
+        xml_v2.save(document.body, path)
+
+        document.metaball.look.glow_strength = 0.9
+        document.settings_edited()
+        assert document.dirty
+
+        document.open(path)
+        assert document.metaball.look == Look()
+        assert not document.dirty
+
+    def test_adopt_without_a_look_resets_a_tuned_one(self, document):
+        """None means the founding record — the file is the truth at every
+        door, and New must not carry a session's lighting into a rig that
+        never stated it."""
+        document.metaball.look.glow_strength = 0.9
+        document.adopt(Body())
+        assert document.metaball.look == Look()
+
+    def test_a_two_room_scene_reopens_each_rooms_own_look(
+        self, document, tmp_path
+    ):
+        meadow = document.add_room(Room(name="meadow"))
+        meadow.body.add_chunk("m0", (0.0, 0.5, 0.0), radius=0.3)
+
+        document.metaball.look.ambient_strength = 0.6
+        document.set_active_room(meadow)
+        document.metaball.look.ambient_strength = 0.1
+
+        manifest = tmp_path / "scene.xml"
+        document.save_scene_as(manifest)
+
+        reopened = Document()
+        reopened.open_scene(manifest)
+        rooms = {room.name: room for room in reopened.scene.rooms}
+        assert reopened.room is rooms["document"]
+        assert reopened.metaball.look.ambient_strength == pytest.approx(0.6)
+        reopened.set_active_room(rooms["meadow"])
+        assert reopened.metaball.look.ambient_strength == pytest.approx(0.1)
 
 
 class TestPlacementRefusals:

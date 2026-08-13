@@ -96,6 +96,7 @@ from mesh_xml.editor.document import (
 __all__ = [
     "PlaybackPanel",
     "SurfacePanel",
+    "LightingPanel",
     "SolverPanel",
     "SmoothingPanel",
     "ChunkPanel",
@@ -109,6 +110,12 @@ __all__ = [
 #: is the authority and the slider is a coarse handle onto the same value.
 _BLEND_STEPS = 1000
 _BLEND_MAX = 1.0
+
+#: Elevation, in degrees, beyond which the key stands at a pole: every
+#: azimuth folds back to (0, ±1, 0) there, so the azimuth spin keeps its
+#: last shown value through a refresh instead of adopting atan2's
+#: arbitrary answer for a straight-up light.
+_POLE_ELEVATION = 89.9
 
 _DEBUG_MODES = (
     "0 - shaded",
@@ -391,7 +398,10 @@ class PlaybackPanel(_Panel):
 
 
 class SurfacePanel(_Panel):
-    """The metaball look: blend, colour, and the debug views of the raymarch.
+    """The surface: blend, the creature's colours, and the raymarch's debug views.
+
+    The environment — backdrop, key light, fill — lives on
+    :class:`LightingPanel`; this panel keeps what belongs to the flesh.
 
     Blend is the knob, so it gets the top of the panel and two ways to reach it.
     The slider and the spin box are not wired to each other; both write the
@@ -419,7 +429,6 @@ class SurfacePanel(_Panel):
         self._blend_slider = QSlider(Qt.Orientation.Horizontal)
         self._blend_slider.setRange(0, _BLEND_STEPS)
         self._surface_colour = QPushButton()
-        self._background_colour = QPushButton()
         self._debug = QComboBox()
         self._debug.addItems(_DEBUG_MODES)
         self._max_steps = QSpinBox()
@@ -449,7 +458,6 @@ class SurfacePanel(_Panel):
         self._blend.valueChanged.connect(self._on_blend_changed)
         self._blend_slider.valueChanged.connect(self._on_blend_slider_changed)
         self._surface_colour.clicked.connect(self._on_pick_surface_colour)
-        self._background_colour.clicked.connect(self._on_pick_background_colour)
         self._debug.currentIndexChanged.connect(self._on_debug_changed)
         self._max_steps.valueChanged.connect(self._on_max_steps_changed)
         self._floor.toggled.connect(self._on_floor_toggled)
@@ -503,12 +511,11 @@ class SurfacePanel(_Panel):
         self.orthographic_changed.emit(orthographic)
 
     def set_surface_colour(self, rgb: tuple[float, float, float]) -> None:
+        # File-grade, not view-only: the colour rides the room's <look>
+        # record now, so a clean flag over an unsaved pick would be a lie
+        # Save All acts on (docs/LIGHTING.md §6).
         self._document.metaball.look.surface_colour = tuple(float(v) for v in rgb)
-        self._document.settings_changed.emit()
-
-    def set_background_colour(self, rgb: tuple[float, float, float]) -> None:
-        self._document.metaball.look.background_colour = tuple(float(v) for v in rgb)
-        self._document.settings_changed.emit()
+        self._document.settings_edited()
 
     def _build_blend(self) -> QWidget:
         box = QGroupBox("Blend (k)")
@@ -535,7 +542,6 @@ class SurfacePanel(_Panel):
         layout = _form()
         box.setLayout(layout)
         layout.addRow("Surface", self._surface_colour)
-        layout.addRow("Background", self._background_colour)
         layout.addRow(self._creature_colour)
         layout.addRow(self._chunk_colour)
         layout.addRow("Pattern", self._pattern)
@@ -646,14 +652,6 @@ class SurfacePanel(_Panel):
             self.set_surface_colour(picked)
 
     @_user_edit
-    def _on_pick_background_colour(self) -> None:
-        picked = self._pick(
-            self._document.metaball.look.background_colour, "Background colour"
-        )
-        if picked is not None:
-            self.set_background_colour(picked)
-
-    @_user_edit
     def _on_pick_creature_colour(self) -> None:
         picked = self._pick(
             self._document.metaball.look.surface_colour, "Creature colour"
@@ -706,7 +704,6 @@ class SurfacePanel(_Panel):
             round(float(settings.blend) * _BLEND_STEPS / _BLEND_MAX)
         )
         _swatch(self._surface_colour, _colour(settings.look.surface_colour))
-        _swatch(self._background_colour, _colour(settings.look.background_colour))
         self._debug.setCurrentIndex(
             min(max(int(settings.debug_mode), 0), len(_DEBUG_MODES) - 1)
         )
@@ -729,6 +726,230 @@ class SurfacePanel(_Panel):
             else "Patterns apply to the selected creature — click one in "
             "the viewport or pick it in the Creatures roster."
         )
+
+
+class LightingPanel(_Panel):
+    """The look: the key light, the environment that fills it, the finish.
+
+    Every control here writes the room's :class:`~mesh_xml.render.look.Look`
+    record, and every write is file-grade — the record rides the room file
+    as ``<look>``, so the panel calls :meth:`Document.settings_edited` and
+    the room dirties (docs/LIGHTING.md §6).
+
+    The light's record is the *vector* — ``look.light_direction``, the
+    uniform's own spelling — and the azimuth/elevation spins are a view of
+    it: derived on refresh, folded back to a unit vector on edit. At the
+    poles the azimuth is geometry with nothing to say (every value folds
+    back to ``(0, ±1, 0)``), so the refresh keeps the spin's last shown
+    value there — a retention rule, not a range widening — and a
+    file-authored noon light survives unrelated nudges.
+    """
+
+    def __init__(self, document: Document, parent: QWidget | None = None) -> None:
+        super().__init__(document, parent)
+
+        self._azimuth = _spin(-180.0, 180.0, 5.0, decimals=1, suffix="°")
+        self._azimuth.setWrapping(True)
+        self._elevation = _spin(-90.0, 90.0, 5.0, decimals=1, suffix="°")
+        self._light_colour = QPushButton()
+        self._light_strength = _spin(0.0, 2.0, 0.05)
+        self._sky_top = QPushButton()
+        self._horizon = QPushButton()
+        self._terrain_colour = QPushButton()
+        self._ambient = _spin(0.0, 1.0, 0.05)
+        self._occlusion = _spin(0.0, 1.0, 0.05)
+        self._glow = _spin(0.0, 1.0, 0.05)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self._build_key())
+        layout.addWidget(self._build_environment())
+        layout.addWidget(self._build_finish())
+        layout.addStretch(1)
+
+        self._azimuth.valueChanged.connect(self._on_direction_changed)
+        self._elevation.valueChanged.connect(self._on_direction_changed)
+        self._light_colour.clicked.connect(self._on_pick_light_colour)
+        self._light_strength.valueChanged.connect(self._on_light_strength_changed)
+        self._sky_top.clicked.connect(self._on_pick_sky_top)
+        self._horizon.clicked.connect(self._on_pick_horizon)
+        self._terrain_colour.clicked.connect(self._on_pick_terrain_colour)
+        self._ambient.valueChanged.connect(self._on_ambient_changed)
+        self._occlusion.valueChanged.connect(self._on_occlusion_changed)
+        self._glow.valueChanged.connect(self._on_glow_changed)
+        self._follow(document.settings_changed)
+
+        self.refresh()
+
+    def set_background_colour(self, rgb: tuple[float, float, float]) -> None:
+        """The horizon, settable from outside — the row that moved here.
+
+        It kept a public door when it left the Surface panel: the horizon
+        is both the backdrop's base and the fill's ground tint, and callers
+        that recolour it should not need to know which group box it sits in.
+        """
+        self._document.metaball.look.background_colour = tuple(
+            float(v) for v in rgb
+        )
+        self._document.settings_edited()
+
+    def _build_key(self) -> QWidget:
+        box = QGroupBox("Key light")
+        layout = _form()
+        box.setLayout(layout)
+        layout.addRow("Azimuth", self._azimuth)
+        layout.addRow("Elevation", self._elevation)
+        layout.addRow("Colour", self._light_colour)
+        layout.addRow("Strength", self._light_strength)
+        self._azimuth.setToolTip(
+            "Where the key stands on the compass around world up. Saved "
+            "with the rig as the light's direction vector."
+        )
+        self._elevation.setToolTip(
+            "The key's height above the horizon. Negative is an uplight — "
+            "legal and dramatic; the floor shadow just finds nothing "
+            "underground."
+        )
+        self._light_colour.setToolTip(
+            "The key's chromaticity; Strength carries the level. The glow "
+            "borrows this colour too — one light, one tint."
+        )
+        self._light_strength.setToolTip(
+            "The key's level. 1 lands the pre-arc diffuse exactly; above 1 "
+            "overdrives and clips channel by channel, saturated hues first."
+        )
+        return box
+
+    def _build_environment(self) -> QWidget:
+        box = QGroupBox("Environment")
+        layout = _form()
+        box.setLayout(layout)
+        layout.addRow("Sky top", self._sky_top)
+        layout.addRow("Horizon", self._horizon)
+        layout.addRow("Terrain", self._terrain_colour)
+        layout.addRow("Ambient", self._ambient)
+        layout.addRow(
+            _note(
+                "The backdrop lights the creature: shadows fill with the "
+                "sky and horizon tones — sky half from above, a quieter "
+                "ground half from below. A black backdrop fills nothing."
+            )
+        )
+        self._sky_top.setToolTip(
+            "The backdrop's top, and the fill light on upward-facing "
+            "flesh. The wash runs in screen space, so it survives the "
+            "orthographic toggle."
+        )
+        self._horizon.setToolTip(
+            "The backdrop's base — the app's deepest tone — and the "
+            "ground bounce on downward-facing flesh."
+        )
+        self._terrain_colour.setToolTip(
+            "What a hit on the world wears. World data stays on the "
+            "terrain; its colour is a look, and it saves with the rig."
+        )
+        self._ambient.setToolTip(
+            "The fill's level. The swatches state its hue; zero leaves "
+            "only the key and the glow."
+        )
+        return box
+
+    def _build_finish(self) -> QWidget:
+        box = QGroupBox("Finish")
+        layout = _form()
+        box.setLayout(layout)
+        layout.addRow("Occlusion", self._occlusion)
+        layout.addRow("Glow", self._glow)
+        self._occlusion.setToolTip(
+            "How hard creases lose the environment — contact lines, folds, "
+            "a foot on the floor. Darkens the fill and the glow, never the "
+            "key; zero skips the cost entirely."
+        )
+        self._glow.setToolTip(
+            "The silhouette's backlight, carried through the skin so dark "
+            "creatures rim dimmer. It is what separates an unlit underside "
+            "from the backdrop — zero lets them meet."
+        )
+        return box
+
+    @_user_edit
+    def _on_direction_changed(self, _value: float) -> None:
+        azimuth = np.radians(float(self._azimuth.value()))
+        elevation = np.radians(float(self._elevation.value()))
+        self._document.metaball.look.light_direction = (
+            float(np.cos(elevation) * np.sin(azimuth)),
+            float(np.sin(elevation)),
+            float(np.cos(elevation) * np.cos(azimuth)),
+        )
+        self._document.settings_edited()
+
+    @_user_edit
+    def _on_pick_light_colour(self) -> None:
+        self._pick_into("light_colour", "Key light colour")
+
+    @_user_edit
+    def _on_pick_sky_top(self) -> None:
+        self._pick_into("background_top", "Sky top")
+
+    @_user_edit
+    def _on_pick_horizon(self) -> None:
+        self._pick_into("background_colour", "Horizon")
+
+    @_user_edit
+    def _on_pick_terrain_colour(self) -> None:
+        self._pick_into("terrain_colour", "Terrain colour")
+
+    @_user_edit
+    def _on_light_strength_changed(self, value: float) -> None:
+        self._document.metaball.look.light_strength = float(value)
+        self._document.settings_edited()
+
+    @_user_edit
+    def _on_ambient_changed(self, value: float) -> None:
+        self._document.metaball.look.ambient_strength = float(value)
+        self._document.settings_edited()
+
+    @_user_edit
+    def _on_occlusion_changed(self, value: float) -> None:
+        self._document.metaball.look.ao_strength = float(value)
+        self._document.settings_edited()
+
+    @_user_edit
+    def _on_glow_changed(self, value: float) -> None:
+        self._document.metaball.look.glow_strength = float(value)
+        self._document.settings_edited()
+
+    def _pick_into(self, field: str, title: str) -> None:
+        look = self._document.metaball.look
+        chosen = QColorDialog.getColor(_colour(getattr(look, field)), self, title)
+        if chosen.isValid():
+            setattr(look, field, _rgb(chosen))
+            self._document.settings_edited()
+
+    def _refresh(self) -> None:
+        look = self._document.metaball.look
+        direction = np.asarray(look.light_direction, dtype=np.float64)
+        norm = float(np.linalg.norm(direction))
+        if norm > 0.0:
+            elevation = float(
+                np.degrees(np.arcsin(np.clip(direction[1] / norm, -1.0, 1.0)))
+            )
+            self._elevation.setValue(elevation)
+            if abs(elevation) <= _POLE_ELEVATION:
+                self._azimuth.setValue(
+                    float(np.degrees(np.arctan2(direction[0], direction[2])))
+                )
+        for box, value in (
+            (self._light_strength, look.light_strength),
+            (self._ambient, look.ambient_strength),
+            (self._occlusion, look.ao_strength),
+            (self._glow, look.glow_strength),
+        ):
+            _admit(box, float(value))
+            box.setValue(float(value))
+        _swatch(self._light_colour, _colour(look.light_colour))
+        _swatch(self._sky_top, _colour(look.background_top))
+        _swatch(self._horizon, _colour(look.background_colour))
+        _swatch(self._terrain_colour, _colour(look.terrain_colour))
 
 
 class SolverPanel(_Panel):
@@ -2075,6 +2296,7 @@ def build_panels(document: Document) -> dict[str, QWidget]:
         "Creatures": CreaturePanel(document),
         "Controllers": ControllerPanel(document),
         "Surface": SurfacePanel(document),
+        "Lighting": LightingPanel(document),
         "Solver": SolverPanel(document),
         "Smoothing": SmoothingPanel(document),
         "Curve": CurvePanel(document),

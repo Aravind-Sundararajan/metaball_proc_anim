@@ -29,8 +29,9 @@ __all__ = ["ACCENT", "FIELD", "INK", "INFO", "WINDOW", "apply"]
 # the palette, with each colour's source named
 # ----------------------------------------------------------------------
 
-#: The raymarcher's background — MetaballSettings.background_colour
-#: (0.11, 0.12, 0.14) — as chrome sees it. Deepest tone in the app; the
+#: The raymarcher's backdrop at its base — Look.background_colour, the
+#: gradient's horizon (0.11, 0.12, 0.14) — as chrome sees it. Deepest
+#: tone in the app, and the gradient only lightens away from it; the
 #: viewport keeps it, and every panel surface is a legible step above it.
 FIELD = "#1c1f24"
 
