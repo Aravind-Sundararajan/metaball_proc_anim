@@ -1,7 +1,9 @@
 # Self-contact completed: the flesh collides, and it can grip
 
-**Status:** designed — revised under three adversarial reviews (physics,
-consistency, feasibility) before a line of it lands; no packages landed.
+**Status:** landed — all three packages, with one rule sharpened by the
+landing itself: end zones are the sphere family's jurisdiction outright
+(§3), which is what keeps every landed test bit-exact, and the swallowed
+span came off the residual list as a consequence.
 **Arc:** the contact side of the fork, off the authoring-completeness
 branch. Retires two of CONTACT_MODEL.md §7's three named non-features;
 the third — the surface — stands by design (§7 here).
@@ -94,23 +96,36 @@ renounces. So the exemption moves down a level, onto the contact itself:
 
 - **Pairs sharing a chunk are wholly exempt.** Their overlap is the
   fold's own geometry, and the fold's governed form is the brace.
-- **Everywhere else, the contact's landing decides.** The stretch of
-  cone an endpoint's own sphere dominates is that chunk's flesh — its
-  end zone; the remainder is the span's own. A discovered contact is
-  exempt when every region it touches belongs to chunks within graph
-  distance two; a contact involving any stranger's mid-span is real.
-- **Sphere–capsule on the same shape:** a chunk against its own span's
-  flesh is authored containment; against an end zone it inherits the
-  chunk rule for that zone's owner; against the mid-span of a stranger's
-  link it is a real contact.
+- **Everywhere else, jurisdiction decides at the landing.** The stretch
+  of cone an endpoint's own sphere dominates is that chunk's flesh — its
+  end zone — and a contact landing with every side in an end zone is the
+  *sphere family's* outright: exempt where the chunk rule exempts,
+  discovered there where it does not, and never emitted by the capsule
+  families, whose fatter duplicate would perturb the sphere family's
+  exact arithmetic. Any side landing on a stranger's mid-span makes the
+  contact real. On a well-chunked body the end zones tile every span and
+  the capsule families go silent — the landed behaviour exactly, which
+  is what keeps every pre-arc test bit-identical; they speak where the
+  body is sparse, which is the gap they exist to close.
+- **Sphere–capsule on the same terms:** a chunk against its own span's
+  flesh is authored containment; an end-zone landing is a chunk pair and
+  the sphere family's business; a mid-span landing is real, except where
+  both endpoints sit within distance two of the chunk — then the whole
+  span is the joint's own flesh, never fought.
 
-This closes the scissor, stops the end-zone fight, and shrinks the one
-named residual: a short span swallowed whole by a long neighbour's flesh
-under a single fold stays exempt — single-fold territory, the brace's
-jurisdiction, recorded here rather than papered over. In a three-link
-hairpin the far-end contact is the distance-three sphere pair the
-existing pass already resolves; the diagonals are the second-neighbour
-pairs the rule protects.
+This closes the scissor, stops the end-zone fight, and — the landing's
+own gift — catches the swallowed span the draft had conceded: a short
+span inside a long neighbour's flesh lands on the long side's mid-span,
+and a mid-span landing is real whatever single fold produced it. The
+brace still governs the fold's angle; contact now governs its overlap.
+In a three-link hairpin the far-end contact is the distance-three sphere
+pair the existing pass already resolves; the diagonals are the
+second-neighbour pairs the rule protects. One tie the cascade breaks
+deterministically: an exactly-parallel pair projects the *other*
+segment's midpoint, landing inside the shared run — axis-aligned
+authoring makes exact parallelism common rather than measure-zero, and a
+tie broken off the end would defer a swallowed parallel span to spheres
+that cannot see it.
 
 The masks come from the adjacency and its square — the arrays the sphere
 pass already computes per call — and exclusion stays a derived view. Two
@@ -238,13 +253,15 @@ over prefiltered-and-compressed candidate pairs; parameter-aware
 exclusion off the adjacency arrays; first-power barycentric resolution
 under the unified incidence gather. Tests: the crossing regression (two
 long-rest strangers dropped orthogonally pass through each other today,
-stack after) in dim-3 *and* dim-2; the skew scissor (two folds crossing
+stack after) in dim-3 *and* dim-2, where the pair is exactly parallel
+and the tie-break is exercised too; the skew scissor (two folds crossing
 second-neighbour spans mid-length — untestable under a pair-level
 exemption, caught under this one); an authored fold's end-zone contact
 is *not* fought; a mid-span head rest (sphere–capsule); mechanism links
 collide with nothing; a contact beside a pinned endpoint moves the free
-end no farther than the depth; a duplicated end-zone contact corrects
-once, convexly; centre of mass stationary on a *fully free* tangle;
+end no farther than the depth; sphere pairs and a mid-span contact
+piling on the same chunks stay convex under the shared gather; centre
+of mass stationary on a *fully free* tangle;
 `test_contact_cannot_push_a_chunk_underground`,
 `test_a_free_cluster_does_not_drift`,
 `test_a_pile_stays_finite_and_resolves`, and
