@@ -503,11 +503,11 @@ class SurfacePanel(_Panel):
         self.orthographic_changed.emit(orthographic)
 
     def set_surface_colour(self, rgb: tuple[float, float, float]) -> None:
-        self._document.metaball.surface_colour = tuple(float(v) for v in rgb)
+        self._document.metaball.look.surface_colour = tuple(float(v) for v in rgb)
         self._document.settings_changed.emit()
 
     def set_background_colour(self, rgb: tuple[float, float, float]) -> None:
-        self._document.metaball.background_colour = tuple(float(v) for v in rgb)
+        self._document.metaball.look.background_colour = tuple(float(v) for v in rgb)
         self._document.settings_changed.emit()
 
     def _build_blend(self) -> QWidget:
@@ -639,14 +639,16 @@ class SurfacePanel(_Panel):
 
     @_user_edit
     def _on_pick_surface_colour(self) -> None:
-        picked = self._pick(self._document.metaball.surface_colour, "Surface colour")
+        picked = self._pick(
+            self._document.metaball.look.surface_colour, "Surface colour"
+        )
         if picked is not None:
             self.set_surface_colour(picked)
 
     @_user_edit
     def _on_pick_background_colour(self) -> None:
         picked = self._pick(
-            self._document.metaball.background_colour, "Background colour"
+            self._document.metaball.look.background_colour, "Background colour"
         )
         if picked is not None:
             self.set_background_colour(picked)
@@ -654,7 +656,7 @@ class SurfacePanel(_Panel):
     @_user_edit
     def _on_pick_creature_colour(self) -> None:
         picked = self._pick(
-            self._document.metaball.surface_colour, "Creature colour"
+            self._document.metaball.look.surface_colour, "Creature colour"
         )
         if picked is not None:
             self._document.set_creature_colour(picked)
@@ -662,7 +664,7 @@ class SurfacePanel(_Panel):
     @_user_edit
     def _on_pick_chunk_colour(self) -> None:
         picked = self._pick(
-            self._document.metaball.surface_colour, "Paint selection"
+            self._document.metaball.look.surface_colour, "Paint selection"
         )
         if picked is not None:
             self._document.set_chunk_colour(picked)
@@ -703,8 +705,8 @@ class SurfacePanel(_Panel):
         self._blend_slider.setValue(
             round(float(settings.blend) * _BLEND_STEPS / _BLEND_MAX)
         )
-        _swatch(self._surface_colour, _colour(settings.surface_colour))
-        _swatch(self._background_colour, _colour(settings.background_colour))
+        _swatch(self._surface_colour, _colour(settings.look.surface_colour))
+        _swatch(self._background_colour, _colour(settings.look.background_colour))
         self._debug.setCurrentIndex(
             min(max(int(settings.debug_mode), 0), len(_DEBUG_MODES) - 1)
         )

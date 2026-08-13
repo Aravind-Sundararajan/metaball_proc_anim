@@ -16,6 +16,7 @@ from mesh_xml.core import Body
 from mesh_xml.core.terrain import Terrain
 from mesh_xml.render import field, sdf
 from mesh_xml.render.gl import metaball, program
+from mesh_xml.render.look import Look
 
 gl_context = pytest.importorskip("mesh_xml.render.gl.context")
 
@@ -963,8 +964,10 @@ class TestAgainstTheCpuReference:
         settings = metaball.MetaballSettings(
             blend=0.3,
             max_distance=25.0,
-            surface_colour=(0.9, 0.2, 0.2),
-            terrain_colour=(0.1, 0.8, 0.2),
+            look=Look(
+                surface_colour=(0.9, 0.2, 0.2),
+                terrain_colour=(0.1, 0.8, 0.2),
+            ),
         )
 
         rgb = self.render(primitives, camera, settings, (160, 120), terrain=terrain)
@@ -976,3 +979,360 @@ class TestAgainstTheCpuReference:
         # The frame centre looks at the camera target, inside the worm.
         centre_patch = rgb[56:64, 76:84].reshape(-1, 3).mean(axis=0)
         assert centre_patch[0] > centre_patch[1] + 20.0, "the creature is not red"
+
+
+@needs_gl
+class TestShadedMode:
+    """Mode 0's lighting model, held to docs/LIGHTING.md's terms.
+
+    Not oracle comparisons — lighting has no CPU twin — so these pin
+    behaviour instead: which side brightens, what darkens, what stays
+    invariant. Content tests render with the prepass on, the editor's own
+    configuration (the armed-skin lesson); the byte-exactness claim runs
+    the single-pass path, where byte-exact means byte-exact.
+    """
+
+    render = staticmethod(TestAgainstTheCpuReference.render)
+
+    @classmethod
+    def hit_mask(cls, primitives, camera, size, *, blend=0.25, max_distance=20.0, **kwargs):
+        """Where the surface is, read from mode 2 — the gradient never touches it."""
+        settings = metaball.MetaballSettings(
+            blend=blend, debug_mode=2, max_distance=max_distance
+        )
+        rgb = cls.render(primitives, camera, settings, size, **kwargs)
+        _, hit = metaball.unpack_depth(rgb, max_distance)
+        return hit
+
+    @staticmethod
+    def luminance(rgb):
+        return rgb.mean(axis=-1)
+
+    @staticmethod
+    def bottom_band(mask, rows=2, skip=0, min_span=0):
+        """The lowest hit rows of each column — bellies and contact lines.
+
+        Row 0 is the camera's bottom row (the harness flips), so lowest is
+        the smallest index. ``skip`` steps over the silhouette row, whose
+        hit/miss is decided by sample placement; ``min_span`` drops the
+        tapering end columns, whose lowest normals point sideways rather
+        than down.
+        """
+        band = np.zeros_like(mask)
+        for column in np.flatnonzero(mask.sum(axis=0) >= max(min_span, 1)):
+            first = int(np.argmax(mask[:, column])) + skip
+            band[first : first + rows, column] = True
+        return band & mask
+
+    @staticmethod
+    def rim_band(mask):
+        """Hit pixels whose 3x3 neighbourhood contains a miss — the silhouette."""
+        pad = np.pad(mask, 1, mode="edge")
+        interior = np.ones_like(mask)
+        for dy in (0, 1, 2):
+            for dx in (0, 1, 2):
+                interior &= pad[dy : dy + mask.shape[0], dx : dx + mask.shape[1]]
+        return mask & ~interior
+
+    def test_the_key_swung_left_and_right_flips_the_bright_side(self):
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = Body()
+        body.add_chunk("a", [0.0, 0.0, 0.0], radius=1.0)
+        primitives = sdf.pack(body)
+        size = (128, 96)
+        camera = OrbitCamera(distance=5.0, yaw=0.0, pitch=0.0)
+        mask = self.hit_mask(primitives, camera, size, prepass=4)
+        assert mask.sum() > 500
+
+        halves = np.arange(size[0])[None, :] < size[0] // 2
+        left, right = mask & halves, mask & ~halves
+
+        def side_means(direction):
+            settings = metaball.MetaballSettings(
+                blend=0.25,
+                max_distance=20.0,
+                look=Look(light_direction=direction),
+            )
+            lum = self.luminance(
+                self.render(primitives, camera, settings, size, prepass=4)
+            )
+            return lum[left].mean(), lum[right].mean()
+
+        # The camera sits on +Z looking down -Z, so world -X is screen left.
+        lit_left = side_means((-0.6, 0.5, 0.4))
+        lit_right = side_means((0.6, 0.5, 0.4))
+        assert lit_left[0] > lit_left[1] + 10.0, "the -X key did not brighten the left"
+        assert lit_right[1] > lit_right[0] + 10.0, "the +X key did not brighten the right"
+
+    def test_a_countershaded_belly_ignores_the_keys_azimuth(self):
+        """Countershade cancels shadow with pigment; the fill must not cancel
+        it again from wherever the key happens to be. Both keys sit above
+        and the belly band's normals face down, so key and march alike see
+        nothing move — the ambient is hemispheric on world-up, and the old
+        bounce that tracked -L is gone. The frames as a whole must still
+        differ, or the swing proved nothing.
+        """
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = worm()
+        for cid in body.chunk_ids():
+            body.meta_of(cid)[sdf.PATTERN_META] = "countershade"
+            body.meta_of(cid)[sdf.PATTERN_PARAM_META] = "0.8"
+        primitives = sdf.pack(body)
+        groups = sdf.group_table(body)
+        attributes = sdf.pack_attributes(body)
+        assert len(attributes) == len(primitives), "the pattern arms the table"
+
+        size = (160, 120)
+        camera = OrbitCamera(distance=8.0, yaw=0.0, pitch=-12.0)
+        mask = self.hit_mask(
+            primitives, camera, size, blend=0.3,
+            groups=groups, attributes=attributes, prepass=4,
+        )
+        belly = self.bottom_band(mask, rows=2, skip=1, min_span=8)
+        assert belly.sum() > 100
+
+        def shade(direction):
+            settings = metaball.MetaballSettings(
+                blend=0.3,
+                max_distance=20.0,
+                look=Look(light_direction=direction),
+            )
+            return self.render(
+                primitives, camera, settings, size,
+                groups=groups, attributes=attributes, prepass=4,
+            )
+
+        swung = shade((0.45, 0.85, 0.3))
+        opposite = shade((-0.45, 0.85, -0.3))
+
+        assert not np.array_equal(swung, opposite), "the key never moved"
+        drift = abs(
+            float(self.luminance(swung)[belly].mean())
+            - float(self.luminance(opposite)[belly].mean())
+        )
+        assert drift < 0.75, f"the belly tracked the key by {drift:.2f}/255"
+
+    def test_occlusion_darkens_a_two_chunk_crease(self):
+        """Two unlinked chunks are two creatures — a hard-min crease where
+        they press together, which is exactly where the environment fails
+        to reach. The key is left alone by design; the fill's share dips."""
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = Body()
+        body.add_chunk("a", [-0.55, 0.0, 0.0], radius=0.7)
+        body.add_chunk("b", [0.55, 0.0, 0.0], radius=0.7)
+        primitives = sdf.pack(body)
+        groups = sdf.group_table(body)
+
+        size = (128, 96)
+        camera = OrbitCamera(distance=5.0, yaw=0.0, pitch=0.0)
+        mask = self.hit_mask(primitives, camera, size, groups=groups, prepass=4)
+        crease = mask.copy()
+        centre = size[0] // 2
+        crease[:, : centre - 4] = False
+        crease[:, centre + 4 :] = False
+        assert crease.sum() > 50
+
+        def crease_mean(ao_strength):
+            settings = metaball.MetaballSettings(
+                blend=0.25,
+                max_distance=20.0,
+                look=Look(ambient_strength=0.5, ao_strength=ao_strength),
+            )
+            rgb = self.render(
+                primitives, camera, settings, size, groups=groups, prepass=4
+            )
+            return float(self.luminance(rgb)[crease].mean())
+
+        open_fill = crease_mean(0.0)
+        occluded = crease_mean(1.0)
+        assert occluded < open_fill - 4.0, (
+            f"ao 1 left the crease at {occluded:.1f} against {open_fill:.1f}"
+        )
+
+    def test_ao_strength_zero_is_byte_identical_to_an_excised_ladder(self):
+        """The knob's off position is a contract, not an approximation: the
+        taps are the frame's only new field evaluations, so zero must remove
+        them without a trace. The shader's marker comments are load-bearing —
+        everything between them is excised here, and the intact shader at
+        ao_strength 0 must produce the same bytes as the deleted one."""
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        source = metaball.fragment_source()
+        begin = source.index("// AO ladder -- begin")
+        end_marker = "// AO ladder -- end"
+        end = source.index(end_marker)
+        assert 0 < begin < end
+        excised = source[:begin] + source[end + len(end_marker):]
+        assert "u_ao_strength * AO_GAIN" not in excised, (
+            "the ladder leaked outside its markers"
+        )
+
+        primitives = sdf.pack(worm())
+        groups = sdf.group_table(worm())
+        camera = OrbitCamera(distance=8.0, yaw=25.0, pitch=18.0)
+        settings = metaball.MetaballSettings(
+            blend=0.3, max_distance=20.0, look=Look(ao_strength=0.0)
+        )
+        size = (128, 96)
+
+        intact = self.render(primitives, camera, settings, size, groups=groups)
+
+        original = metaball.fragment_source
+        metaball.fragment_source = lambda: excised
+        try:
+            deleted = self.render(primitives, camera, settings, size, groups=groups)
+        finally:
+            metaball.fragment_source = original
+
+        assert np.array_equal(intact, deleted)
+
+    def test_a_chunk_planted_on_the_drawn_grid_darkens_at_the_contact(self):
+        """The default editor scene IS the grid: the reference floor stays
+        outside sd_scene (march and oracle exactness), so the AO ladder
+        folds the plane in wherever the grid is actually drawn — a foot
+        resting on it takes contact darkening exactly as it would on a
+        terrain, instead of only in worlds that load one."""
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = Body()
+        body.add_chunk("a", [0.0, 0.3, 0.0], radius=0.3)
+        primitives = sdf.pack(body)
+        size = (128, 96)
+        camera = OrbitCamera(distance=4.0, yaw=20.0, pitch=18.0)
+        mask = self.hit_mask(primitives, camera, size, prepass=4)
+        contact = self.bottom_band(mask, rows=2, skip=1, min_span=6)
+        assert contact.sum() > 30
+
+        def contact_mean(floor_enabled):
+            settings = metaball.MetaballSettings(
+                blend=0.25, max_distance=20.0, look=Look(ao_strength=1.0)
+            )
+            # The render helper never sets floor uniforms; patch them through
+            # settings' dict exactly as the shadow early-out test does — the
+            # viewport owns the floor, not MetaballSettings.
+            original = metaball.MetaballSettings.uniforms
+            def floored(self_settings):
+                values = original(self_settings)
+                values["u_floor_enabled"] = int(floor_enabled)
+                values["u_floor_height"] = 0.0
+                return values
+            metaball.MetaballSettings.uniforms = floored
+            try:
+                rgb = self.render(primitives, camera, settings, size, prepass=4)
+            finally:
+                metaball.MetaballSettings.uniforms = original
+            return float(self.luminance(rgb)[contact].mean())
+
+        planted = contact_mean(True)
+        floating = contact_mean(False)
+        assert planted < floating - 5.0, (
+            f"the drawn grid never occluded: {planted:.1f} against {floating:.1f}"
+        )
+
+    @pytest.mark.parametrize("orthographic", [False, True])
+    def test_the_backdrop_orders_the_rows_and_collapses_flat(self, orthographic):
+        """Screen-keyed on purpose: the wash must survive the O toggle, where
+        a direction-keyed dome collapses to a single flat colour."""
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        empty = sdf.pack(Body())
+        camera = OrbitCamera(
+            distance=6.0, yaw=15.0, pitch=20.0, orthographic=orthographic
+        )
+        size = (96, 72)
+
+        graded = metaball.MetaballSettings(
+            max_distance=20.0,
+            look=Look(
+                background_colour=(0.05, 0.05, 0.05),
+                background_top=(0.45, 0.45, 0.45),
+            ),
+        )
+        rows = self.luminance(self.render(empty, camera, graded, size)).mean(axis=1)
+        # Row 0 is the camera's bottom row; the wash climbs toward the top.
+        assert (rows[8:] - rows[:-8] > 0.0).all(), "the rows are not ordered"
+        assert rows[-8:].mean() > rows[:8].mean() + 60.0
+
+        tone = (0.2, 0.3, 0.4)
+        flat = metaball.MetaballSettings(
+            max_distance=20.0,
+            look=Look(background_colour=tone, background_top=tone),
+        )
+        rgb = self.render(empty, camera, flat, size)
+        assert np.abs(rgb - np.array(tone) * 255.0).max() <= 1.0, (
+            "top == bottom did not restore the flat frame"
+        )
+
+    def test_glow_zero_kills_the_silhouette_lift(self):
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = Body()
+        body.add_chunk("a", [0.0, 0.0, 0.0], radius=1.0)
+        primitives = sdf.pack(body)
+        size = (128, 96)
+        camera = OrbitCamera(distance=5.0, yaw=0.0, pitch=0.0)
+        mask = self.hit_mask(primitives, camera, size, prepass=4)
+        rim = self.rim_band(mask)
+        assert rim.sum() > 50
+        centre = np.zeros_like(mask)
+        centre[42:54, 58:70] = True
+        centre &= mask
+        assert centre.sum() > 100
+
+        def frame(glow):
+            settings = metaball.MetaballSettings(
+                blend=0.25, max_distance=20.0, look=Look(glow_strength=glow)
+            )
+            return self.render(primitives, camera, settings, size, prepass=4)
+
+        lit = self.luminance(frame(0.35))
+        dead = self.luminance(frame(0.0))
+        rim_lift = lit[rim].mean() - dead[rim].mean()
+        centre_shift = abs(lit[centre].mean() - dead[centre].mean())
+        assert rim_lift > 8.0, f"glow 0.35 lifted the rim by only {rim_lift:.2f}"
+        assert centre_shift < 1.5, "the glow leaked into the face-on centre"
+
+    def test_a_dark_skin_rims_dimmer_than_a_pale_one(self):
+        """GLOW_SKIN carries the key through the skin: the lift a glow adds
+        over its own glow-0 baseline must be visibly larger on a pale skin
+        than on a near-black one — and the near-black one must still rim,
+        dimmer rather than dead. A rim of pure light colour would lift both
+        skins identically and fail here."""
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = Body()
+        body.add_chunk("a", [0.0, 0.0, 0.0], radius=1.0)
+        primitives = sdf.pack(body)
+        size = (128, 96)
+        camera = OrbitCamera(distance=5.0, yaw=0.0, pitch=0.0)
+        mask = self.hit_mask(primitives, camera, size, prepass=4)
+        rim = self.rim_band(mask)
+
+        def lift(skin):
+            def rim_mean(glow):
+                settings = metaball.MetaballSettings(
+                    blend=0.25,
+                    max_distance=20.0,
+                    # Strengths held down so the pale rim keeps headroom:
+                    # a clipped channel would eat exactly the lift measured.
+                    look=Look(
+                        light_strength=0.35,
+                        ambient_strength=0.25,
+                        glow_strength=glow,
+                        surface_colour=skin,
+                    ),
+                )
+                rgb = self.render(primitives, camera, settings, size, prepass=4)
+                return float(self.luminance(rgb)[rim].mean())
+
+            return rim_mean(0.6) - rim_mean(0.0)
+
+        pale = lift((0.95, 0.95, 0.95))
+        dark = lift((0.06, 0.06, 0.06))
+        assert dark > 2.0, "a dark skin must still rim, dimmer rather than dead"
+        assert pale > dark * 1.3, (
+            f"the skin does not carry the glow: pale lift {pale:.2f}, dark {dark:.2f}"
+        )

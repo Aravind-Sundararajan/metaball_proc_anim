@@ -236,8 +236,8 @@ class TestSurfacePanel:
         panel.set_surface_colour((1.0, 0.0, 0.0))
         panel.set_background_colour((0.0, 0.0, 1.0))
 
-        assert document.metaball.surface_colour == pytest.approx((1.0, 0.0, 0.0))
-        assert document.metaball.background_colour == pytest.approx((0.0, 0.0, 1.0))
+        assert document.metaball.look.surface_colour == pytest.approx((1.0, 0.0, 0.0))
+        assert document.metaball.look.background_colour == pytest.approx((0.0, 0.0, 1.0))
         assert panel._surface_colour.text() == "#ff0000"
         assert panel._background_colour.text() == "#0000ff"
 

@@ -984,7 +984,7 @@ class Document(QObject):
         colour exactly, so a single-creature document looks precisely as
         authored; a herd spreads itself around the hue wheel from that base.
         """
-        return sdf.group_table(self.body, self.metaball.surface_colour)
+        return sdf.group_table(self.body, self.metaball.look.surface_colour)
 
     def attribute_rows(self) -> np.ndarray:
         """Per-primitive end colours — the weighted skin's table.
@@ -994,7 +994,7 @@ class Document(QObject):
         unpainted document uploads no attributes and shades by the flat
         group colour on the code path it always ran, bit for bit.
         """
-        return sdf.pack_attributes(self.body, self.metaball.surface_colour)
+        return sdf.pack_attributes(self.body, self.metaball.look.surface_colour)
 
     # ------------------------------------------------------------------
     # the world

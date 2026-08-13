@@ -608,14 +608,22 @@ class TestViewport:
         assert not failures, failures[0]
 
     def test_live_metaball_settings_reach_the_shader(self):
-        """The panels edit document.metaball; the frame must pick it up with no wiring."""
+        """The panels edit document.metaball; the frame must pick it up with no wiring.
+
+        Coverage is counted on debug mode 2's hit mask rather than against
+        the flat background colour: under the gradient backdrop every miss
+        pixel differs from the horizon tone, so the old count saturated at
+        the whole frame and could no longer see the blend.
+        """
+        from mesh_xml.render.gl.metaball import unpack_depth
+
         view = self.viewport()
         view.show_rig = False
-
-        background = np.array(view.document.metaball.background_colour) * 255.0
+        view.document.metaball.debug_mode = 2
 
         def surface_pixels(rgb):
-            return int((np.abs(rgb - background) > 12.0).any(axis=2).sum())
+            _, hit = unpack_depth(rgb, view.document.metaball.max_distance)
+            return int(hit.sum())
 
         view.document.metaball.blend = 0.0
         thin = surface_pixels(self.image(view))

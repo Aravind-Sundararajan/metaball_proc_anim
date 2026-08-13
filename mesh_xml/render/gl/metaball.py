@@ -58,6 +58,7 @@ from OpenGL.GL import (
 )
 
 from mesh_xml.core.terrain import Terrain
+from mesh_xml.render.look import Look
 from mesh_xml.render.sdf import PRIMITIVE_STRIDE
 
 __all__ = [
@@ -126,14 +127,14 @@ class MetaballSettings:
     step_relaxation: float = 0.95
     normal_epsilon: float = 1e-4
     debug_mode: int = 0
-    light_direction: tuple[float, float, float] = (0.4, 0.8, 0.45)
-    surface_colour: tuple[float, float, float] = (0.82, 0.55, 0.42)
-    #: What a hit on the world wears instead of ``surface_colour``. A render
-    #: preference like the other colours, which is why it lives here and not on
+    #: The authored look — key light, environment, palette base — composed
+    #: whole rather than mirrored field by field, so the record the file
+    #: round-trips and the record the frame renders are the same object and
+    #: cannot drift (docs/LIGHTING.md §4). ``terrain_colour`` rides it too: a
+    #: render preference like the other colours, which is why it is not on
     #: :class:`~mesh_xml.core.terrain.Terrain` — the terrain's *blend* is world
     #: data and travels with the upload instead (:class:`TerrainTexture`).
-    terrain_colour: tuple[float, float, float] = (0.36, 0.44, 0.31)
-    background_colour: tuple[float, float, float] = (0.11, 0.12, 0.14)
+    look: Look = dataclass_field(default_factory=Look)
     #: Whether the editor draws its reference grid floor. Deliberately absent
     #: from :meth:`uniforms`: the shader's floor also needs a height and a
     #: terrain veto that only the document knows, so the viewport owns the
@@ -144,6 +145,7 @@ class MetaballSettings:
 
     def uniforms(self) -> dict[str, object]:
         """Uniform values for :attr:`RaymarchView.uniforms`."""
+        look = self.look
         return {
             "u_blend": float(self.blend),
             "u_max_distance": float(self.max_distance),
@@ -152,10 +154,16 @@ class MetaballSettings:
             "u_step_relaxation": float(self.step_relaxation),
             "u_normal_epsilon": float(self.normal_epsilon),
             "u_debug_mode": int(self.debug_mode),
-            "u_light_direction": tuple(float(v) for v in self.light_direction),
-            "u_surface_colour": tuple(float(v) for v in self.surface_colour),
-            "u_terrain_colour": tuple(float(v) for v in self.terrain_colour),
-            "u_background_colour": tuple(float(v) for v in self.background_colour),
+            "u_light_direction": tuple(float(v) for v in look.light_direction),
+            "u_light_colour": tuple(float(v) for v in look.light_colour),
+            "u_light_strength": float(look.light_strength),
+            "u_ambient_strength": float(look.ambient_strength),
+            "u_ao_strength": float(look.ao_strength),
+            "u_glow_strength": float(look.glow_strength),
+            "u_surface_colour": tuple(float(v) for v in look.surface_colour),
+            "u_terrain_colour": tuple(float(v) for v in look.terrain_colour),
+            "u_background_colour": tuple(float(v) for v in look.background_colour),
+            "u_background_top": tuple(float(v) for v in look.background_top),
             "u_primitives": PRIMITIVE_TEXTURE_UNIT,
             # The integer sampler must be pointed off unit 0 even when no tile
             # texture exists: an unset usampler2D defaults to unit 0, where it

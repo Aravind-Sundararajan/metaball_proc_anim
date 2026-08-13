@@ -22,9 +22,15 @@ uniform float u_surface_epsilon;
 uniform float u_step_relaxation;
 uniform int   u_debug_mode;      // 0 shaded, 1 normal, 2 packed depth, 3 step count, 4 albedo
 uniform vec3  u_light_direction;
+uniform vec3  u_light_colour;
+uniform float u_light_strength;
+uniform float u_ambient_strength;
+uniform float u_ao_strength;
+uniform float u_glow_strength;
 uniform vec3  u_surface_colour;
 uniform vec3  u_terrain_colour;
 uniform vec3  u_background_colour;
+uniform vec3  u_background_top;
 uniform float u_normal_epsilon;
 
 // The reference floor: an analytic plane the editor draws when no terrain is
@@ -83,6 +89,28 @@ const float GRID_CELL       = 1.0;   // world units per minor cell
 const float GRID_MAJOR      = 5.0;   // minor cells per major line
 const float GRID_FADE_START = 18.0;  // eye distance where the grid starts to go
 const float GRID_FADE_END   = 55.0;  // ... and where it has fully gone
+
+// The shading model's baked constants (docs/LIGHTING.md 2) -- the
+// vocabulary's opinion, like SDF_STRIPE_BAND, so light_strength = 1 lands
+// the pre-arc diffuse level exactly.
+const float DIFFUSE        = 0.75;  // key level at unit strength
+const float AMBIENT_GROUND = 0.7;   // the fill's ground half sits below its sky half
+const float GLOW_SKIN      = 0.5;   // how much of the rim the skin carries
+const float AO_STEP        = 0.06;  // five taps reach 0.3 world units
+const float AO_FALLOFF     = 0.7;   // per-tap weight decay
+const float AO_GAIN        = 3.0;   // occlusion sum to darkening, before the knob
+const float CHROMA_FLOOR   = 1e-3;  // near-black guard for the hue lift
+const float CHROMA_FADE    = 0.04;  // the visible range over which black stops filling
+
+// A backdrop colour's contribution to the fill: its hue lifted to unit
+// brightness -- the swatches state the hue, u_ambient_strength states the
+// level -- with the lift fading out across a visible near-black range, so a
+// black sky fills nothing and approaches that boundary continuously rather
+// than at a one-picker-quantum cliff.
+vec3 chroma(vec3 c) {
+    float level = max(max(c.r, c.g), c.b);
+    return (c / max(level, CHROMA_FLOOR)) * smoothstep(0.0, CHROMA_FADE, level);
+}
 
 in  vec2 v_uv;
 out vec4 frag_colour;
@@ -245,6 +273,13 @@ void main() {
         return;
     }
 
+    // The backdrop: a vertical wash in screen space, deliberately not a sky
+    // dome -- screen-keyed survives the orthographic toggle, and a two-stop
+    // vertical lerp has no horizon line to tilt against the grid's own
+    // (docs/LIGHTING.md 3). Debug mode 1 shares the miss branch below, so
+    // its backdrop is the gradient too: eyeballed, never oracle-compared.
+    vec3 sky = mix(u_background_colour, u_background_top, v_uv.y);
+
     // The reference floor draws only in the shaded mode: the debug modes are
     // the CPU oracle's view and the oracle marches sd_scene alone. The outer
     // branch is uniform, which is what keeps grid_line's derivatives defined.
@@ -265,15 +300,16 @@ void main() {
             float lit = mix(0.45, 1.0, floor_shadow(point, light));
             vec3 base = mix(u_background_colour, vec3(1.0), 0.05);
             vec3 lined = base + vec3(0.06) * minor + vec3(0.10) * major;
-            frag_colour = vec4(
-                mix(u_background_colour, lined * lit, fade), 1.0
-            );
+            // The distance fade lands on the same sky sample the miss path
+            // writes at this pixel; fading to the flat horizon instead
+            // would seam the far grid against the gradient behind it.
+            frag_colour = vec4(mix(sky, lined * lit, fade), 1.0);
             return;
         }
     }
 
     if (!result.hit) {
-        frag_colour = vec4(u_background_colour, 1.0);
+        frag_colour = vec4(sky, 1.0);
         return;
     }
 
@@ -292,12 +328,58 @@ void main() {
     vec3 albedo = scene_albedo(position);
 
     vec3 light = normalize(u_light_direction);
-    float lambert = max(dot(normal, light), 0.0);
-    // A little bounce from below keeps the underside from going flat black,
-    // which on a blobby silhouette reads as a hole rather than as shadow.
-    float bounce = max(dot(normal, -light), 0.0) * 0.2;
-    float rim = pow(1.0 - max(dot(normal, -direction), 0.0), 3.0) * 0.35;
 
-    vec3 shaded = albedo * (0.25 + 0.75 * lambert + bounce) + rim;
+    // One authored key, and the backdrop is the fill (docs/LIGHTING.md 2).
+    // The fill is hemispheric on world-up -- the axis countershade keys on
+    // -- and never tracks the key, so a countershaded belly reads as
+    // pigment against quiet ground light instead of being cancelled twice.
+    vec3 ambient = u_ambient_strength
+        * mix(AMBIENT_GROUND * chroma(u_background_colour),
+              chroma(u_background_top),
+              0.5 + 0.5 * normal.y);
+    vec3 key = u_light_colour * u_light_strength * DIFFUSE
+        * max(dot(normal, light), 0.0);
+    // The rim carries the key's colour through the skin: dark skins rim
+    // dimmer, so a backlight cannot bleach the tones countershade authored.
+    vec3 glow = u_light_colour * u_glow_strength
+        * mix(vec3(1.0), albedo, GLOW_SKIN)
+        * pow(1.0 - max(dot(normal, -direction), 0.0), 3.0);
+
+    float ao = 1.0;
+    // AO ladder -- begin. The markers are load-bearing: the exact-skip test
+    // excises everything between them and asserts ao_strength == 0 renders
+    // the same bytes, so the taps are provably the frame's only new field
+    // evaluations and zero is a true off switch (a uniform branch, no
+    // derivatives inside).
+    if (u_ao_strength > 0.0) {
+        // Taps leave the camera ray's cone, so the tile mask stands down
+        // for the ladder and is restored after -- floor_shadow's argument;
+        // an occluder one tile over is real. The bounds cull stays live.
+        bool was_tiled = sdf_tiled;
+        sdf_tiled = false;
+        float occ = 0.0;
+        float fall = 1.0;
+        for (int i = 1; i <= 5; ++i) {
+            float h = float(i) * AO_STEP;
+            float d = sd_scene(position + normal * h);
+            // The reference floor stays outside sd_scene (march and oracle
+            // exactness, the comment above); where it is actually drawn it
+            // occludes here, so a foot planted on the grid darkens at the
+            // contact. Modes 2 and 4 return long before this runs.
+            if (u_floor_enabled != 0) {
+                d = min(d, position.y + normal.y * h - u_floor_height);
+            }
+            occ += (h - d) * fall;
+            fall *= AO_FALLOFF;
+        }
+        sdf_tiled = was_tiled;
+        ao = clamp(1.0 - u_ao_strength * AO_GAIN * occ, 0.0, 1.0);
+    }
+    // AO ladder -- end
+
+    // AO scales the fill and the glow, never the key: occlusion is the
+    // environment failing to reach a crease; the key failing to reach one
+    // is a cast shadow, which this arc deliberately does not add.
+    vec3 shaded = albedo * (ambient * ao + key) + glow * ao;
     frag_colour = vec4(shaded, 1.0);
 }
