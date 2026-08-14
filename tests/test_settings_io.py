@@ -1,23 +1,30 @@
 """Does a saved creature reopen under the physics it was tuned under?
 
-The format half of docs/SETTINGS.md: ``<solver>`` and ``<metaball>`` are
-additive sections on ``<terrain>``'s terms, so the tests mirror
-``test_gait_io``'s shape — a full round trip compared exactly, absence
-meaning what every older document already meant, and refusal rather than
-guessing for the hand edits the solver would otherwise choke on three
-layers later.
+The format half of docs/SETTINGS.md and docs/LIGHTING.md: ``<solver>``,
+``<metaball>`` and ``<look>`` are additive sections on ``<terrain>``'s
+terms, so the tests mirror ``test_gait_io``'s shape — a full round trip
+compared exactly, absence meaning what every older document already meant,
+and refusal rather than guessing for the hand edits the solver would
+otherwise choke on three layers later.
 
 The absent-semantics asymmetry gets its own tests because it is the part a
 reader will doubt: an absent ``<solver>`` *section* reads as ``None`` — the
 config the caller already runs — while ``ground_y`` absent *inside* a
-present section is a floorless world, the dataclass truth. Comparisons are
-exact rather than approximate: settings are written at full ``float64``
-precision precisely so they come back as the same numbers, and asking only
-for closeness would pass on a format that quietly rounds them.
+present section is a floorless world, the dataclass truth. ``<look>`` has
+no such asymmetry — absent section and absent attribute both mean the
+shipped defaults — and one boundary all its own: the record lives in
+``render/``, the first render import io has ever taken, so the io↛GL
+firewall test at the bottom holds that package to its "only gl/ imports
+OpenGL" rule in a fresh interpreter rather than trusting it. Comparisons
+are exact rather than approximate: settings are written at full
+``float64`` precision precisely so they come back as the same numbers, and
+asking only for closeness would pass on a format that quietly rounds them.
 """
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -26,6 +33,7 @@ import pytest
 from mesh_xml.core.body import Body
 from mesh_xml.core.solver import SolverConfig
 from mesh_xml.io import xml_v2
+from mesh_xml.render.look import Look
 
 V2_DOCUMENT = """<?xml version='1.0' encoding='utf-8'?>
 <body version="2" name="worm" dim="3">
@@ -63,6 +71,27 @@ def tuned_config() -> SolverConfig:
         self_contact=True,
         self_contact_elasticity=0.25,
         self_friction=0.4,
+    )
+
+
+def tuned_look() -> Look:
+    """Every field away from its default, so a dropped one cannot hide.
+
+    ``light_colour`` deliberately carries a component above 1: colours are
+    uncapped — overdrive is an authored act, ``damping="1.02"``'s ruling —
+    and the round trip is where that gets held to.
+    """
+    return Look(
+        light_direction=(-0.6, 0.2, 0.1),
+        light_colour=(1.2, 0.9, 0.7),
+        light_strength=1.4,
+        ambient_strength=0.6,
+        ao_strength=0.9,
+        glow_strength=0.05,
+        surface_colour=(0.3, 0.6, 0.5),
+        terrain_colour=(0.5, 0.4, 0.2),
+        background_colour=(0.02, 0.03, 0.05),
+        background_top=(0.4, 0.45, 0.55),
     )
 
 
@@ -163,6 +192,74 @@ def test_a_short_gravity_zero_pads_to_the_body(tmp_path: Path) -> None:
     assert xml_v2.read(path).solver.gravity == (0.0, -5.0, 0.0)
 
 
+def test_a_tuned_look_round_trips(tmp_path: Path) -> None:
+    """What returns is what went in — the same class, field for field, the
+    vectors tuples and not lists, the overdriven colour uncapped."""
+    path = tmp_path / "lit.xml"
+    xml_v2.save(stub_body(), path, look=tuned_look())
+
+    rig = xml_v2.read(path)
+
+    assert rig.look is not None
+    assert rig.look == tuned_look()
+
+
+def test_a_look_float_survives_at_full_precision(tmp_path: Path) -> None:
+    """The float32 shortening chunk positions take would drift a stated look
+    a little on every save; look floats ride the solver sections' repr rule."""
+    path = tmp_path / "precise_look.xml"
+    xml_v2.save(
+        stub_body(),
+        path,
+        look=Look(ambient_strength=0.1 + 0.2, background_top=(1.0 / 3.0, 0.2, 0.7)),
+    )
+
+    look = xml_v2.read(path).look
+
+    assert look is not None
+    assert look.ambient_strength == 0.1 + 0.2
+    assert look.background_top == (1.0 / 3.0, 0.2, 0.7)
+
+
+def test_a_written_look_record_is_complete_and_in_field_order(
+    tmp_path: Path,
+) -> None:
+    """All or nothing, the solver ruling — and in the record's own field
+    order, so the file reads as the dataclass does."""
+    path = tmp_path / "complete_look.xml"
+    xml_v2.save(stub_body(), path, look=Look())
+
+    section = ET.parse(path).getroot().find("look")
+
+    assert section is not None
+    assert list(section.keys()) == [
+        "light_direction",
+        "light_colour",
+        "light_strength",
+        "ambient_strength",
+        "ao_strength",
+        "glow_strength",
+        "surface_colour",
+        "terrain_colour",
+        "background_colour",
+        "background_top",
+    ]
+
+
+def test_the_look_section_lands_after_metaball(tmp_path: Path) -> None:
+    """Sections are written in one fixed order — <look> directly after
+    <metaball>, and directly after <solver> when no blend is stated."""
+    both = tmp_path / "both.xml"
+    xml_v2.save(stub_body(), both, solver=SolverConfig(), blend=0.4, look=Look())
+    tags = [el.tag for el in ET.parse(both).getroot()]
+    assert tags == ["chunks", "links", "controllers", "solver", "metaball", "look"]
+
+    unblended = tmp_path / "unblended.xml"
+    xml_v2.save(stub_body(), unblended, solver=SolverConfig(), look=Look())
+    tags = [el.tag for el in ET.parse(unblended).getroot()]
+    assert tags == ["chunks", "links", "controllers", "solver", "look"]
+
+
 # ----------------------------------------------------------------------
 # absence, on each of its three levels
 # ----------------------------------------------------------------------
@@ -187,10 +284,12 @@ def test_a_save_without_settings_writes_no_sections(tmp_path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     assert "<solver" not in text
     assert "<metaball" not in text
+    assert "<look" not in text
 
     rig = xml_v2.read(path)
     assert rig.solver is None
     assert rig.blend is None
+    assert rig.look is None
 
 
 def test_a_v2_document_honestly_has_no_settings(tmp_path: Path) -> None:
@@ -202,6 +301,7 @@ def test_a_v2_document_honestly_has_no_settings(tmp_path: Path) -> None:
     assert rig.body.name == "worm"
     assert rig.solver is None
     assert rig.blend is None
+    assert rig.look is None
 
 
 def test_the_shipped_quadruped_reads_with_no_settings() -> None:
@@ -210,6 +310,7 @@ def test_the_shipped_quadruped_reads_with_no_settings() -> None:
 
     assert rig.solver is None
     assert rig.blend is None
+    assert rig.look is None
 
 
 # ----------------------------------------------------------------------
@@ -242,6 +343,27 @@ def test_an_empty_metaball_section_says_nothing(tmp_path: Path) -> None:
     path = hand_authored(tmp_path, "<metaball/>")
 
     assert xml_v2.read(path).blend is None
+
+
+def test_a_partial_look_reads_as_the_dataclass_defaults(tmp_path: Path) -> None:
+    """Absent attribute and absent section mean the same default — the
+    ``<metaball>`` kind of absence, with no ``ground_y``-style asymmetry."""
+    path = hand_authored(
+        tmp_path, '<look glow_strength="0.9" background_top="0.4 0.5 0.6"/>'
+    )
+
+    look = xml_v2.read(path).look
+
+    assert look == Look(glow_strength=0.9, background_top=(0.4, 0.5, 0.6))
+
+
+def test_an_empty_look_section_means_the_shipped_defaults(tmp_path: Path) -> None:
+    """Bare, the section states the whole default record — a ``Look``, not
+    ``None``, because io can construct one; ``<metaball/>``'s ``None`` exists
+    only because io cannot follow ``MetaballSettings`` to the GL imports."""
+    path = hand_authored(tmp_path, "<look/>")
+
+    assert xml_v2.read(path).look == Look()
 
 
 # ----------------------------------------------------------------------
@@ -295,3 +417,83 @@ def test_a_negative_blend_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(xml_v2.SchemaError, match="blend"):
         xml_v2.read(path)
+
+
+def test_a_zero_light_direction_is_refused(tmp_path: Path) -> None:
+    """The shader normalizes it, and zero has no direction to state."""
+    path = hand_authored(tmp_path, '<look light_direction="0.0 0.0 0.0"/>')
+
+    with pytest.raises(xml_v2.SchemaError, match="light_direction"):
+        xml_v2.read(path)
+
+
+def test_a_negative_look_strength_is_refused(tmp_path: Path) -> None:
+    """Negative light is not a tuning, it is a typo — the iterations ruling."""
+    path = hand_authored(tmp_path, '<look glow_strength="-0.1"/>')
+
+    with pytest.raises(xml_v2.SchemaError, match="glow_strength"):
+        xml_v2.read(path)
+
+
+def test_a_negative_colour_component_is_refused(tmp_path: Path) -> None:
+    """Above 1 overdrives on purpose; below 0 is not a colour at all."""
+    path = hand_authored(tmp_path, '<look light_colour="1.0 -0.2 1.0"/>')
+
+    with pytest.raises(xml_v2.SchemaError, match="light_colour"):
+        xml_v2.read(path)
+
+
+def test_a_nan_look_value_is_refused(tmp_path: Path) -> None:
+    """A NaN here poisons every pixel rather than every position."""
+    path = hand_authored(tmp_path, '<look ambient_strength="nan"/>')
+
+    with pytest.raises(xml_v2.SchemaError, match="finite"):
+        xml_v2.read(path)
+
+
+def test_an_infinite_colour_component_is_refused(tmp_path: Path) -> None:
+    """Vector components answer to the same finiteness gate as the scalars."""
+    path = hand_authored(tmp_path, '<look background_top="0.1 inf 0.2"/>')
+
+    with pytest.raises(xml_v2.SchemaError, match="finite"):
+        xml_v2.read(path)
+
+
+def test_a_look_vector_with_the_wrong_arity_is_refused(tmp_path: Path) -> None:
+    """Two components or four, a triple is the only spelling the record has."""
+    for stated in ("0.4 0.8", "0.4 0.8 0.45 1.0"):
+        path = hand_authored(tmp_path, f'<look light_direction="{stated}"/>')
+
+        with pytest.raises(xml_v2.SchemaError, match="components"):
+            xml_v2.read(path)
+
+
+def test_a_look_colour_that_is_not_a_vector_is_refused(tmp_path: Path) -> None:
+    path = hand_authored(tmp_path, '<look surface_colour="a b c"/>')
+
+    with pytest.raises(xml_v2.SchemaError, match="surface_colour"):
+        xml_v2.read(path)
+
+
+# ----------------------------------------------------------------------
+# the io↛GL firewall
+# ----------------------------------------------------------------------
+
+
+def test_the_format_module_never_imports_opengl() -> None:
+    """Run a bare interpreter, import the format module, and look for OpenGL.
+
+    In-process this proves nothing — any earlier test may have loaded GL —
+    so a fresh interpreter is the only honest witness (``test_room``'s Qt
+    firewall, retold). ``Look`` lives in ``render/``, the first render
+    import io has ever taken, and the render package's "only gl/ imports
+    OpenGL" rule is what keeps a GL-less machine able to read and write
+    documents; a docstring is not an enforcement mechanism (LIGHTING.md §4).
+    """
+    probe = (
+        "import sys\n"
+        "import mesh_xml.io.xml_v2\n"
+        "loaded = [m for m in sys.modules if m.startswith('OpenGL')]\n"
+        "assert not loaded, f'the format module dragged in {loaded}'\n"
+    )
+    subprocess.run([sys.executable, "-c", probe], check=True)

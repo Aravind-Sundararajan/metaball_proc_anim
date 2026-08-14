@@ -50,7 +50,7 @@ class TestProvenance:
         )
 
     def test_the_field_is_the_raymarchers_background(self):
-        background = MetaballSettings().background_colour
+        background = MetaballSettings().look.background_colour
         expected = tuple(round(channel * 255.0) for channel in background)
         assert QColor(theme.FIELD).getRgb()[:3] == expected
 

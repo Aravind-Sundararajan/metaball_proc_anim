@@ -37,6 +37,7 @@ from mesh_xml.core.terrain import Terrain
 from mesh_xml.io import scene_xml, xml_legacy, xml_v2
 from mesh_xml.render import DrawPoints, sdf
 from mesh_xml.render.gl.metaball import MetaballSettings
+from mesh_xml.render.look import Look
 from mesh_xml.scene.door import Door
 from mesh_xml.scene.room import Room
 from mesh_xml.scene.scene import Scene
@@ -428,8 +429,8 @@ class _RoomState:
     is one room's editing session: the easing springs with their per-point
     tuning, the pose Reset returns to, the selection, an undo history that
     structurally cannot contain another room's commands, the file this room
-    is, and the surface look (its blend saves with the room's file; the
-    rest — colours, march quality — stays session-only).
+    is, and the surface settings (the blend and the look record save with
+    the room's file; march quality and the debug views stay session-only).
     """
 
     draw: DrawPoints
@@ -984,7 +985,7 @@ class Document(QObject):
         colour exactly, so a single-creature document looks precisely as
         authored; a herd spreads itself around the hue wheel from that base.
         """
-        return sdf.group_table(self.body, self.metaball.surface_colour)
+        return sdf.group_table(self.body, self.metaball.look.surface_colour)
 
     def attribute_rows(self) -> np.ndarray:
         """Per-primitive end colours — the weighted skin's table.
@@ -994,7 +995,7 @@ class Document(QObject):
         unpainted document uploads no attributes and shades by the flat
         group colour on the code path it always ran, bit for bit.
         """
-        return sdf.pack_attributes(self.body, self.metaball.surface_colour)
+        return sdf.pack_attributes(self.body, self.metaball.look.surface_colour)
 
     # ------------------------------------------------------------------
     # the world
@@ -1035,13 +1036,14 @@ class Document(QObject):
     # ------------------------------------------------------------------
 
     def settings_edited(self) -> None:
-        """A finished solver or blend edit — the doors rule for settings.
+        """A finished solver, blend or look edit — the doors rule for settings.
 
         File-grade like a door edit: an explicit authoring act, immediate,
-        on no undo stack — but it DOES dirty the room, because solver and
-        blend save with the room's file and a clean flag over an unsaved
-        tuning is a lie Save All would act on. View-only settings (debug
-        modes, colours, march quality) stay off this path: panels emit
+        on no undo stack — but it DOES dirty the room, because solver,
+        blend and the look record save with the room's file and a clean
+        flag over an unsaved tuning is a lie Save All would act on.
+        View-only settings (debug modes, march quality, the overlay and
+        projection toggles) stay off this path: panels emit
         :attr:`settings_changed` raw for those and the file stays clean.
         """
         self._dirty_room(self._room)
@@ -1785,15 +1787,16 @@ class Document(QObject):
     def open(self, path) -> None:
         """Load a rig and its gait into the *active room*, replacing its contents."""
         path = Path(path)
-        body, controllers, terrain, doors, solver, blend, note = _read_rig(path)
+        rig, note = _read_rig(path)
         self.adopt(
-            body,
-            controllers=controllers,
+            rig.body,
+            controllers=rig.controllers,
             path=path,
-            terrain=terrain,
-            doors=doors,
-            solver=solver,
-            blend=blend,
+            terrain=rig.terrain,
+            doors=rig.doors,
+            solver=rig.solver,
+            blend=rig.blend,
+            look=rig.look,
         )
         self._adopt_room_name(path)
         self.status.emit(note)
@@ -1835,26 +1838,27 @@ class Document(QObject):
         stay one value.
         """
         path = Path(path)
-        body, controllers, terrain, doors, solver, blend, note = _read_rig(path)
+        rig, note = _read_rig(path)
+        body = rig.body
         base = body.name if body.name and body.name != "body" else path.stem
         name = self.unique_room_name(base)
 
         room = Room(name=name)
         room.body = body
         body.name = name
-        room.controllers = (
-            controllers if controllers is not None else ControllerStack(body)
-        )
+        room.controllers = rig.controllers
         # A fresh Room is already founded; only a file that states its
         # physics overrides that, so the opinion stays spelled once, in Room.
-        if solver is not None:
-            room.solver_config = solver
-        room.solver_config.terrain = terrain
-        room.doors = list(doors)
+        if rig.solver is not None:
+            room.solver_config = rig.solver
+        room.solver_config.terrain = rig.terrain
+        room.doors = list(rig.doors)
         self.add_room(room)
         self._states[room].path = path
-        if blend is not None:
-            self._states[room].metaball.blend = blend
+        if rig.blend is not None:
+            self._states[room].metaball.blend = rig.blend
+        if rig.look is not None:
+            self._states[room].metaball.look = rig.look
         self.set_active_room(room)
         if name != base:
             note += f" as room {name!r}"
@@ -1870,6 +1874,7 @@ class Document(QObject):
         doors: Sequence[Door] = (),
         solver: SolverConfig | None = None,
         blend: float | None = None,
+        look: Look | None = None,
     ) -> None:
         """Take over a rig, optionally with the gait driving it and its world.
 
@@ -1883,11 +1888,12 @@ class Document(QObject):
         previous document stood on means nothing to this one, and a stale
         floor under a fresh rig would be drawn and collided with silently.
         ``doors`` defaults to none on the same terms — an exit into the old
-        file's world is a promise the new one never made. ``solver=None`` and
-        ``blend=None`` reset on the same terms again, to the room's founding
-        floor-at-zero config and the dataclass blend: the file is the truth
-        about both records, and the previous session's tuning under a fresh
-        rig would be a physics it never stated.
+        file's world is a promise the new one never made. ``solver=None``,
+        ``blend=None`` and ``look=None`` reset on the same terms again, to
+        the room's founding floor-at-zero config, the dataclass blend, and
+        the shipped :class:`Look`: the file is the truth about all three
+        records, and the previous session's tuning under a fresh rig would
+        be a physics — or a lighting — it never stated.
         """
         self._replace(body, Path(path) if path else None)
         if controllers is not None:
@@ -1904,9 +1910,10 @@ class Document(QObject):
         self._state.metaball.blend = (
             blend if blend is not None else MetaballSettings().blend
         )
+        self._state.metaball.look = look if look is not None else Look()
         # _replace stops short of settings on SCENE_BINDING.md §2.1's terms —
-        # open used to reset them, and a reset needed no announcement. Solver
-        # and blend restore from the file, so the panels must re-read.
+        # open used to reset them, and a reset needed no announcement. Solver,
+        # blend and look restore from the file, so the panels must re-read.
         self.settings_changed.emit()
 
     def save(self, path) -> None:
@@ -1941,27 +1948,26 @@ class Document(QObject):
         for ref in refs:
             src = path.parent / ref.src
             try:
-                body, controllers, terrain, doors, solver, blend, _note = (
-                    _read_rig(src)
-                )
+                rig, _note = _read_rig(src)
             except Exception as exc:
                 raise ValueError(
                     f"room {ref.name!r}: {src.name}: {exc}"
                 ) from exc
+            body = rig.body
             room = Room(name=ref.name)
             room.body = body
             body.name = ref.name
-            room.controllers = (
-                controllers if controllers is not None else ControllerStack(body)
-            )
-            if solver is not None:
-                room.solver_config = solver
-            room.solver_config.terrain = terrain
-            room.doors = list(doors)
+            room.controllers = rig.controllers
+            if rig.solver is not None:
+                room.solver_config = rig.solver
+            room.solver_config.terrain = rig.terrain
+            room.doors = list(rig.doors)
             scene.add_room(room)
             metaball = MetaballSettings()
-            if blend is not None:
-                metaball.blend = blend
+            if rig.blend is not None:
+                metaball.blend = rig.blend
+            if rig.look is not None:
+                metaball.look = rig.look
             states[room] = _RoomState(
                 draw=DrawPoints(body),
                 metaball=metaball,
@@ -2029,6 +2035,7 @@ class Document(QObject):
             doors=tuple(room.doors),
             solver=room.solver_config,
             blend=state.metaball.blend,
+            look=state.metaball.look,
         )
         state.path = target
         if state.dirty:
@@ -2067,24 +2074,16 @@ class Document(QObject):
         return f"{'*' if self.dirty else ''}{name} — mesh_xml"
 
 
-def _read_rig(
-    path: Path,
-) -> tuple[
-    Body,
-    ControllerStack | None,
-    Terrain | None,
-    Sequence[Door],
-    SolverConfig | None,
-    float | None,
-    str,
-]:
+def _read_rig(path: Path) -> tuple[xml_v2.Rig, str]:
     """Read any supported rig file, v3 down to the legacy eras.
 
     The one reader both :meth:`Document.open` and :meth:`Document.open_as_room`
-    share, so the fallback ladder cannot fork between them. Returns the body,
-    the gait (``None`` for files that cannot describe one), the world, the
-    doors, the solver tuning and the blend (``None`` each for eras that could
-    not describe them), and the status line the read earned.
+    share, so the fallback ladder cannot fork between them. Returns the
+    :class:`~mesh_xml.io.xml_v2.Rig` — one record, not a tuple that grows a
+    lane every arc — and the status line the read earned. A legacy era answers
+    with the same record: an empty gait, no world, no doors, and ``None`` for
+    every section it could not describe, which is exactly what the callers'
+    ``is not None`` installs already meant.
     """
     try:
         rig = xml_v2.read(path)
@@ -2092,15 +2091,7 @@ def _read_rig(
         driven = len(rig.controllers.controllers)
         if driven:
             note += f" ({driven} controller(s))"
-        return (
-            rig.body,
-            rig.controllers,
-            rig.terrain,
-            rig.doors,
-            rig.solver,
-            rig.blend,
-            note,
-        )
+        return rig, note
     except Exception:
         # A scene manifest is not an older rig era; falling through to the
         # legacy reader would bury the one error message that says what to
@@ -2113,7 +2104,10 @@ def _read_rig(
         note = f"Opened {path.name} (legacy, {result.coords} coordinates)"
         if result.missing_mesh:
             note += f"; {len(result.missing_mesh)} bone(s) had no mesh"
-        return result.body, None, None, (), None, None, note
+        return (
+            xml_v2.Rig(body=result.body, controllers=ControllerStack(result.body)),
+            note,
+        )
 
 
 def _is_versioned_body(path: Path) -> bool:

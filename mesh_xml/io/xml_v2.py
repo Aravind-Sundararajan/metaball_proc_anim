@@ -144,13 +144,42 @@ would change the simulation a little on every save.
 The smooth-min radius a skin was painted against is a ``<metaball>`` section
 with one ``blend`` attribute. It takes the number rather than
 ``MetaballSettings`` because that class lives beside the OpenGL imports and
-``io`` does not follow it there; the section is named for the record so a
-later arc can land the rest of it on the same additive terms. Absent section
-and absent attribute mean the same thing — the dataclass default, which is
-what every pre-arc document ran under, so no version bump and no asymmetry to
-state. The value answers to :func:`~mesh_xml.core.distance.as_blend`, the
-validator terrain's blend already answers to: finite, non-negative, the same
-error vocabulary.
+``io`` does not follow it there. The section once held itself open as the
+landing zone for the rest of that record; the rest landed as ``<look>``
+below instead — shading changes for different reasons than geometry — so
+``blend`` stays this section's only attribute. Absent section and absent
+attribute mean the same thing — the dataclass default, which is what every
+pre-arc document ran under, so no version bump and no asymmetry to state.
+The value answers to :func:`~mesh_xml.core.distance.as_blend`, the validator
+terrain's blend already answers to: finite, non-negative, the same error
+vocabulary.
+
+``<look>``: additive in v3, absent means the shipped defaults
+-------------------------------------------------------------
+The shading a room reads under (``docs/LIGHTING.md``) is a ``<look>`` section
+beside ``<metaball>``: every :class:`~mesh_xml.render.look.Look` field — the
+key light's direction, colour and strength, the ambient, occlusion and glow
+levels, and the palette's base colours — written in full when written at all,
+the ``<solver>`` ruling, so a dataclass default that later changes cannot
+relight a saved room. A separate section rather than more attributes on
+``<metaball>`` because the two records change for different reasons:
+``blend`` states the surface's *geometry* — the silhouette, the pick, what
+the solver's skin means — while ``<look>`` states its shading and the
+palette's base. Absent semantics are the ``<metaball>`` kind, not the
+``<solver>`` kind: absent section and absent attribute both mean the
+dataclass default, because every look default is a plain value — there is no
+``ground_y``-style "present section changes what absence inside it means"
+asymmetry to state. Validation is the record's own
+:meth:`~mesh_xml.render.look.Look.validate`, wrapped into this module's
+vocabulary: every float finite, the light direction non-zero, colours and
+strengths non-negative, no ceilings anywhere. ``Look`` is this module's
+first import from ``render``, and it holds because the record imports
+nothing beyond the standard library — the render package's own "only gl/
+imports OpenGL" rule, which the firewall test in ``test_settings_io`` runs
+a fresh interpreter to enforce rather than trusting a docstring. Floats are
+full ``float64`` precision (``repr``, not :func:`_fmt`) on the solver
+section's terms: these numbers are the authored look, and a float32
+shortening would drift it a little on every save.
 """
 
 from __future__ import annotations
@@ -168,6 +197,7 @@ from mesh_xml.core.body import Body, LinkType
 from mesh_xml.core.distance import as_blend
 from mesh_xml.core.solver import SolverConfig
 from mesh_xml.core.terrain import Terrain
+from mesh_xml.render.look import Look
 from mesh_xml.scene.door import Door
 
 __all__ = [
@@ -209,7 +239,9 @@ class Rig:
     same terms for every document without a ``<doors>`` section. ``solver``
     and ``blend`` are ``None`` on the same absent-section terms — which for
     ``solver`` means the config the caller already runs, not an empty world;
-    the module docstring states the asymmetry.
+    the module docstring states the asymmetry. ``look`` is ``None`` on those
+    terms too, and means the shipped defaults — the truth about every
+    document written before a look could be stated.
     """
 
     body: Body
@@ -218,6 +250,7 @@ class Rig:
     doors: tuple[Door, ...] = ()
     solver: SolverConfig | None = None
     blend: float | None = None
+    look: Look | None = None
 
 
 def save(
@@ -228,9 +261,10 @@ def save(
     doors: Sequence[Door] = (),
     solver: SolverConfig | None = None,
     blend: float | None = None,
+    look: Look | None = None,
 ) -> None:
     """Write ``body``, any gait driving it, any world it stands in, its doors,
-    and — when stated — its physics and its blend.
+    and — when stated — its physics, its blend, and its look.
 
     Every field :func:`read` needs is written explicitly; nothing is inferred from
     element nesting, and nothing but the controller and terrain-primitive order
@@ -365,6 +399,40 @@ def save(
     if blend is not None:
         ET.SubElement(root, "metaball", {"blend": repr(float(blend))})
 
+    # Written in full when written at all — the solver ruling — and in the
+    # record's own field order, so the file reads as the dataclass does.
+    # The attributes are Look's fields verbatim: the record this module
+    # round-trips and the record the frame renders are one class, which is
+    # what its imports-nothing-beyond-stdlib rule buys. Floats at full
+    # float64 precision (repr): an authored look, not a rendering hint.
+    if look is not None:
+        ET.SubElement(
+            root,
+            "look",
+            {
+                "light_direction": " ".join(
+                    repr(float(v)) for v in look.light_direction
+                ),
+                "light_colour": " ".join(repr(float(v)) for v in look.light_colour),
+                "light_strength": repr(float(look.light_strength)),
+                "ambient_strength": repr(float(look.ambient_strength)),
+                "ao_strength": repr(float(look.ao_strength)),
+                "glow_strength": repr(float(look.glow_strength)),
+                "surface_colour": " ".join(
+                    repr(float(v)) for v in look.surface_colour
+                ),
+                "terrain_colour": " ".join(
+                    repr(float(v)) for v in look.terrain_colour
+                ),
+                "background_colour": " ".join(
+                    repr(float(v)) for v in look.background_colour
+                ),
+                "background_top": " ".join(
+                    repr(float(v)) for v in look.background_top
+                ),
+            },
+        )
+
     tree = ET.ElementTree(root)
     ET.indent(tree, space="    ")
     tree.write(Path(path), encoding="utf-8", xml_declaration=True)
@@ -477,6 +545,7 @@ def read(path: str | Path) -> Rig:
         doors=_read_doors(root),
         solver=_read_solver(root, dim),
         blend=_read_metaball(root),
+        look=_read_look(root),
     )
 
 
@@ -657,9 +726,12 @@ def _read_metaball(root: ET.Element) -> float | None:
     """The blend the skin was painted against. Absent means the default.
 
     An absent attribute means the same as an absent section — the dataclass
-    default — because the section is a landing zone and may grow fields that
-    arrive without a blend beside them. The value answers to
-    :func:`~mesh_xml.core.distance.as_blend`, terrain's own validator.
+    default. That reading was written for a landing zone this section no
+    longer is — the rest of the record landed as ``<look>`` instead, so
+    ``blend`` stays the only attribute — and it keeps, because an empty
+    section still has to mean something and it already means this. The value
+    answers to :func:`~mesh_xml.core.distance.as_blend`, terrain's own
+    validator.
     """
     element = root.find("metaball")
     if element is None:
@@ -672,6 +744,58 @@ def _read_metaball(root: ET.Element) -> float | None:
         return as_blend(value)
     except ValueError as exc:
         raise SchemaError(f"metaball: {exc}") from None
+
+
+def _read_look(root: ET.Element) -> Look | None:
+    """The shading the room was authored under. Absent means the defaults.
+
+    Absent semantics are ``<metaball>``'s, not ``<solver>``'s: an attribute
+    absent inside a present section means the dataclass default, exactly as
+    the absent section does, because every look default is a plain value.
+    The record refuses its own poisons — :meth:`Look.validate` gates
+    non-finite floats, a zero light direction, negative colours and
+    strengths, wrong arity — and its ``ValueError`` folds into this module's
+    vocabulary, the same wrap ``as_blend`` gets one reader up.
+    """
+    element = root.find("look")
+    if element is None:
+        return None
+
+    defaults = Look()
+    look = Look(
+        light_direction=_vector_attr(
+            element, "light_direction", default=defaults.light_direction
+        ),
+        light_colour=_vector_attr(
+            element, "light_colour", default=defaults.light_colour
+        ),
+        light_strength=_float_attr(
+            element, "light_strength", default=defaults.light_strength
+        ),
+        ambient_strength=_float_attr(
+            element, "ambient_strength", default=defaults.ambient_strength
+        ),
+        ao_strength=_float_attr(element, "ao_strength", default=defaults.ao_strength),
+        glow_strength=_float_attr(
+            element, "glow_strength", default=defaults.glow_strength
+        ),
+        surface_colour=_vector_attr(
+            element, "surface_colour", default=defaults.surface_colour
+        ),
+        terrain_colour=_vector_attr(
+            element, "terrain_colour", default=defaults.terrain_colour
+        ),
+        background_colour=_vector_attr(
+            element, "background_colour", default=defaults.background_colour
+        ),
+        background_top=_vector_attr(
+            element, "background_top", default=defaults.background_top
+        ),
+    )
+    try:
+        return look.validate()
+    except ValueError as exc:
+        raise SchemaError(f"look: {exc}") from None
 
 
 def _fmt(value: float) -> str:
@@ -739,6 +863,23 @@ def _float_list(el: ET.Element, name: str) -> list[float]:
         raise SchemaError(
             f"<{el.tag}> attribute {name}={raw!r} is not a vector"
         ) from None
+
+
+def _vector_attr(
+    el: ET.Element, name: str, default: tuple[float, ...]
+) -> tuple[float, ...]:
+    """Like :func:`_float_list`, with ``<metaball>``-kind absence.
+
+    An absent attribute answers ``default`` — the dataclass value — rather
+    than being required, because every absence inside ``<look>`` means the
+    shipped look. A tuple rather than a list, because the record it feeds
+    compares by field and a list that means the same triple would not be
+    equal to it.
+    """
+    raw = el.get(name)
+    if raw is None:
+        return default
+    return tuple(_float_list(el, name))
 
 
 def _bool_attr(el: ET.Element, name: str, default: bool) -> bool:
