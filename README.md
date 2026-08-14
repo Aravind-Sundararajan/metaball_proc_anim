@@ -5,7 +5,7 @@ Rain World's approach: a body is a handful of masses joined by distance constrai
 surface is a smooth field implied by them rather than a mesh anyone authored, and a
 creature is something that thinks, walks, and exists whether or not anyone is looking.
 
-![The editor: a countershaded quadruped mid-stride on the reference grid](docs/editor.png)
+![The editor: a quadruped mid-stride under an authored key light, the Lighting dock open](docs/editor.png)
 
 ## Quick start
 
@@ -48,6 +48,11 @@ spine points, on footfalls against friction, with no pins and no kinematic carry
 * **Skins** — per-chunk colour folded beside the distance field by the same blend
   weight, stripe and countershade patterns riding each link's own frame, painted from
   the editor and saved with the rig ([docs/TEXTURES.md](docs/TEXTURES.md)).
+* **An authored look** — one key light on azimuth/elevation knobs, a background
+  gradient that doubles as the ambient fill (shadows cool toward the sky and horizon
+  tones instead of tracking the key), SDF occlusion in the creases, a rim the skin
+  carries, and the whole record saved per room as `<look>`
+  ([docs/LIGHTING.md](docs/LIGHTING.md)).
 * **Exports** — watertight OBJ/STL by surface nets over the same field, with vertex
   colours carrying the skin; a painted herd arrives in Blender as separate, painted
   animals.
@@ -128,6 +133,10 @@ things implementation taught the design. They are the honest history of the proj
 | [SCENE_BINDING.md](docs/SCENE_BINDING.md) | The editor learning the plural: one document re-pointed across rooms |
 | [TEXTURES.md](docs/TEXTURES.md) | The weighted skin, paint gestures, patterns, painted exports |
 | [CHROME.md](docs/CHROME.md) | The editor's dress: a theme sourced from the viewport's palette, the toolbar |
+| [SETTINGS.md](docs/SETTINGS.md) | The file states its physics: solver and blend persistence, and the dirty line between file-grade and view-only |
+| [PICK.md](docs/PICK.md) | Ctrl+click placement on the rendered surface: the ray, the trace, and the one Add rule |
+| [SELF_CONTACT.md](docs/SELF_CONTACT.md) | Capsule self-contact and self-friction: mid-spans are real, end zones belong to the spheres |
+| [LIGHTING.md](docs/LIGHTING.md) | The environment becomes the fill: the key, the gradient, occlusion, glow, and the `<look>` record |
 
 ## Development
 
