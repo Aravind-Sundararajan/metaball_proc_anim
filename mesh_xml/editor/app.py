@@ -117,8 +117,9 @@ class MainWindow(QMainWindow):
 
         rooms = self.panels.get("Rooms")
         if rooms is not None:
-            # A cut that lands pointed at nothing reads as a broken app.
-            rooms.activated.connect(self.viewport.frame_all)
+            # No frame wiring here: the viewport carries the camera across
+            # the cut itself — restoring where the author left a room, and
+            # framing only a first entry, which is never pointed at nothing.
             rooms.open_requested.connect(self.open_into_scene)
             rooms.remove_requested.connect(self.remove_active_room)
 
@@ -436,8 +437,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self, "Open Failed", f"{Path(path).name}\n\n{exc}"
             )
-            return
-        self.viewport.frame_all()
 
     def remove_active_room(self) -> None:
         """Remove the room being looked at, after the dirty question."""
@@ -458,7 +457,6 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Discard:
                 return
         document.remove_room(room)
-        self.viewport.frame_all()
 
     def save_all(self) -> None:
         """Save every dirty room — to its own file, or through Save As for

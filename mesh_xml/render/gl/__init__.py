@@ -14,7 +14,7 @@ import importlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mesh_xml.render.gl.camera import OrbitCamera, viewport_aspect
+    from mesh_xml.render.gl.camera import CameraPose, OrbitCamera, viewport_aspect
     from mesh_xml.render.gl.context import (
         FullscreenTriangle,
         RaymarchView,
@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AssembledSource",
+    "CameraPose",
     "FullscreenTriangle",
     "OrbitCamera",
     "RaymarchView",
@@ -51,6 +52,7 @@ __all__ = [
 
 _MODULES = {
     "AssembledSource": "program",
+    "CameraPose": "camera",
     "FullscreenTriangle": "context",
     "OrbitCamera": "camera",
     "RaymarchView": "context",

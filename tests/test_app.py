@@ -108,3 +108,36 @@ class TestIcon:
         icon = Path(editor_app.__file__).parent / "icon.png"
         assert icon.is_file(), "the app icon ships beside the entrypoint"
         assert not QIcon(str(icon)).isNull()
+
+
+class TestRoomCamera:
+    """The dock's cut carries the camera: restore where the author left a
+    room, frame only a first entry. Projection is deliberately absent here —
+    it is window state, untouched by cuts (SCENE_BINDING.md §2.3)."""
+
+    @staticmethod
+    def add_meadow(document: Document):
+        from mesh_xml.scene import Room
+
+        room = document.add_room(Room(name="meadow"))
+        ids = [
+            room.body.add_chunk(f"m{i}", (9.0 + i * 0.9, 1.0, 0.0), radius=0.3)
+            for i in range(3)
+        ]
+        for a, b in zip(ids, ids[1:]):
+            room.body.add_link(a, b)
+        return room
+
+    def test_the_dock_cut_restores_rather_than_frames(self, window):
+        self.add_meadow(window.document)
+        rooms = window.panels["Rooms"]
+        camera = window.viewport.camera
+
+        camera.yaw = 123.0
+        camera.distance = 9.5
+        left = camera.pose()
+
+        rooms._table.selectRow(1)
+        assert camera.pose() != left, "a first entry frames"
+        rooms._table.selectRow(0)
+        assert camera.pose() == left, "a re-entry restores"
