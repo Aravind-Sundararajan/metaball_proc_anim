@@ -235,7 +235,8 @@ manifest after), and watch it again.
 ## 6. Not in scope
 
 A move-creature-to-room gesture (doors are the sanctioned crossing;
-authoring-time population is Open Into Scene and Duplicate). Cross-room
+authoring-time population is Open Into Scene and Duplicate) — since
+designed as the transfer's editor face in docs/MOVE_CREATURE.md. Cross-room
 undo or a scene-level history. Coupling the editor to `Scene.activate` (a
 "simulate like the game" mode can exist someday; it is a policy toggle,
 not this rework). Seamless cameras, split views, or a second viewport.
