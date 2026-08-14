@@ -758,6 +758,7 @@ class LightingPanel(_Panel):
         self._terrain_colour = QPushButton()
         self._ambient = _spin(0.0, 1.0, 0.05)
         self._occlusion = _spin(0.0, 1.0, 0.05)
+        self._shadow = _spin(0.0, 1.0, 0.05)
         self._glow = _spin(0.0, 1.0, 0.05)
 
         layout = QVBoxLayout(self)
@@ -775,6 +776,7 @@ class LightingPanel(_Panel):
         self._terrain_colour.clicked.connect(self._on_pick_terrain_colour)
         self._ambient.valueChanged.connect(self._on_ambient_changed)
         self._occlusion.valueChanged.connect(self._on_occlusion_changed)
+        self._shadow.valueChanged.connect(self._on_shadow_changed)
         self._glow.valueChanged.connect(self._on_glow_changed)
         self._follow(document.settings_changed)
 
@@ -806,8 +808,9 @@ class LightingPanel(_Panel):
         )
         self._elevation.setToolTip(
             "The key's height above the horizon. Negative is an uplight — "
-            "legal and dramatic; the floor shadow just finds nothing "
-            "underground."
+            "legal and dramatic; the reference floor catches nothing from "
+            "underground, and creature flesh still shadows creature flesh "
+            "from below."
         )
         self._light_colour.setToolTip(
             "The key's chromaticity; Strength carries the level. The glow "
@@ -858,11 +861,18 @@ class LightingPanel(_Panel):
         layout = _form()
         box.setLayout(layout)
         layout.addRow("Occlusion", self._occlusion)
+        layout.addRow("Shadow", self._shadow)
         layout.addRow("Glow", self._glow)
         self._occlusion.setToolTip(
             "How hard creases lose the environment — contact lines, folds, "
             "a foot on the floor. Darkens the fill and the glow, never the "
             "key; zero skips the cost entirely."
+        )
+        self._shadow.setToolTip(
+            "How much key the creature field blocks — a limb on its own "
+            "flank, a neighbour's body, a foot's shadow on the ground. "
+            "Occlusion darkens the fill; this darkens the key. Zero skips "
+            "the shadow march everywhere, floor included."
         )
         self._glow.setToolTip(
             "The silhouette's backlight, carried through the skin so dark "
@@ -914,6 +924,11 @@ class LightingPanel(_Panel):
         self._document.settings_edited()
 
     @_user_edit
+    def _on_shadow_changed(self, value: float) -> None:
+        self._document.metaball.look.shadow_strength = float(value)
+        self._document.settings_edited()
+
+    @_user_edit
     def _on_glow_changed(self, value: float) -> None:
         self._document.metaball.look.glow_strength = float(value)
         self._document.settings_edited()
@@ -942,6 +957,7 @@ class LightingPanel(_Panel):
             (self._light_strength, look.light_strength),
             (self._ambient, look.ambient_strength),
             (self._occlusion, look.ao_strength),
+            (self._shadow, look.shadow_strength),
             (self._glow, look.glow_strength),
         ):
             _admit(box, float(value))

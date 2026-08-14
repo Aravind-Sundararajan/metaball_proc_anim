@@ -163,10 +163,11 @@ sites that call it instead of emitting raw have grown with the record:
 each for iterations, damping, max_velocity, ground_friction,
 self_contact, self_contact_elasticity, self_friction; two for gravity
 — the vector edit and the zero-G toggle), then the lighting arc's
-eight — the Surface panel's surface-colour setter and the Lighting
-panel's seven (the azimuth/elevation pair's one write, the swatch
-picker, the relocated horizon setter, and the four strengths) —
-eighteen in all (docs/LIGHTING.md §6). Every view-only site
+eight and the cast-shadow arc's one — the Surface panel's
+surface-colour setter and the Lighting panel's now eight (the
+azimuth/elevation pair's one write, the swatch picker, the relocated
+horizon setter, and the five strengths) — nineteen in all
+(docs/LIGHTING.md §6, docs/CAST_SHADOWS.md §7). Every view-only site
 (debug_mode, max_steps, show_floor, overlay, ortho) keeps emitting raw
 and keeps the file clean, which is the document/view split of §6
 enforced where edits happen.

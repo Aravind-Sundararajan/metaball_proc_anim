@@ -87,6 +87,7 @@ def tuned_look() -> Look:
         light_strength=1.4,
         ambient_strength=0.6,
         ao_strength=0.9,
+        shadow_strength=0.35,
         glow_strength=0.05,
         surface_colour=(0.3, 0.6, 0.5),
         terrain_colour=(0.5, 0.4, 0.2),
@@ -238,6 +239,7 @@ def test_a_written_look_record_is_complete_and_in_field_order(
         "light_strength",
         "ambient_strength",
         "ao_strength",
+        "shadow_strength",
         "glow_strength",
         "surface_colour",
         "terrain_colour",
@@ -357,6 +359,22 @@ def test_a_partial_look_reads_as_the_dataclass_defaults(tmp_path: Path) -> None:
     assert look == Look(glow_strength=0.9, background_top=(0.4, 0.5, 0.6))
 
 
+def test_a_look_without_a_shadow_strength_reopens_shadowed(tmp_path: Path) -> None:
+    """The format's first additive attribute whose default relights a saved
+    record: a lighting-arc ``<look>`` predates ``shadow_strength``, absence
+    inside the section means the dataclass default, and the default is the
+    full shadow — deliberate on the AO precedent (docs/CAST_SHADOWS.md §7),
+    and the attribute exists so an author can state otherwise."""
+    path = hand_authored(
+        tmp_path, '<look light_strength="1.4" ao_strength="0.9"/>'
+    )
+
+    look = xml_v2.read(path).look
+
+    assert look is not None
+    assert look.shadow_strength == 1.0
+
+
 def test_an_empty_look_section_means_the_shipped_defaults(tmp_path: Path) -> None:
     """Bare, the section states the whole default record — a ``Look``, not
     ``None``, because io can construct one; ``<metaball/>``'s ``None`` exists
@@ -432,6 +450,24 @@ def test_a_negative_look_strength_is_refused(tmp_path: Path) -> None:
     path = hand_authored(tmp_path, '<look glow_strength="-0.1"/>')
 
     with pytest.raises(xml_v2.SchemaError, match="glow_strength"):
+        xml_v2.read(path)
+
+
+def test_a_negative_shadow_strength_is_refused(tmp_path: Path) -> None:
+    """The new strength answers to the standing gate: negative shadow is
+    not a tuning either."""
+    path = hand_authored(tmp_path, '<look shadow_strength="-0.5"/>')
+
+    with pytest.raises(xml_v2.SchemaError, match="shadow_strength"):
+        xml_v2.read(path)
+
+
+def test_a_nan_shadow_strength_is_refused(tmp_path: Path) -> None:
+    """Non-finite poisons the shader's == 1.0 endpoint as surely as every
+    pixel; the finiteness gate covers the grown record."""
+    path = hand_authored(tmp_path, '<look shadow_strength="nan"/>')
+
+    with pytest.raises(xml_v2.SchemaError, match="finite"):
         xml_v2.read(path)
 
 

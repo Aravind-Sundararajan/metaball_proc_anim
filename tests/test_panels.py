@@ -1235,6 +1235,15 @@ class TestSettingsDirty:
 
         assert document.dirty
 
+    def test_a_shadow_strength_edit_dirties_the_document(self, document):
+        panel = panels.LightingPanel(document)
+        assert not document.dirty
+
+        panel._shadow.setValue(0.4)
+
+        assert document.metaball.look.shadow_strength == pytest.approx(0.4)
+        assert document.dirty
+
     def test_view_only_edits_keep_the_file_clean(self, document):
         panel = panels.SurfacePanel(document)
 
@@ -1286,4 +1295,16 @@ class TestLoadedValuesDisplayed:
 
         assert panel._glow.value() == pytest.approx(5.0)
         assert document.metaball.look.glow_strength == pytest.approx(5.0)
+        assert not document.dirty
+
+    def test_an_admitted_shadow_strength_shows_unclamped(self, document):
+        """A file-authored 2.0 extrapolates the penumbra toward black on
+        purpose; the spin displays it rather than clamp-committing the cap
+        on the next nudge."""
+        panel = panels.LightingPanel(document)
+        document.metaball.look.shadow_strength = 2.0
+        document.settings_changed.emit()
+
+        assert panel._shadow.value() == pytest.approx(2.0)
+        assert document.metaball.look.shadow_strength == pytest.approx(2.0)
         assert not document.dirty

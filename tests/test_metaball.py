@@ -576,7 +576,7 @@ class TestAgainstTheCpuReference:
     def test_the_cull_is_invisible_under_the_floor_shadow_too(self):
         """The shadow march's bounds early-out must also change nothing.
 
-        The floor path exercises floor_shadow's skip: pixels far from every
+        The floor path exercises key_shadow's skip: pixels far from every
         creature return full light without marching, and the claim is that the
         march would have said the same. Byte equality over a frame that is
         mostly floor is the strongest form of that claim on offer.
