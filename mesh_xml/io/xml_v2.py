@@ -158,10 +158,13 @@ vocabulary.
 -------------------------------------------------------------
 The shading a room reads under (``docs/LIGHTING.md``) is a ``<look>`` section
 beside ``<metaball>``: every :class:`~mesh_xml.render.look.Look` field — the
-key light's direction, colour and strength, the ambient, occlusion and glow
-levels, and the palette's base colours — written in full when written at all,
-the ``<solver>`` ruling, so a dataclass default that later changes cannot
-relight a saved room. A separate section rather than more attributes on
+key light's direction, colour and strength, the ambient, occlusion, shadow
+and glow levels, and the palette's base colours — written in full when
+written at all, the ``<solver>`` ruling. Full writing protects the *stated*
+attributes' values, not against new terms: ``shadow_strength`` arrived after
+the section did, defaulting to 1.0, so a pre-shadow ``<look>`` reopens
+shadowed — the format's first additive attribute whose default relights a
+saved record, deliberate on the AO precedent (docs/CAST_SHADOWS.md §7). A separate section rather than more attributes on
 ``<metaball>`` because the two records change for different reasons:
 ``blend`` states the surface's *geometry* — the silhouette, the pick, what
 the solver's skin means — while ``<look>`` states its shading and the
@@ -417,6 +420,7 @@ def save(
                 "light_strength": repr(float(look.light_strength)),
                 "ambient_strength": repr(float(look.ambient_strength)),
                 "ao_strength": repr(float(look.ao_strength)),
+                "shadow_strength": repr(float(look.shadow_strength)),
                 "glow_strength": repr(float(look.glow_strength)),
                 "surface_colour": " ".join(
                     repr(float(v)) for v in look.surface_colour
@@ -776,6 +780,9 @@ def _read_look(root: ET.Element) -> Look | None:
             element, "ambient_strength", default=defaults.ambient_strength
         ),
         ao_strength=_float_attr(element, "ao_strength", default=defaults.ao_strength),
+        shadow_strength=_float_attr(
+            element, "shadow_strength", default=defaults.shadow_strength
+        ),
         glow_strength=_float_attr(
             element, "glow_strength", default=defaults.glow_strength
         ),

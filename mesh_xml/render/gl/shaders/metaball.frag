@@ -26,6 +26,7 @@ uniform vec3  u_light_colour;
 uniform float u_light_strength;
 uniform float u_ambient_strength;
 uniform float u_ao_strength;
+uniform float u_shadow_strength;
 uniform float u_glow_strength;
 uniform vec3  u_surface_colour;
 uniform vec3  u_terrain_colour;
@@ -168,7 +169,7 @@ const float SHADOW_REACH = SHADOW_MAX_T / 8.0;
 // exceeds t/8, the running min never drops below one, and the march would
 // return full light — so returning it without marching changes nothing.
 // Without a valid bounds table the answer is "maybe", and the march runs.
-bool floor_maybe_shadowed(vec3 point, vec3 light) {
+bool maybe_shadowed(vec3 point, vec3 light) {
     if (u_group_count <= 0 || u_group_bounds_count != u_group_count) return true;
     for (int g = 0; g < u_group_count; ++g) {
         vec4 sphere = texelFetch(u_group_bounds, ivec2(0, g), 0);
@@ -181,29 +182,42 @@ bool floor_maybe_shadowed(vec3 point, vec3 light) {
     return false;
 }
 
-// How much creature light reaches a floor point: a march toward the light
-// through sd_field alone, so the world (absent when the floor draws) can never
-// double-shadow. The running min of d/t is the classic penumbra estimate —
-// distance the occluder clears the ray by, over how far along it sits.
-float floor_shadow(vec3 point, vec3 light) {
-    if (!floor_maybe_shadowed(point, light)) return 1.0;
-    // Shadow rays head for the light, not the camera, so this tile's mask
-    // says nothing about their occluders. The mask stands down for the march
-    // and is restored after — a shadow must be castable by a creature whose
-    // body the camera ray's tile never sees.
-    bool was_tiled = sdf_tiled;
-    sdf_tiled = false;
-    float t = 0.05;
-    float shade = 1.0;
-    for (int i = 0; i < 48; ++i) {
-        float d = sd_field(point + light * t);
-        if (d < 1e-3) { shade = 0.0; break; }
-        shade = min(shade, 8.0 * d / t);
-        t += clamp(d, 0.02, 0.5);
-        if (t > SHADOW_MAX_T) break;
+// How much key reaches a receiver point — the reference floor, creature
+// flesh and terrain alike take the one answer: a march toward the light
+// through sd_field, never the composite, so the creature casts and the
+// world only catches (docs/CAST_SHADOWS.md 3 — terrain has no bound for
+// the gate to test). The running min of d/t is the classic penumbra
+// estimate — distance the occluder clears the ray by, over how far along
+// it sits. The tile mask stands down for the march and is restored after:
+// shadow rays head for the light, not the camera, so this tile's mask
+// says nothing about their occluders.
+float key_shadow(vec3 point, vec3 light) {
+    // key shadow -- begin. The markers are load-bearing: the
+    // exact-skip test excises everything between them and asserts
+    // shadow_strength 0 renders the same bytes as the deleted march.
+    if (u_shadow_strength > 0.0 && maybe_shadowed(point, light)) {
+        bool was_tiled = sdf_tiled;
+        sdf_tiled = false;
+        float t = 0.05;
+        float shade = 1.0;
+        for (int i = 0; i < 48; ++i) {
+            float d = sd_field(point + light * t);
+            if (d < 1e-3) { shade = 0.0; break; }
+            shade = min(shade, 8.0 * d / t);
+            t += clamp(d, 0.02, 0.5);
+            if (t > SHADOW_MAX_T) break;
+        }
+        sdf_tiled = was_tiled;
+        shade = clamp(shade, 0.0, 1.0);
+        // The endpoint is exact by branch, not by arithmetic: GLSL
+        // pins no rounding for a lerp, and the default must
+        // reproduce a pre-shadow room's floor shadow bit for bit.
+        return u_shadow_strength == 1.0
+            ? shade
+            : clamp(1.0 - u_shadow_strength * (1.0 - shade), 0.0, 1.0);
     }
-    sdf_tiled = was_tiled;
-    return clamp(shade, 0.0, 1.0);
+    // key shadow -- end
+    return 1.0;
 }
 
 // What colour the surface is at a hit, before any light touches it: the
@@ -297,7 +311,7 @@ void main() {
             && (!result.hit || floor_t < result.t);
         if (wins) {
             vec3 light = normalize(u_light_direction);
-            float lit = mix(0.45, 1.0, floor_shadow(point, light));
+            float lit = mix(0.45, 1.0, key_shadow(point, light));
             vec3 base = mix(u_background_colour, vec3(1.0), 0.05);
             vec3 lined = base + vec3(0.06) * minor + vec3(0.10) * major;
             // The distance fade lands on the same sky sample the miss path
@@ -328,6 +342,7 @@ void main() {
     vec3 albedo = scene_albedo(position);
 
     vec3 light = normalize(u_light_direction);
+    float shadow = key_shadow(position, light);
 
     // One authored key, and the backdrop is the fill (docs/LIGHTING.md 2).
     // The fill is hemispheric on world-up -- the axis countershade keys on
@@ -353,7 +368,7 @@ void main() {
     // derivatives inside).
     if (u_ao_strength > 0.0) {
         // Taps leave the camera ray's cone, so the tile mask stands down
-        // for the ladder and is restored after -- floor_shadow's argument;
+        // for the ladder and is restored after -- key_shadow's argument;
         // an occluder one tile over is real. The bounds cull stays live.
         bool was_tiled = sdf_tiled;
         sdf_tiled = false;
@@ -377,9 +392,10 @@ void main() {
     }
     // AO ladder -- end
 
-    // AO scales the fill and the glow, never the key: occlusion is the
-    // environment failing to reach a crease; the key failing to reach one
-    // is a cast shadow, which this arc deliberately does not add.
-    vec3 shaded = albedo * (ambient * ao + key) + glow * ao;
+    // The occlusion authorities stay disjoint, one term each: AO scales the
+    // fill and the glow, never the key -- occlusion is the environment
+    // failing to reach a crease -- and the key failing to reach one is the
+    // cast shadow, which gates the key alone (docs/CAST_SHADOWS.md 5).
+    vec3 shaded = albedo * (ambient * ao + key * shadow) + glow * ao;
     frag_colour = vec4(shaded, 1.0);
 }

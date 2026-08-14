@@ -56,8 +56,10 @@ together.
   poses that need crease shading are poses the solver actually holds.
 
 What already works, and this arc keeps: the floor's penumbra shadow
-march follows `u_light_direction` (`floor_shadow`), so a movable light
-gets a moving shadow for free; and the oracle contract confines
+march follows `u_light_direction` (`floor_shadow` here — since
+generalized to every receiver as `key_shadow`, docs/CAST_SHADOWS.md),
+so a movable light gets a moving shadow for free; and the oracle
+contract confines
 *lighting* to the eyeballed modes — debug modes 2 (packed depth) and 4
 (raw albedo) are the CPU-compared paths, return before the miss branch,
 and while mode 4 reads the surface and terrain colours (they are data,
@@ -139,11 +141,12 @@ Deliberate, named, and the sky swatch is sitting right there.
 
 **AO scales the ambient and the glow, never the key.** Occlusion is
 the environment failing to reach a crease; the key light failing to
-reach one is a cast shadow, which this arc deliberately does not add
-(§7). The honest cap follows and is worth one sentence: AO can only
-discount the fill's share of a pixel — a crease in full key stays
-clean *by construction* until the cast-shadow arc, and the creases
-this arc makes read are the shadow-side and contact ones (a
+reach one is a cast shadow, which this arc deliberately did not add
+(§7) and docs/CAST_SHADOWS.md has since landed. The honest cap held
+exactly as long as promised: AO can only discount the fill's share
+of a pixel — a crease in full key stayed clean *by construction*
+until the cast-shadow arc took the cap off — and the creases this
+arc makes read are the shadow-side and contact ones (a
 right-angle crease dips ≈ 17% at the defaults; a deep self-contact
 slot, far more). Five taps along the normal, Quilez's ladder, with
 the reference floor folded in where it is actually drawn:
@@ -181,7 +184,7 @@ achievable and asserted by test, not approximate).
 
 The AO taps run against `sd_scene` (a limb resting on terrain darkens
 at the contact line) with the tile mask stood down for the duration,
-`floor_shadow`'s own argument: taps leave the camera ray's cone, and
+`key_shadow`'s own argument: taps leave the camera ray's cone, and
 an occluder one tile over is real. The per-group bounds cull stays
 live — it is position-based, not tile-based — so the taps pay for the
 groups near the surface, not for the room.
@@ -282,7 +285,7 @@ tables whenever the packed bytes change.
 Validation on read, the §4 house rule — refuse what breaks
 downstream, leave taste to the author: every float finite;
 `light_direction` non-zero (the shader normalizes it, and zero has
-no direction to state); colour components ≥ 0; the four strengths
+no direction to state); colour components ≥ 0; the five strengths
 ≥ 0 (negative light is not a tuning, it is a typo — the
 `iterations` ruling). No ceiling on strengths or colours:
 `light_colour` above 1 overdrives on purpose, `damping="1.02"`'s
@@ -298,7 +301,8 @@ file-only authoring.
 ```xml
 <look light_direction="0.4 0.8 0.45" light_colour="1.0 1.0 1.0"
       light_strength="1.0" ambient_strength="0.35" ao_strength="0.5"
-      glow_strength="0.35" surface_colour="0.82 0.55 0.42"
+      shadow_strength="1.0" glow_strength="0.35"
+      surface_colour="0.82 0.55 0.42"
       terrain_colour="0.36 0.44 0.31"
       background_colour="0.11 0.12 0.14"
       background_top="0.15 0.17 0.21"/>
@@ -361,16 +365,18 @@ prevent. Three groups:
   job), and writing back from (az, ±90°) yields `(0, ±1, 0)` for
   every azimuth, so the round-trip is stable. Below-horizon
   elevations are legal — an uplight is a look — and degrade
-  gracefully: the floor shadow march heads underground, finds no
-  creature, and answers full light.
+  gracefully: from the reference floor the shadow march heads
+  underground, finds no creature, and answers full light, while
+  creature receivers still shadow each other from below
+  (docs/CAST_SHADOWS.md §3).
 - **Environment**: sky-top and horizon swatches (the Background row
   *moves here* from Appearance — it stopped being a preference and
   became the fill light's source, and `set_background_colour` moves
   with its row), terrain colour's first-ever swatch, ambient
   strength.
-- **Finish**: occlusion strength, glow strength.
+- **Finish**: occlusion strength, shadow strength, glow strength.
 
-The four strength spins take the `_admit` widening
+The five strength spins take the `_admit` widening
 (`TestLoadedValuesDisplayed`'s convention): a loaded
 `glow_strength="5"` displays as 5, not as the spin's cap about to be
 silently committed. The colour swatches speak 0..1 (§4's
@@ -399,15 +405,15 @@ row move, and its background half moves panels and asserts dirty.
 
 ## 7. What this arc deliberately does not do
 
-- **No cast shadows on creatures.** The key light shadows nothing but
-  the reference floor, exactly as today. A per-hit shadow march is
-  the floor's 48-step cost on every creature pixel — the plateau
-  note says shading is where frame time now lives, and this arc
-  already spends that budget on AO's five taps. Named residual, next
-  look arc's first candidate (designed: docs/CAST_SHADOWS.md) — and
-  until it lands, AO's ambient-only
-  reach (§2) is the honest cap on how much this arc makes creases
-  read.
+- **No cast shadows on creatures.** The key light shadowed nothing
+  but the reference floor at this arc's budget: a per-hit shadow
+  march is the floor's 48-step cost on every creature pixel — the
+  plateau note says shading is where frame time now lives, and this
+  arc already spends that budget on AO's five taps. Named residual,
+  since taken up and landed (docs/CAST_SHADOWS.md: `key_shadow`
+  serves every receiver, priced as its own new spend) — and until it
+  landed, AO's ambient-only reach (§2) was the honest cap on how
+  much this arc makes creases read.
 - **No halo or bloom.** A miss-pixel halo keyed on the march's
   closest approach would differ *categorically* between seeded and
   unseeded frames: the cone prepass provably skips exactly the

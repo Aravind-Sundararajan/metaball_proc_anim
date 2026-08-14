@@ -42,6 +42,7 @@ _STRENGTH_FIELDS = (
     "light_strength",
     "ambient_strength",
     "ao_strength",
+    "shadow_strength",
     "glow_strength",
 )
 
@@ -54,7 +55,12 @@ class Look:
     ``0..1`` (the panel's swatches speak that range) but deliberately
     uncapped — a component above 1 overdrives on purpose, and the frame
     clips per-channel exactly as ``damping="1.02"`` rings (LIGHTING.md
-    §4 names the artefact). ``surface_colour`` is data as well as a
+    §4 names the artefact). ``shadow_strength`` is how much key the
+    creature field blocks along the light — 1 removes a blocked key
+    fully and reproduces the floor's landed shadow bit for bit, 0 skips
+    the shadow march everywhere, floor included, and above 1
+    extrapolates the penumbra toward black and clamps
+    (docs/CAST_SHADOWS.md §7). ``surface_colour`` is data as well as a
     uniform: it seeds the group table and the unpainted-chunk fallback,
     which is how it reaches OBJ vertex colours.
     """
@@ -64,6 +70,7 @@ class Look:
     light_strength: float = 1.0
     ambient_strength: float = 0.35
     ao_strength: float = 0.5
+    shadow_strength: float = 1.0
     glow_strength: float = 0.35
     surface_colour: tuple[float, float, float] = (0.82, 0.55, 0.42)
     terrain_colour: tuple[float, float, float] = (0.36, 0.44, 0.31)

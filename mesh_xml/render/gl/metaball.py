@@ -159,6 +159,10 @@ class MetaballSettings:
             "u_light_strength": float(look.light_strength),
             "u_ambient_strength": float(look.ambient_strength),
             "u_ao_strength": float(look.ao_strength),
+            # No arithmetic between parse and upload: the shader's == 1.0
+            # endpoint branch must see exactly the 1.0 the file or the
+            # default stated (docs/CAST_SHADOWS.md 4).
+            "u_shadow_strength": float(look.shadow_strength),
             "u_glow_strength": float(look.glow_strength),
             "u_surface_colour": tuple(float(v) for v in look.surface_colour),
             "u_terrain_colour": tuple(float(v) for v in look.terrain_colour),

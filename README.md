@@ -145,7 +145,7 @@ things implementation taught the design. They are the honest history of the proj
 | [PICK.md](docs/PICK.md) | Ctrl+click placement on the rendered surface: the ray, the trace, and the one Add rule |
 | [SELF_CONTACT.md](docs/SELF_CONTACT.md) | Capsule self-contact and self-friction: mid-spans are real, end zones belong to the spheres |
 | [LIGHTING.md](docs/LIGHTING.md) | The environment becomes the fill: the key, the gradient, occlusion, glow, and the `<look>` record |
-| [CAST_SHADOWS.md](docs/CAST_SHADOWS.md) | Designed, next to land: the floor's march learns every receiver, the shadow gates the key alone, the price owned as new spend |
+| [CAST_SHADOWS.md](docs/CAST_SHADOWS.md) | The floor's march learns every receiver, the shadow gates the key alone, the price owned as new spend |
 | [WORLD_CONTACT.md](docs/WORLD_CONTACT.md) | Designed, next to land: spans meet the terrain through exact capsule clearance, deferring only what the spheres already own |
 | [MOVE_CREATURE.md](docs/MOVE_CREATURE.md) | Designed, next to land: the transfer's editor face — a creature moved between rooms whole, pre-flighted, file-grade on both sides |
 
