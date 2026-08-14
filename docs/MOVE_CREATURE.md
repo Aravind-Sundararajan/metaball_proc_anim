@@ -1,13 +1,25 @@
 # The creature move: a gesture that states a destination
 
-**Status:** design — revised under two adversarial reviewers
-(editor-binding lens, model/runtime lens) before first commit; they
-materially changed it: the wholesale refusal became an editor pre-flight
-(the transfer's own gate cannot see an unregistered controller), both
-histories now clear on a successful move rather than standing armed, the
-rest pose learned both directions (a partial fold-in for arrivals, a
-source prune against id reuse), and the arrival frame became the
-gesture's own act over the per-room cameras.
+**Status:** landed — one package, `Document.move_creature` plus the
+dock face and one connect, no core motion added and none needed. The
+design was revised under two adversarial reviewers (editor-binding lens,
+model/runtime lens) before first commit; they materially changed it: the
+wholesale refusal became an editor pre-flight (the transfer's own gate
+cannot see an unregistered controller), both histories now clear on a
+successful move rather than standing armed, the rest pose learned both
+directions (a partial fold-in for arrivals, a source prune against id
+reuse), and the arrival frame became the gesture's own act over the
+per-room cameras. What the landing taught back, all of it ordering:
+**the cut is the publisher**, so every piece of §3's bookkeeping has to
+be written into the rooms' state *before* `set_active_room`, never after
+— the arrivals' selection especially, since the cut is what emits
+`selection_changed` for it and a later write would leave the signal
+already spent. Two smaller adaptations, both in §2's menu: an entry
+already names its room, so the disabled reason rides as a compact suffix
+(`meadow — parked`, `flat — 2-D`) rather than repeating the name in the
+door-status sentence; and the dock asks for its frame only when the cut
+actually landed, because a refusal leaves the editor looking at the
+source, which needs no new camera. Suite 1609 → 1630.
 **Arc:** the first authoring gesture after the scene binding;
 `docs/SCENE_BINDING.md` §6 named it out of scope and this picks it up.
 **North star:** select the grazer, say "meadow", and be looking at the
