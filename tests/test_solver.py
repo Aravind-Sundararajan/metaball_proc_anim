@@ -15,6 +15,13 @@ from mesh_xml.core.solver import (
     TICK_DT,
     TICK_HZ,
     SolverConfig,
+    _collide_self,
+    _collide_terrain,
+    _collide_terrain_spans,
+    _integrate,
+    _project,
+    _span_minima,
+    _SPAN_TAPS_MIN,
     fixed_step,
     render_pos,
     step,
@@ -1534,3 +1541,492 @@ class TestReviewProbes:
         assert float(greased.pos[greased.slot(l1)][0]) > drifted + 1e-4, (
             "without grip the same load must keep creeping"
         )
+
+
+class TestWorldSpanContact:
+    """The flesh between chunks meets the terrain (docs/WORLD_CONTACT.md).
+
+    A span's world clearance is ``phi(t) = distance(p(t)) - lerp(r1, r2, t)``,
+    exact for the rendered round cone by the sweep identity, so these cases
+    assert against the field itself. One geometry fact implementation taught
+    the design, load-bearing throughout: ``smooth_min`` of half-space fields
+    is *concave* along any line, so a plane-only world can never produce an
+    interior landing — the chord rule's plane silence is exact jurisdiction,
+    not tuning, and every penetrating feature below needs a cone.
+    """
+
+    REGROUND = np.float32(9.81 * TICK_DT * TICK_DT)
+    """A resting body reburies this much per tick — the contact convention."""
+
+    @staticmethod
+    def _span_phi(body: Body, terrain: Terrain, i: int = 0, j: int = 1) -> np.ndarray:
+        """Dense field clearance along the span between chunk slots i and j."""
+        a, b = body.pos[i], body.pos[j]
+        t = np.linspace(0.0, 1.0, 257)
+        p = a[None, :] + t[:, None] * (b - a)[None, :]
+        r = (1.0 - t) * body.radius[i] + t * body.radius[j]
+        return terrain.distance(p) - r
+
+    @staticmethod
+    def _sphere_only_step(body: Body, config: SolverConfig) -> None:
+        """One tick of the pre-arc solver: every pass but the span one."""
+        _integrate(body, TICK_DT, config, None)
+        _project(body, config)
+        _collide_self(body, config)
+        _collide_terrain(body, config)
+
+    def test_a_shin_span_rests_on_a_ledge_both_spheres_clear(self):
+        """The headline: a sparse span over a narrow step neither endpoint
+        sphere touches. The sphere-only solver drops it straight through the
+        step onto the floor two units down; the span pass rests it on the
+        step at flesh distance, chunks hanging level above it."""
+        terrain = Terrain.flat(-2.0, blend=0.05).add_cone(
+            (0.0, -0.5, -4.0), 0.7, (0.0, -0.5, 4.0), 0.7
+        )
+
+        def rig() -> Body:
+            body = Body()
+            body.add_chunk("a", [-2.5, 0.35, 0.0], radius=0.2)
+            body.add_chunk("b", [2.5, 0.35, 0.0], radius=0.2)
+            body.add_link(0, 1)
+            return body
+
+        config = SolverConfig(terrain=terrain)
+        today = rig()
+        for _ in range(600):
+            self._sphere_only_step(today, config)
+        assert float(today.pos[:, 1].max()) < -1.5, (
+            "the sphere-only solver must fall through the step, or this "
+            "test is not testing the gap"
+        )
+
+        after = rig()
+        run(after, 600, config)
+
+        mid = 0.5 * (after.pos[0] + after.pos[1])
+        assert float(terrain.distance(mid)) == pytest.approx(0.2, abs=2e-2)
+        assert float(after.pos[:, 1].min()) > 0.2
+        assert float(np.abs(after.pos - after.prev_pos).max()) < 1e-4
+
+    def test_a_valley_span_rests_on_the_crease_fillet(self):
+        """The valley twin, dim 2 by construction — §2's counterexample as
+        implementation amended it: the bare two-plane V is concave along
+        every line and can never take an interior landing, so the crease
+        carries its buried capsule, the vocabulary's own landscape fillet.
+        Today's solver buries the bridge 0.083 deep mid-span while both
+        spheres rest cleanly on the walls; after, the span rests on the
+        fillet at the reground convention, carrying the ends clear."""
+        th = np.radians(25.0)
+        terrain = (
+            Terrain(blend=0.3)
+            .add_plane((np.sin(th), np.cos(th), 0.0), 0.0)
+            .add_plane((-np.sin(th), np.cos(th), 0.0), 0.0)
+            .add_cone((0.0, 0.0, 0.0), 0.85, (0.0, 0.0, 0.0), 0.85)
+        )
+
+        def rig() -> Body:
+            body = Body(dim=2)
+            body.add_chunk("a", [-1.6, 1.6], radius=0.2)
+            body.add_chunk("b", [1.6, 1.6], radius=0.2)
+            body.add_link(0, 1)
+            return body
+
+        config = SolverConfig(terrain=terrain, ground_friction=0.7)
+        today = rig()
+        for _ in range(600):
+            self._sphere_only_step(today, config)
+        buried = self._span_phi(today, terrain)
+        spheres = terrain.distance(today.pos) - today.radius
+        assert float(buried.min()) < -0.05
+        assert 0.3 < np.argmin(buried) / 256 < 0.7
+        assert np.abs(spheres).max() < 1e-3, (
+            "both spheres must rest cleanly on the walls while the middle "
+            "is buried, or the burial is not the span pass's to fix"
+        )
+
+        after = rig()
+        run(after, 600, config)
+        resting = self._span_phi(after, terrain)
+        assert float(resting.min()) > -0.02
+        assert float(resting.min()) < 0.01
+        assert 0.3 < np.argmin(resting) / 256 < 0.7
+        assert float(np.abs(after.pos - after.prev_pos).max()) < 1e-4
+
+    def test_plane_silence_is_structural(self):
+        """Over ``Terrain.flat`` discovery keeps zero contacts and the span
+        pass changes nothing — asserted with ``==``, not approx, because a
+        no-op pass is bit-identity by construction. Three silences: the
+        landed ``_drop_chain`` chain resting (real mid-span stretch), a
+        sparse span at the ``g*dt**2``-reground steady state (not only in
+        flight), and the along-groove span. The spy on ``normal`` is the
+        zero-contacts assertion itself: kept contacts are this pass's only
+        normal consumers."""
+        flat = SolverConfig(terrain=Terrain.flat(0.0), iterations=8)
+
+        chain_body = TestTerrainCollision._drop_chain(flat)
+
+        sparse = Body()
+        sparse.add_chunk("a", [-3.0, 0.2, 0.0], radius=0.2)
+        sparse.add_chunk("b", [3.0, 0.2, 0.0], radius=0.2)
+        sparse.add_link(0, 1)
+        run(sparse, 400, flat)
+        sparse.pos[:, 1] -= self.REGROUND
+
+        groove = Body()
+        groove.add_chunk("a", [0.0, 0.2, -3.0], radius=0.2)
+        groove.add_chunk("b", [0.0, 0.2, 3.0], radius=0.2)
+        groove.add_link(0, 1)
+        groove.pos[:, 1] -= self.REGROUND
+
+        def _no_normals(points, eps=None):
+            raise AssertionError("discovery kept a contact over a plane")
+
+        flat.terrain.normal = _no_normals
+        for body in (chain_body, sparse, groove):
+            before = body.pos.copy()
+            _collide_terrain_spans(body, flat)
+            assert (body.pos == before).all()
+
+    def test_the_tie_rule_finds_one_candidate_at_the_plateau_entry(self):
+        """Determinism, pinned the ``_segment_params`` way. A plateau of
+        equal taps yields exactly one candidate, at its entry — a
+        both-sides-strict stencil would find no minimum there and bury an
+        along-groove span silently forever. On the real groove the field is
+        bitwise invariant along z (``z * 0 = 0`` exactly), the entry lands
+        on grid point 0, and the end-grid deferral hands the burial to the
+        spheres that own it equally."""
+        level = np.full((1, _SPAN_TAPS_MIN), 0.125)
+        entries = _span_minima(level)
+        assert entries[0, 0] and int(entries.sum()) == 1
+
+        trench = np.array([[3.0, 2.0, 1.0, 1.0, 1.0, 2.0, 3.0, 3.0]])
+        entries = _span_minima(trench)
+        assert entries[0, 2] and int(entries.sum()) == 1
+
+        th = np.radians(45.0)
+        terrain = (
+            Terrain(blend=0.3)
+            .add_plane((np.sin(th), np.cos(th), 0.0), 0.0)
+            .add_plane((-np.sin(th), np.cos(th), 0.0), 0.0)
+        )
+        body = Body()
+        body.add_chunk("a", [0.0, 0.2, -3.0], radius=0.2)
+        body.add_chunk("b", [0.0, 0.2, 3.0], radius=0.2)
+        body.add_link(0, 1)
+        config = still(terrain=terrain)
+
+        along = np.linspace(body.pos[0], body.pos[1], 33)
+        assert np.unique(terrain.distance(along)).size == 1
+        assert float(terrain.distance(along[:1])[0]) < 0.2, "the groove span starts buried"
+
+        before = body.pos.copy()
+        _collide_terrain_spans(body, config)
+        assert (body.pos == before).all()
+
+        _collide_terrain(body, config)
+        assert body.pos[0, 1] == body.pos[1, 1], "the spheres own it equally"
+        assert float(body.pos[0, 1]) > 0.3
+        assert (body.pos[:, 2] == before[:, 2]).all()
+
+    def test_pinned_ends_bound_the_push_and_are_never_fought(self):
+        """The pinned-end probe, all three clauses. A landing on a span with
+        one pinned end moves the free end exactly the depth — the
+        first-power denominator hands it ``depth``, never ``depth/t``. A
+        both-pinned span is skipped clean. A pinned buried owner's deferred
+        end landing is dropped: authored position wins, everywhere."""
+        needle = Terrain(blend=0.05).add_cone(
+            (-1.4, 0.86, 0.0), 0.05, (-1.4, 0.86, 0.0), 0.05
+        )
+        config = still(terrain=needle)
+
+        probe = Body()
+        probe.add_chunk("p", [-2.0, 1.0, 0.0], radius=0.2, pinned=True)
+        probe.add_chunk("q", [2.0, 1.0, 0.0], radius=0.2)
+        probe.add_link(0, 1)
+        q_before = probe.pos[1].copy()
+        step(probe, TICK_DT, config)
+        moved = float(np.linalg.norm(probe.pos[1] - q_before))
+        assert moved <= 0.11 + 1e-3, "no farther than the depth"
+        assert moved > 0.05, "the free end is the only place the push can go"
+        assert (probe.pos[0] == np.float32([-2.0, 1.0, 0.0])).all()
+
+        both = Body()
+        both.add_chunk("p", [-2.0, 1.0, 0.0], radius=0.2, pinned=True)
+        both.add_chunk("q", [2.0, 1.0, 0.0], radius=0.2, pinned=True)
+        both.add_link(0, 1)
+        before = both.pos.copy()
+        step(both, TICK_DT, config)
+        assert (both.pos == before).all()
+        assert np.isfinite(both.pos).all()
+
+        buried = Body()
+        buried.add_chunk("p", [0.0, -0.5, 0.0], radius=0.2, pinned=True)
+        buried.add_chunk("q", [4.0, 3.0, 0.0], radius=0.2)
+        buried.add_link(0, 1)
+        before = buried.pos.copy()
+        flat = still(terrain=Terrain.flat(0.0))
+        run(buried, 50, flat)
+        assert (buried.pos == before).all()
+        assert float(buried.pos[0, 1]) == pytest.approx(-0.5)
+
+    @staticmethod
+    def _ridge_drift(lateral: float, mass: float = 1.0, mu: float = 0.5) -> float:
+        """Lateral travel of a span draped mid-length over a ridge and pushed
+        along the ridge axis — the direction only span grip resists."""
+        terrain = Terrain.flat(-10.0, blend=0.05).add_cone(
+            (0.0, 0.0, -6.0), 0.5, (0.0, 0.0, 6.0), 0.5
+        )
+        body = Body()
+        body.add_chunk("a", [-3.0, 0.75, 0.0], radius=0.2, mass=mass)
+        body.add_chunk("b", [3.0, 0.75, 0.0], radius=0.2, mass=mass)
+        body.add_link(0, 1)
+        config = SolverConfig(terrain=terrain, ground_friction=mu)
+        for _ in range(250):
+            step(body, TICK_DT, config)
+        push = np.zeros((2, 3), dtype=np.float32)
+        push[:, 2] = lateral
+        for _ in range(300):
+            step(body, TICK_DT, config, forces=push)
+        return float(body.pos[:, 2].mean())
+
+    def test_span_grip_follows_the_worlds_mu(self):
+        """One world, one law: the draped span grips at ``ground_friction``
+        with the floor's own load threshold, ``mu * m * g`` per chunk —
+        held below it, sliding above, doubled mass doubling the holdable
+        load because grip scales with the closure actually applied. At
+        zero mu the same rest skates freely."""
+        threshold = 0.5 * 9.81
+        assert abs(self._ridge_drift(0.6 * threshold)) < 1e-3
+        assert self._ridge_drift(1.4 * threshold) > 1.0
+        assert abs(self._ridge_drift(1.4 * threshold, mass=2.0)) < 1e-3
+        assert self._ridge_drift(2.8 * threshold, mass=2.0) > 1.0
+        assert self._ridge_drift(0.6 * threshold, mu=0.0) > 5.0
+
+    def test_grounded_spans_sharing_a_hub_stay_convex(self):
+        """A hip over a ridge: four grounded spans on one hub chunk. The
+        incidence gather keeps the summed correction inside the deepest
+        single depth — without it the hub would take four full pushes and
+        ride the module's founding NaN story."""
+        terrain = Terrain(blend=0.05).add_cone(
+            (0.0, 0.0, 0.0), 1.0, (0.0, 0.0, 0.0), 1.0
+        )
+        body = Body()
+        body.add_chunk("hub", [0.0, 1.22, 0.0], radius=0.2)
+        rim = [(-2.2, 0.45, 0.0), (2.2, 0.45, 0.0), (0.0, 0.45, -2.2), (0.0, 0.45, 2.2)]
+        for i, at in enumerate(rim):
+            body.add_link(0, body.add_chunk(f"o{i}", list(at), radius=0.2))
+        depth = -min(
+            float(self._span_phi(body, terrain, 0, j).min()) for j in range(1, 5)
+        )
+        assert depth > 0.04, "the spokes must start overlapping the dome"
+
+        hub_before = body.pos[0].copy()
+        _collide_terrain_spans(body, still(terrain=terrain))
+        moved = float(np.linalg.norm(body.pos[0] - hub_before))
+        assert 0.0 < moved <= depth + 1e-4
+
+        config = SolverConfig(terrain=terrain)
+        run(body, 500, config)
+        assert np.isfinite(body.pos).all()
+        assert float(np.abs(body.pos - body.prev_pos).max()) < 1e-4
+        for j in range(1, 5):
+            assert float(self._span_phi(body, terrain, 0, j).min()) > -0.05
+
+    def test_mechanism_spans_collide_with_no_world(self):
+        """``render=False`` marks force without flesh: a mechanism link
+        crossing a buried needle discovers nothing."""
+        terrain = Terrain(blend=0.05).add_cone(
+            (0.1, 0.86, 0.0), 0.05, (0.1, 0.86, 0.0), 0.05
+        )
+        body = Body()
+        body.add_chunk("a", [-2.0, 1.0, 0.0], radius=0.2)
+        body.add_chunk("b", [2.0, 1.0, 0.0], radius=0.2)
+        body.add_link(0, 1, render=False)
+        before = body.pos.copy()
+
+        run(body, 10, still(terrain=terrain))
+
+        assert (body.pos == before).all()
+
+    def test_span_contact_cannot_push_a_chunk_underground(self):
+        """The landed guarantee grows the span case: spans landing on a
+        V-valley's crease capsule scatter their endpoints toward the walls,
+        and the sphere clamp running last keeps every chunk above the field
+        every tick — the ordering's whole point."""
+        terrain = (
+            Terrain(blend=0.3)
+            .add_plane((np.sin(np.radians(45.0)), np.cos(np.radians(45.0)), 0.0), 0.0)
+            .add_plane((-np.sin(np.radians(45.0)), np.cos(np.radians(45.0)), 0.0), 0.0)
+            .add_cone((0.0, 0.1, -4.0), 0.5, (0.0, 0.1, 4.0), 0.5)
+        )
+        body = Body()
+        body.add_chunk("a", [-1.2, 2.2, 0.0], radius=0.2)
+        body.add_chunk("m", [0.0, 2.6, 0.0], radius=0.2)
+        body.add_chunk("b", [1.2, 2.2, 0.0], radius=0.2)
+        body.add_link(0, 1)
+        body.add_link(1, 2)
+        config = SolverConfig(terrain=terrain)
+
+        for _ in range(300):
+            step(body, TICK_DT, config)
+            assert float((terrain.distance(body.pos) - body.radius).min()) >= -1e-3
+
+        assert float(self._span_phi(body, terrain, 0, 1).min()) > -0.02
+        assert float(self._span_phi(body, terrain, 1, 2).min()) > -0.02
+
+    @pytest.mark.parametrize("dim", [3, 2])
+    def test_a_saddle_span_lands_both_ridges_and_holds(self, dim):
+        """Two ridges under one span: both minima are kept the same tick
+        (the correction stays symmetric), and after settling, fifty further
+        ticks move nothing — the late window that would catch lateral
+        pumping between rediscovered minima."""
+        if dim == 3:
+            terrain = (
+                Terrain(blend=0.05)
+                .add_cone((-1.5, 0.0, -4.0), 0.4, (-1.5, 0.0, 4.0), 0.4)
+                .add_cone((1.5, 0.0, -4.0), 0.4, (1.5, 0.0, 4.0), 0.4)
+            )
+        else:
+            terrain = (
+                Terrain(blend=0.05)
+                .add_cone((-1.5, 0.0, 0.0), 0.4, (-1.5, 0.0, 0.0), 0.4)
+                .add_cone((1.5, 0.0, 0.0), 0.4, (1.5, 0.0, 0.0), 0.4)
+            )
+        body = Body(dim=dim)
+        body.add_chunk("a", [-3.5, 0.55, 0.0][:dim], radius=0.2)
+        body.add_chunk("b", [3.5, 0.55, 0.0][:dim], radius=0.2)
+        body.add_link(0, 1)
+
+        before = self._span_phi(body, terrain)
+        _collide_terrain_spans(body, still(terrain=terrain))
+        landed = self._span_phi(body, terrain)
+        half = len(before) // 2
+        assert float(landed[:half].min()) > float(before[:half].min()) + 0.015
+        assert float(landed[half:].min()) > float(before[half:].min()) + 0.015
+        assert float(landed[:half].min()) == pytest.approx(
+            float(landed[half:].min()), abs=1e-6
+        )
+
+        config = SolverConfig(terrain=terrain)
+        run(body, 500, config)
+        mark = body.pos.copy()
+        run(body, 50, config)
+        assert body.pos == pytest.approx(mark, abs=1e-5)
+        assert float(self._span_phi(body, terrain).min()) > -0.02
+
+    @pytest.mark.parametrize("dim", [3, 2])
+    def test_a_ledge_lip_bite_in_a_grounded_end_zone_is_kept(self, dim):
+        """The standing-overlap kill. The owner's end tap is negative every
+        tick from reground, so "defer when the owner's sphere sees the
+        world" would leave this lip inside the flesh forever, corrected
+        only vertically by a clamp that never saw the lateral feature. The
+        bite is kept, and the span moves off the lip."""
+        if dim == 3:
+            terrain = Terrain.flat(0.0, blend=0.05).add_cone(
+                (0.18, 0.2, 0.26), 0.1, (0.18, 0.2, 0.26), 0.1
+            )
+        else:
+            terrain = Terrain.flat(0.0, blend=0.05).add_cone(
+                (0.24, -0.05, 0.0), 0.12, (0.24, -0.05, 0.0), 0.12
+            )
+        body = Body(dim=dim)
+        body.add_chunk("owner", [0.0, 0.2, 0.0][:dim], radius=0.2)
+        body.add_chunk("far", [2.0, 0.2, 0.0][:dim], radius=0.2)
+        body.add_link(0, 1)
+        config = SolverConfig(terrain=terrain, ground_friction=0.35)
+
+        assert float(self._span_phi(body, terrain).min()) < -0.03, (
+            "the lip must start inside the span's flesh"
+        )
+        assert float(terrain.distance(body.pos[:1])[0]) - 0.2 < 0.0, (
+            "the owner is grounded — the rejected predicate would defer"
+        )
+
+        run(body, 400, config)
+
+        assert float(self._span_phi(body, terrain).min()) > -5e-3
+        if dim == 3:
+            assert float(body.pos[0, 2]) < -0.05, "the span slid off the lip"
+        else:
+            assert float(body.pos[0, 1]) > 0.25, "the owner rode up onto the lip"
+        assert np.isfinite(body.pos).all()
+
+    @pytest.mark.parametrize("dim", [3, 2])
+    def test_an_end_grid_landing_is_the_sphere_clamps_exactly(self, dim):
+        """The second half of the kill: a landing on grid point 0 defers,
+        and the tick's result equals the sphere-clamp-only result bitwise —
+        the two passes never both act on one landing."""
+        terrain = Terrain(blend=0.3).add_cone(
+            (0.0, 0.5, 0.0), 0.4, (0.0, 0.5, 0.0), 0.4
+        )
+
+        def rig() -> Body:
+            body = Body(dim=dim)
+            body.add_chunk("a", [0.0, 1.05, 0.0][:dim], radius=0.2)
+            body.add_chunk("b", [3.0, 2.5, 0.0][:dim], radius=0.2)
+            body.add_link(0, 1)
+            return body
+
+        config = still(terrain=terrain)
+        full = rig()
+        step(full, TICK_DT, config)
+
+        clamp_only = rig()
+        _collide_terrain(clamp_only, config)
+
+        assert (full.pos == clamp_only.pos).all()
+        assert float(full.pos[0, 1]) > 1.05, "the clamp did resolve the landing"
+
+    def test_a_blend_pocket_landing_discovers_nothing(self):
+        """A zero normal has no direction to push. The span landing is
+        dropped — no push, no NaN — while the buried chunk stays owned
+        (and stalled) by the sphere pass, whose zero-normal lane pushes
+        nowhere by the same convention."""
+
+        class _PocketField(Terrain):
+            def normal(self, points, eps=None):
+                return np.zeros(np.asarray(points, dtype=np.float64).shape)
+
+        terrain = _PocketField(blend=0.05).add_cone(
+            (0.1, 0.86, 0.0), 0.05, (0.1, 0.86, 0.0), 0.05
+        )
+        body = Body()
+        body.add_chunk("a", [-2.0, 1.0, 0.0], radius=0.2)
+        body.add_chunk("b", [2.0, 1.0, 0.0], radius=0.2)
+        body.add_link(0, 1)
+        body.add_chunk("sunk", [0.1, 0.9, 0.0], radius=0.2)
+        assert float(self._span_phi(body, terrain).min()) < -0.05
+
+        before = body.pos.copy()
+        step(body, TICK_DT, still(terrain=terrain))
+
+        assert (body.pos == before).all()
+        assert np.isfinite(body.pos).all()
+
+    def test_discovery_holds_at_both_ends_of_the_tap_clip(self):
+        """The degradation pair: a penetration just deeper than
+        ``(L + |dr|) / (2 (K - 1))`` is found the tick it exists, on an
+        ordinary span and at the ceiling. Ordinary: L = 4, r = 0.2, K = 21,
+        bound 0.1, needle sunk 0.11 midway between taps. Ceiling: a
+        64-radius span, K raw 65 clipped to 32, bound degraded to 0.207 —
+        about one radius — needle sunk 0.23. Each single call must find and
+        act; the landing closes about half its depth, the linear
+        denominator's stated price."""
+        cases = (
+            ((0.1, 0.86, 0.0), 0.05, (-2.0, 1.0, 0.0), (2.0, 1.0, 0.0), 0.11),
+            ((0.0, 0.93, 0.0), 0.1, (-6.4, 1.0, 0.0), (6.4, 1.0, 0.0), 0.23),
+        )
+        for centre, rho, a, b, depth in cases:
+            terrain = Terrain(blend=0.05).add_cone(centre, rho, centre, rho)
+            body = Body()
+            body.add_chunk("a", list(a), radius=0.2)
+            body.add_chunk("b", list(b), radius=0.2)
+            body.add_link(0, 1)
+            before = float(self._span_phi(body, terrain).min())
+            assert before == pytest.approx(-depth, abs=5e-3)
+
+            _collide_terrain_spans(body, still(terrain=terrain))
+
+            found = float(self._span_phi(body, terrain).min())
+            assert found > before + 0.25 * depth, "the burial was discovered"
+            assert found < 0.0, "and closed at the mid-span rate, not teleported"

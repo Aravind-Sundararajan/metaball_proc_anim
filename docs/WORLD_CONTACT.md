@@ -1,6 +1,21 @@
 # World contact: the flesh meets the world between its chunks
 
-**Status:** design, revised under adversarial review — no code yet.
+**Status:** landed — one pass, three constants, thirteen test cases, and
+one geometry lesson the landing taught back: `smooth_min` of half-space
+fields is *concave along any line*, so no plane-only world can seat an
+interior landing at all — §2's two-plane counterexample does not
+penetrate, §4's chord silence is exact jurisdiction over every
+plane-only world rather than a float courtesy, and the valley twin
+carries a buried crease capsule because every feature this pass can
+keep needs a cone. Measured at landing: a mid-span burial closes at
+exactly half rate per tick (0.110 → 0.055 in one call, the linear
+denominator's stated price); the draped span recovers the floor's load
+law to the constant (holds at 0.6·μmg per chunk, slides at 1.4, doubled
+mass doubles it); the free end beside a pin moves exactly `depth`; the
+degradation pair discovers 0.11 at `K = 21` and 0.23 — one radius — at
+the `K = 32` ceiling; four spans on one hub move it 0.037 against a
+0.049 deepest depth, convex; and every span rest sits the sphere pass's
+own `g·dt² ≈ 6.1e-3` proud-of-zero reground under it.
 Written against the landed self-contact arc, whose §7 names this gap as
 its first residual: "Terrain and floor still meet chunk spheres only,
 so a span can still sag through a ridge between footfalls."
