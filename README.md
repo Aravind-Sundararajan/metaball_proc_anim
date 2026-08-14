@@ -25,6 +25,10 @@ knee, foot — ending near the floor), and press **Rig Legs** in the toolbar; th
 it compiles is the measured self-propelled walker, and the creature walks the way its
 spine points, on footfalls against friction, with no pins and no kinematic carry.
 
+![The quadruped walking: footfalls against friction, no pins, no kinematic carry](docs/walk.gif)
+
+*The same clip, smaller and unquantized: [walk.webm](docs/walk.webm).*
+
 ## What's here
 
 * **A soft-body core** — chunks and typed links under a fixed-timestep Verlet solver
@@ -59,6 +63,10 @@ spine points, on footfalls against friction, with no pins and no kinematic carry
 * **The editor** — document/command architecture with full undo, dockable panels, a
   rooms dock, paint and pattern gestures, a toolbar of the core verbs, and a dark
   theme sourced from the viewport's own palette ([docs/CHROME.md](docs/CHROME.md)).
+
+![The key light swinging a full turn around a frozen stride: the shadow follows the light while the gradient holds the fill](docs/keylight.gif)
+
+*The same clip, smaller and unquantized: [keylight.webm](docs/keylight.webm).*
 
 ## Architecture
 
