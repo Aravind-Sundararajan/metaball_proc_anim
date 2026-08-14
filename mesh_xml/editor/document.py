@@ -139,7 +139,7 @@ class RemoveChunk:
     _radius: float = 0.25
     _inv_mass: float = 1.0
     _meta: dict = field(default_factory=dict)
-    _links: list[tuple[int, float, int, float]] = field(default_factory=list)
+    _links: list[tuple[int, float, int, float, bool]] = field(default_factory=list)
 
     def apply(self, document: Document) -> None:
         body = document.body
@@ -148,9 +148,18 @@ class RemoveChunk:
         self._radius, self._inv_mass = chunk.radius, chunk.inv_mass
         self._meta = dict(chunk.meta)
         # Incident links die with the chunk, so they have to be recorded here or
-        # undo silently returns a chunk with no connections.
+        # undo silently returns a chunk with no connections. ``render`` rides
+        # along with the rest: it decides membership in the surface, and
+        # add_link defaults it True, so a mechanism link restored without it
+        # comes back welded into flesh it was never part of.
         self._links = [
-            (link.a if link.b == self.chunk_id else link.b, link.rest, int(link.type), link.elasticity)
+            (
+                link.a if link.b == self.chunk_id else link.b,
+                link.rest,
+                int(link.type),
+                link.elasticity,
+                link.render,
+            )
             for link in body.links()
             if self.chunk_id in (link.a, link.b)
         ]
@@ -168,10 +177,15 @@ class RemoveChunk:
             id=self.chunk_id,
             meta=self._meta,
         )
-        for other, rest, link_type, elasticity in self._links:
+        for other, rest, link_type, elasticity, render in self._links:
             if body.has_chunk(other):
                 body.add_link(
-                    self.chunk_id, other, rest=rest, type=LinkType(link_type), elasticity=elasticity
+                    self.chunk_id,
+                    other,
+                    rest=rest,
+                    type=LinkType(link_type),
+                    elasticity=elasticity,
+                    render=render,
                 )
 
 

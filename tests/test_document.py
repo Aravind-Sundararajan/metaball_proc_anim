@@ -100,8 +100,17 @@ class TestStructuralCommands:
         assert sorted(document.body.neighbors(target)) == neighbours_before
 
     def test_removing_a_chunk_preserves_link_properties(self, document):
+        """Every field, ``render`` included.
+
+        It is the one that decides membership in the surface, and
+        ``add_link`` defaults it True — so a mechanism link restored without
+        it comes back welded into flesh it was never part of, which reads as
+        the skin growing a limb out of an undo.
+        """
         a, b = ids_of(document)[0], ids_of(document)[1]
-        document.body.set_link(a, b, rest=2.5, type=LinkType.PULL, elasticity=0.4)
+        document.body.set_link(
+            a, b, rest=2.5, type=LinkType.PULL, elasticity=0.4, render=False
+        )
 
         document.do(RemoveChunk(a))
         document.undo()
@@ -110,6 +119,7 @@ class TestStructuralCommands:
         assert link.rest == pytest.approx(2.5)
         assert link.type is LinkType.PULL
         assert link.elasticity == pytest.approx(0.4)
+        assert link.render is False
 
     def test_add_chunk_reuses_its_id_on_redo(self, document):
         """A redo that mints a fresh id orphans every link recorded against it."""
