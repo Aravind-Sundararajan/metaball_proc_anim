@@ -250,6 +250,7 @@ reads flesh, not contact.
   only, so a span can still sag through a ridge between footfalls. A
   real gap, named here, and its own arc: world contact has different
   broadphase economics and none of the graph-exclusion machinery.
+  That arc is now designed — docs/WORLD_CONTACT.md.
 - **No prehension.** A grip a brain commands — grab, hold, release —
   is the controller feature §7 always meant. This arc gives it the
   substrate: commanded holds can be honest contact instead of pinned
