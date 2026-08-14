@@ -1336,3 +1336,341 @@ class TestShadedMode:
         assert pale > dark * 1.3, (
             f"the skin does not carry the glow: pale lift {pale:.2f}, dark {dark:.2f}"
         )
+
+    def test_the_shadows_darkening_swaps_sides_with_the_keys_azimuth(self):
+        """The covariance mirror of the countershade invariance: the cast
+        shadow must move when the key does. Raw luminance across the swing
+        proves nothing — lambert already moves under a swung key, and a
+        dropped ``uniforms()`` entry would leave ``u_shadow_strength`` at
+        GL's 0.0 default with a raw test still green — so each swing
+        renders strength 1 *and* strength 0 and takes the luminance
+        increment between them. The increment cannot lie: it is zero
+        everywhere on a dead feature, and alive it must be substantial on
+        the caster's anti-key side and swap sides with the key."""
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = Body()
+        body.add_chunk("slab", [0.0, -3.2, 0.0], radius=3.0)
+        body.add_chunk("tall", [0.0, 0.35, 0.0], radius=0.55)
+        primitives = sdf.pack(body)
+        groups = sdf.group_table(body)
+        size = (160, 120)
+        camera = OrbitCamera(distance=8.0, yaw=0.0, pitch=32.0)
+        mask = self.hit_mask(primitives, camera, size, groups=groups, prepass=4)
+
+        def increment(direction):
+            def shade(strength):
+                settings = metaball.MetaballSettings(
+                    blend=0.25,
+                    max_distance=20.0,
+                    look=Look(light_direction=direction, shadow_strength=strength),
+                )
+                return self.luminance(
+                    self.render(
+                        primitives, camera, settings, size, groups=groups, prepass=4
+                    )
+                )
+
+            return shade(0.0) - shade(1.0)
+
+        # The slab's top flanks the caster's base at these rows; the camera
+        # sits on +Z, so world -X is screen left.
+        cols = np.arange(size[0])[None, :]
+        band = np.zeros_like(mask)
+        band[48:68, :] = True
+        left = mask & band & (cols >= 52) & (cols < 78)
+        right = mask & band & (cols >= 82) & (cols < 108)
+        assert left.sum() > 300 and right.sum() > 300
+
+        toward_x = increment((0.8, 0.35, 0.25))
+        away_x = increment((-0.8, 0.35, 0.25))
+
+        assert toward_x[left].mean() > 3.0, (
+            f"the +X key cast no shadow on its anti-key side: "
+            f"{toward_x[left].mean():.2f}"
+        )
+        assert toward_x[right].mean() < 1.0, "the shadow leaked to the key side"
+        assert away_x[right].mean() > 3.0, (
+            f"the -X key cast no shadow on its anti-key side: "
+            f"{away_x[right].mean():.2f}"
+        )
+        assert away_x[left].mean() < 1.0, "the shadow did not swap sides"
+
+    def test_shadow_strength_zero_is_byte_identical_to_an_excised_march(self):
+        """The knob's off position is a contract, not an approximation:
+        zero must remove the shadow march without a trace, floor included.
+        The ``key shadow`` marker comments are load-bearing — everything
+        between them is excised here, and the intact shader at
+        shadow_strength 0 must produce the same bytes as the deleted one.
+        The floor is enabled so both call sites — the floor branch and the
+        shaded hit path — are exercised."""
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        source = metaball.fragment_source()
+        begin = source.index("// key shadow -- begin")
+        end_marker = "// key shadow -- end"
+        end = source.index(end_marker)
+        assert 0 < begin < end
+        excised = source[:begin] + source[end + len(end_marker):]
+        assert "8.0 * d / t" not in excised, (
+            "the march leaked outside its markers"
+        )
+
+        primitives = sdf.pack(worm())
+        groups = sdf.group_table(worm())
+        camera = OrbitCamera(distance=10.0, yaw=25.0, pitch=30.0)
+        settings = metaball.MetaballSettings(
+            blend=0.3, max_distance=60.0, look=Look(shadow_strength=0.0)
+        )
+        size = (128, 96)
+
+        original_uniforms = metaball.MetaballSettings.uniforms
+        def floored(self_settings):
+            values = original_uniforms(self_settings)
+            values["u_floor_enabled"] = 1
+            values["u_floor_height"] = -1.0
+            return values
+        metaball.MetaballSettings.uniforms = floored
+        try:
+            intact = self.render(primitives, camera, settings, size, groups=groups)
+            original_source = metaball.fragment_source
+            metaball.fragment_source = lambda: excised
+            try:
+                deleted = self.render(
+                    primitives, camera, settings, size, groups=groups
+                )
+            finally:
+                metaball.fragment_source = original_source
+        finally:
+            metaball.MetaballSettings.uniforms = original_uniforms
+
+        assert np.array_equal(intact, deleted)
+
+    def test_shadow_strength_one_is_byte_identical_to_a_strength_blind_shader(self):
+        """The endpoint is exact by branch, not by arithmetic — made
+        testable rather than trusted: replace the endpoint ternary with raw
+        ``shade`` and the default strength must render the same bytes, so
+        1.0 provably adds no arithmetic to the shadow that already shipped.
+        Floor uniforms on, the cull-invisibility test's patching precedent,
+        so the floor's pre-arc penumbra is part of the claim."""
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        source = metaball.fragment_source()
+        ternary = (
+            "return u_shadow_strength == 1.0\n"
+            "            ? shade\n"
+            "            : clamp(1.0 - u_shadow_strength * (1.0 - shade), 0.0, 1.0);"
+        )
+        assert ternary in source, "the endpoint ternary moved; retune the patch"
+        blind = source.replace(ternary, "return shade;")
+
+        primitives = sdf.pack(worm())
+        groups = sdf.group_table(worm())
+        camera = OrbitCamera(distance=10.0, yaw=25.0, pitch=30.0)
+        settings = metaball.MetaballSettings(
+            blend=0.3, max_distance=60.0, look=Look(shadow_strength=1.0)
+        )
+        size = (128, 96)
+
+        original_uniforms = metaball.MetaballSettings.uniforms
+        def floored(self_settings):
+            values = original_uniforms(self_settings)
+            values["u_floor_enabled"] = 1
+            values["u_floor_height"] = -1.0
+            return values
+        metaball.MetaballSettings.uniforms = floored
+        try:
+            intact = self.render(primitives, camera, settings, size, groups=groups)
+            original_source = metaball.fragment_source
+            metaball.fragment_source = lambda: blind
+            try:
+                unbranched = self.render(
+                    primitives, camera, settings, size, groups=groups
+                )
+            finally:
+                metaball.fragment_source = original_source
+        finally:
+            metaball.MetaballSettings.uniforms = original_uniforms
+
+        assert np.array_equal(intact, unbranched)
+
+    def test_a_pixel_in_full_umbra_shades_as_if_the_key_were_off(self):
+        """The what-the-shadow-gates split (docs/CAST_SHADOWS.md 5) as
+        bytes, and byte equality is the correct strength — do not "fix"
+        this into a tolerance: neither ``shadow_strength`` nor
+        ``light_strength`` feeds ``trace()`` or the coarse pass, so both
+        frames share a byte-identical camera march and seed contents
+        within the run; the hard-break shade is exactly 0.0, and
+        ``key * 0.0`` and ``0.0 * DIFFUSE * lambert`` are both exact
+        zeros; ambient, AO and glow read neither knob and are untouched
+        in both frames. The patch is inset from the occluder's silhouette
+        by the explicit margin below — if a driver ever flakes it, the
+        fix is to shrink the patch toward the umbra's core, never to
+        weaken byte equality."""
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = Body()
+        body.add_chunk("slab", [0.0, -3.4, 0.0], radius=3.0)
+        body.add_chunk("fat", [0.0, 0.9, 0.0], radius=0.9)
+        primitives = sdf.pack(body)
+        groups = sdf.group_table(body)
+        size = (128, 96)
+        camera = OrbitCamera(distance=7.0, yaw=0.0, pitch=35.0)
+        mask = self.hit_mask(primitives, camera, size, groups=groups, prepass=4)
+
+        def frame(shadow_strength, light_strength):
+            settings = metaball.MetaballSettings(
+                blend=0.25,
+                max_distance=20.0,
+                look=Look(
+                    light_direction=(0.0, 1.0, 0.0),
+                    shadow_strength=shadow_strength,
+                    light_strength=light_strength,
+                ),
+            )
+            return self.render(
+                primitives, camera, settings, size, groups=groups, prepass=4
+            )
+
+        # The occluder's screen silhouette starts at row 45 at this camera
+        # and the umbra's slab footprint reaches rows 31..46, cols 50..77;
+        # the patch keeps at least 3 rows and 6 columns inside both edges.
+        patch = np.s_[34:44, 56:72]
+        assert mask[patch].all(), "the patch left the receiver"
+
+        shadowed = frame(1.0, 1.0)
+        key_off = frame(1.0, 0.0)
+        assert np.array_equal(shadowed[patch], key_off[patch])
+
+        # And the patch is real umbra, not a coincidence of dark pixels:
+        # against the shadowless frame the same patch loses the whole key.
+        unshadowed = frame(0.0, 1.0)
+        depth = (
+            self.luminance(unshadowed)[patch] - self.luminance(shadowed)[patch]
+        )
+        assert depth.min() > 40.0, "the patch was not fully in the key's umbra"
+
+    def test_a_body_on_terrain_darkens_the_ground_on_the_anti_key_side(self):
+        """The marquee frame: the floor's shadow generalized to the
+        surface that vetoes the floor. Terrain pixels beside the body
+        darken at strength 1 against strength 0 — and the same patch with
+        the body absent does not, so the darkening is the creature's
+        shadow and not some terrain term moving on its own."""
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        primitives = sdf.pack(worm())
+        terrain = Terrain.flat(-0.8, blend=0.35)
+        size = (160, 120)
+        camera = OrbitCamera(distance=8.0, yaw=0.0, pitch=35.0)
+        creature = self.hit_mask(
+            primitives, camera, size, blend=0.3, max_distance=40.0, prepass=4
+        )
+
+        def shade(strength, prims):
+            settings = metaball.MetaballSettings(
+                blend=0.3,
+                max_distance=40.0,
+                look=Look(
+                    light_direction=(0.85, 0.3, 0.2), shadow_strength=strength
+                ),
+            )
+            return self.luminance(
+                self.render(
+                    prims, camera, settings, size, terrain=terrain, prepass=4
+                )
+            )
+
+        # Ground to the worm's -X side (screen left; the key stands at +X),
+        # with the worm's own silhouette subtracted so every pixel is world.
+        patch = np.zeros(creature.shape, dtype=bool)
+        patch[46:66, 8:56] = True
+        patch &= ~creature
+        assert patch.sum() > 400
+
+        increment = shade(0.0, primitives) - shade(1.0, primitives)
+        assert increment[patch].mean() > 8.0, (
+            f"the body never shadowed the ground: {increment[patch].mean():.2f}"
+        )
+
+        empty = sdf.pack(Body())
+        unfounded = shade(0.0, empty) - shade(1.0, empty)
+        assert np.abs(unfounded[patch]).max() < 0.5, (
+            "the ground darkened with no body to cast"
+        )
+
+    def test_a_limb_shadows_the_flank_it_covers(self):
+        """The AO crease test's shape, aimed at the key term instead of
+        the fill: two stacked chunks under an overhead key, and the lower
+        chunk's covered top darkens at strength 1 against 0 — the cap
+        LIGHTING.md called honest comes off, and a crease in full key
+        finally reads."""
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = Body()
+        body.add_chunk("lower", [0.0, -0.55, 0.0], radius=0.7)
+        body.add_chunk("upper", [0.0, 0.55, 0.0], radius=0.7)
+        primitives = sdf.pack(body)
+        groups = sdf.group_table(body)
+        size = (128, 96)
+        camera = OrbitCamera(distance=5.0, yaw=0.0, pitch=35.0)
+        mask = self.hit_mask(primitives, camera, size, groups=groups, prepass=4)
+
+        def shade(strength):
+            settings = metaball.MetaballSettings(
+                blend=0.25,
+                max_distance=20.0,
+                look=Look(light_direction=(0.0, 1.0, 0.0), shadow_strength=strength),
+            )
+            return self.luminance(
+                self.render(
+                    primitives, camera, settings, size, groups=groups, prepass=4
+                )
+            )
+
+        # The lower chunk's up-facing shoulder, just below the hard-min seam.
+        patch = np.zeros(mask.shape, dtype=bool)
+        patch[40:52, 52:76] = True
+        patch &= mask
+        assert patch.sum() > 200
+
+        increment = shade(0.0) - shade(1.0)
+        assert increment[patch].mean() > 8.0, (
+            f"the upper chunk never shadowed the flank: "
+            f"{increment[patch].mean():.2f}"
+        )
+
+    def test_a_lone_convex_body_keeps_its_lit_side(self):
+        """A convex body's only self-darkening is the terminator's own
+        bands (docs/CAST_SHADOWS.md 2), so the bright half of a lone
+        sphere must agree between strengths within 2/255 — the shadow may
+        not invent occlusion where geometry offers none."""
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = Body()
+        body.add_chunk("a", [0.0, 0.0, 0.0], radius=1.0)
+        primitives = sdf.pack(body)
+        size = (128, 96)
+        camera = OrbitCamera(distance=5.0, yaw=0.0, pitch=0.0)
+        mask = self.hit_mask(primitives, camera, size, prepass=4)
+
+        def shade(strength):
+            settings = metaball.MetaballSettings(
+                blend=0.25,
+                max_distance=20.0,
+                look=Look(
+                    light_direction=(-0.6, 0.5, 0.4), shadow_strength=strength
+                ),
+            )
+            return self.luminance(
+                self.render(primitives, camera, settings, size, prepass=4)
+            )
+
+        # The -X key brightens screen left (the camera sits on +Z).
+        bright = mask & (np.arange(size[0])[None, :] < size[0] // 2)
+        assert bright.sum() > 500
+
+        with_shadow = shade(1.0)[bright].mean()
+        without = shade(0.0)[bright].mean()
+        assert abs(with_shadow - without) <= 2.0, (
+            f"the lit side moved by {abs(with_shadow - without):.2f}/255"
+        )
