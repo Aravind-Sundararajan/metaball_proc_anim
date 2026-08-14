@@ -123,6 +123,13 @@ class MainWindow(QMainWindow):
             rooms.open_requested.connect(self.open_into_scene)
             rooms.remove_requested.connect(self.remove_active_room)
 
+        creatures = self.panels.get("Creatures")
+        if creatures is not None:
+            # The one cut that does ask for a frame: a move's proof is the
+            # arrival on screen, and the camera is the window's resource,
+            # not the dock's (docs/MOVE_CREATURE.md §4).
+            creatures.moved.connect(self.viewport.frame_all)
+
     def _set_rig_overlay(self, visible: bool) -> None:
         self.viewport.show_rig = visible
 

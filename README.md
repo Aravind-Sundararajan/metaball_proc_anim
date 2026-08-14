@@ -147,7 +147,7 @@ things implementation taught the design. They are the honest history of the proj
 | [LIGHTING.md](docs/LIGHTING.md) | The environment becomes the fill: the key, the gradient, occlusion, glow, and the `<look>` record |
 | [CAST_SHADOWS.md](docs/CAST_SHADOWS.md) | The floor's march learns every receiver, the shadow gates the key alone, the price owned as new spend |
 | [WORLD_CONTACT.md](docs/WORLD_CONTACT.md) | Spans meet the terrain through exact capsule clearance, deferring only what the spheres already own |
-| [MOVE_CREATURE.md](docs/MOVE_CREATURE.md) | Designed, next to land: the transfer's editor face — a creature moved between rooms whole, pre-flighted, file-grade on both sides |
+| [MOVE_CREATURE.md](docs/MOVE_CREATURE.md) | The transfer's editor face: a creature moved between rooms whole, pre-flighted, file-grade on both sides |
 
 ## Development
 

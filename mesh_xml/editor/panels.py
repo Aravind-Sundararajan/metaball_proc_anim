@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -1368,10 +1369,17 @@ class CreaturePanel(_Panel):
     The combo is a *view* of connected components — the document recomputes
     it like a blend group, and row *n* here is surface group *n* out there.
     Picking a row selects the creature's chunks, which is what arms every
-    per-creature edit (colour, tempo, duplicate): the roster does not act on
-    creatures directly, it aims the selection the existing gestures already
-    fire from.
+    per-creature edit (colour, tempo, duplicate, move): the roster does not
+    act on creatures directly, it aims the selection the existing gestures
+    already fire from.
     """
+
+    #: A move landed the editor in another room — the window frames the
+    #: arrival. The frame is the gesture's act rather than the cut's: the
+    #: viewport carries each room's stashed camera across a cut, so a bare
+    #: cut lands pointed wherever the author last left the target and not at
+    #: the creature that just arrived (docs/MOVE_CREATURE.md §4).
+    moved = Signal()
 
     def __init__(self, document: Document, parent: QWidget | None = None) -> None:
         super().__init__(document, parent)
@@ -1380,15 +1388,22 @@ class CreaturePanel(_Panel):
         self._name = QLineEdit()
         self._name.setPlaceholderText("unnamed")
         self._duplicate = QPushButton("Duplicate")
+        self._move = QPushButton("Move to…")
         self._empty = _note(
             "No creatures yet. Add (A) grows chunks; linked chunks are one "
             "creature, and every separate cluster is its own."
         )
 
+        herd = QWidget()
+        herd_layout = QHBoxLayout(herd)
+        herd_layout.setContentsMargins(0, 0, 0, 0)
+        herd_layout.addWidget(self._duplicate)
+        herd_layout.addWidget(self._move)
+
         form = _form()
         form.addRow("Creature", self._roster)
         form.addRow("Name", self._name)
-        form.addRow(self._duplicate)
+        form.addRow(herd)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -1409,10 +1424,18 @@ class CreaturePanel(_Panel):
             "carried along. One undo step; the copy takes the selection, so "
             "duplicating again builds a herd."
         )
+        self._move.setToolTip(
+            "Move every creature the selection touches into another room — "
+            "the door's own mechanism without a door, whole or not at all. "
+            "It arrives at its own coordinates, selected, and the editor "
+            "cuts there to show it. File-grade: both rooms dirty and both "
+            "undo histories clear."
+        )
 
         self._roster.activated.connect(self._on_pick)
         self._name.editingFinished.connect(self._on_rename)
         self._duplicate.clicked.connect(self._on_duplicate)
+        self._move.clicked.connect(self._on_move)
         self._follow(
             document.topology_changed,
             document.selection_changed,
@@ -1443,6 +1466,59 @@ class CreaturePanel(_Panel):
     @_user_edit
     def _on_duplicate(self) -> None:
         self._document.duplicate_creature()
+
+    @_user_edit
+    def _on_move(self) -> None:
+        menu = self._move_menu()
+        menu.exec(self._move.mapToGlobal(self._move.rect().bottomLeft()))
+
+    @_user_edit
+    def _on_move_to(self, room: Room) -> None:
+        self._document.move_creature(room)
+        # Only a landed cut earns the frame. A refusal left the editor
+        # looking at the source, which needs no new camera — and the verb
+        # says why on the status line either way.
+        if self._document.room is room:
+            self.moved.emit()
+
+    def _move_menu(self) -> QMenu:
+        """The rooms this creature could move into, built fresh on the click.
+
+        Reading ``scene.rooms`` here and nowhere else is what keeps the list
+        from ever being stale without the panel subscribing to the scene. A
+        room that cannot receive the creature is listed with its reason and
+        disabled — the transfer's refusals answered before they are asked,
+        in the door status's vocabulary.
+        """
+        menu = QMenu(self)
+        document = self._document
+        others = [
+            room for room in document.scene.rooms if room is not document.room
+        ]
+        if not others:
+            action = menu.addAction("No other room — New in the Rooms dock")
+            action.setEnabled(False)
+            return menu
+        for room in others:
+            reason = self._move_reason(room)
+            action = menu.addAction(
+                f"{room.name} — {reason}" if reason else room.name
+            )
+            if reason:
+                action.setEnabled(False)
+            else:
+                action.triggered.connect(
+                    lambda checked=False, room=room: self._on_move_to(room)
+                )
+        return menu
+
+    def _move_reason(self, room: Room) -> str:
+        """Why a room cannot receive the selection, or "" for one that can."""
+        if room.abstracted:
+            return "parked"
+        if room.body.dim != self._document.body.dim:
+            return f"{room.body.dim}-D"
+        return ""
 
     def _current_creature(self) -> Creature | None:
         selection = self._document.selection
@@ -1479,6 +1555,7 @@ class CreaturePanel(_Panel):
             self._name.clear()
         self._name.setEnabled(current is not None)
         self._duplicate.setEnabled(bool(self._document.selection))
+        self._move.setEnabled(bool(self._document.selection))
 
 
 class ControllerPanel(_Panel):

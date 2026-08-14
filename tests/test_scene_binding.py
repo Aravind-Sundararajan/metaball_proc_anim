@@ -13,6 +13,7 @@ from dataclasses import replace
 
 import pytest
 
+from mesh_xml.anim import ControllerStack, tempo
 from mesh_xml.anim.behavior import Grazer
 from mesh_xml.core import Body
 from mesh_xml.editor.document import Document, SetRadius
@@ -44,6 +45,44 @@ def room_with_chain(document: Document, name: str, count: int = 3):
         room.body.add_link(a, b)
     room.body.set_pinned(ids[0], True)
     return room, ids
+
+
+def flat_room(document: Document, name: str = "flat") -> Room:
+    """A 2-D room — the dimension a creature is refused a crossing into."""
+    room = Room(name=name)
+    room.body = Body(dim=2)
+    room.controllers = ControllerStack(room.body)
+    room.body.add_chunk("f0", (0.0, 0.5), radius=0.3)
+    return document.add_room(room)
+
+
+def snapshot(room: Room) -> tuple:
+    """Everything a refusal must leave exactly as it found it."""
+    return (
+        [
+            (cid, tuple(room.body.chunk(cid).pos))
+            for cid in room.body.chunk_ids()
+        ],
+        [(link.a, link.b) for link in room.body.links()],
+        len(room.controllers.controllers),
+    )
+
+
+class _Unreadable:
+    """A controller the serializer never met — the pre-flight's whole reason.
+
+    :func:`mesh_xml.anim.tempo.chunk_refs` answers an empty set for a class
+    the registry does not know, so the transfer's own gate never counts one
+    as travelling and never refuses it: left to the mechanism, the creature
+    would move and this would stay behind holding an id that the source's
+    next Add hands to someone else.
+    """
+
+    def __init__(self, anchor: int) -> None:
+        self.anchor = anchor
+
+    def update(self, ctx) -> None:  # pragma: no cover - never ticked
+        pass
 
 
 class TestTheCut:
@@ -615,3 +654,283 @@ class TestDoors:
         document.set_active_room(meadow)
         roster = document.creatures()
         assert len(roster) == 1 and len(roster[0].chunks) == 3
+
+
+class TestMoveCreature:
+    """The transfer's editor face: one verb, two rooms, no undo stack.
+
+    ``docs/MOVE_CREATURE.md``. The mechanism's own five proofs are in
+    ``test_scene.py`` and this design adds no core motion; what is tested
+    here is everything the editor wraps around it â€” the pre-flight that
+    makes the wholesale promise keepable, the bookkeeping either side of
+    the motion, and the cut that lands on the arrival.
+    """
+
+    def test_the_creature_arrives_whole_at_its_own_coordinates(self, document):
+        source = document.room
+        meadow, incumbents = room_with_chain(document, "meadow")
+        ids = ids_of(document)
+        source.controllers.add(Grazer(ids[0], home=(0.0, 0.5, 0.0)))
+        was = [tuple(source.body.chunk(cid).pos) for cid in ids]
+        document.set_selection([ids[2]])  # one chunk arms the whole creature
+
+        document.move_creature(meadow)
+
+        assert document.room is meadow, "the cut lands on the arrival"
+        assert source.body.chunk_ids() == [], "the source kept nothing"
+        assert source.controllers.controllers == []
+        arrivals = sorted(document.selection)
+        assert len(arrivals) == len(ids)
+        assert sorted(meadow.body.chunk_ids()) == sorted(incumbents + arrivals)
+        assert [tuple(meadow.body.chunk(cid).pos) for cid in arrivals] == was
+        assert len(list(meadow.body.links())) == 2 + 4, "its links came too"
+        assert len(meadow.controllers.controllers) == 1, "and its gait"
+
+    def test_one_chunk_moves_its_component_and_the_neighbour_stays(
+        self, document
+    ):
+        source = document.room
+        meadow, _ = room_with_chain(document, "meadow")
+        other = source.body.add_chunk("other", (9.0, 0.5, 0.0), radius=0.3)
+        tail = source.body.add_chunk("other1", (9.6, 0.5, 0.0), radius=0.3)
+        source.body.add_link(other, tail)
+        document.set_selection([ids_of(document)[0]])
+
+        document.move_creature(meadow)
+
+        assert sorted(source.body.chunk_ids()) == sorted([other, tail])
+        assert len(document.creatures()) == 2, "the meadow's own, plus the guest"
+
+    def test_the_move_dirties_both_rooms(self, document):
+        source = document.room
+        meadow, _ = room_with_chain(document, "meadow")
+        assert not document.any_dirty
+        document.set_selection([ids_of(document)[0]])
+
+        document.move_creature(meadow)
+
+        assert document.room_dirty(source), "a room that lost a creature differs"
+        assert document.room_dirty(meadow), "so does one that gained one"
+
+    def test_a_successful_move_clears_both_histories(self, document):
+        source = document.room
+        meadow, incumbents = room_with_chain(document, "meadow")
+        document.do(SetRadius(ids_of(document)[0], 0.7))
+        document.set_active_room(meadow)
+        document.do(SetRadius(incumbents[1], 0.7))
+        document.undo()  # a redo entry, armed to squat on an arrival's id
+        assert document.can_redo
+        document.set_active_room(source)
+        document.set_selection([ids_of(document)[0]])
+
+        document.move_creature(meadow)
+
+        assert not document.can_undo and not document.can_redo
+        assert document._states[source].undo == []
+        assert document._states[source].redo == []
+        assert document._states[meadow].undo == []
+        assert document._states[meadow].redo == []
+
+    def test_the_arrivals_replace_the_targets_selection(self, document):
+        source = document.room
+        meadow, incumbents = room_with_chain(document, "meadow")
+        document.set_active_room(meadow)
+        document.set_selection([incumbents[0]])
+        document.set_active_room(source)
+        document.set_selection([ids_of(document)[0]])
+
+        document.move_creature(meadow)
+
+        assert document.selection
+        assert incumbents[0] not in document.selection, "replacement, not fold"
+        assert all(meadow.body.has_chunk(cid) for cid in document.selection)
+
+    def test_the_target_rest_pose_gains_the_arrivals_and_keeps_its_own(
+        self, document
+    ):
+        meadow, _ = room_with_chain(document, "meadow")
+        before = dict(document._states[meadow].rest_pose)
+        document.set_selection([ids_of(document)[0]])
+
+        document.move_creature(meadow)
+
+        pose = document._states[meadow].rest_pose
+        arrivals = set(document.selection)
+        assert set(pose) == set(before) | arrivals
+        assert all(pose[cid] == before[cid] for cid in before), "incumbents stand"
+        assert all(
+            pose[cid] == meadow.body.chunk(cid).pos for cid in arrivals
+        ), "folded in where they arrived"
+
+    def test_the_source_rest_pose_forgets_the_departed(self, document):
+        """The unkind proof: ids reuse, so a stale entry binds wrong.
+
+        Move everything out, Add a chunk â€” which takes the departed
+        creature's id back, max-plus-one over an empty room â€” and Reset. A
+        surviving pose entry would pass ``has_chunk`` and teleport the
+        newcomer to where the departed creature once stood.
+        """
+        source = document.room
+        meadow, _ = room_with_chain(document, "meadow")
+        gone = ids_of(document)[0]
+        document.set_selection([gone])
+        document.move_creature(meadow)
+
+        document.set_active_room(source)
+        newcomer = document.create_chunk()
+        assert newcomer == gone, "the id came back around"
+        where = tuple(source.body.chunk(newcomer).pos)
+
+        document.reset_pose()
+
+        assert tuple(source.body.chunk(newcomer).pos) == where
+
+    def test_the_only_creature_leaves_a_legal_empty_room(self, document):
+        source = document.room
+        meadow, _ = room_with_chain(document, "meadow")
+        document.set_selection([ids_of(document)[0]])
+
+        document.move_creature(meadow)
+        document.set_active_room(source)
+
+        assert document.creatures() == []
+        assert document.selection == set()
+        document.step_once()  # an empty room is a legal room, and it ticks
+
+    def test_a_surviving_exit_goal_is_said_out_loud(self, document):
+        meadow, _ = room_with_chain(document, "meadow")
+        ids = ids_of(document)
+        document.room.controllers.add(
+            Grazer(ids[0], home=(0.0, 0.5, 0.0), exit="east")
+        )
+        document.set_selection([ids[0]])
+        said: list[str] = []
+        document.status.connect(said.append)
+
+        document.move_creature(meadow)
+
+        assert "still wants out via 'east'" in said[-1]
+        goal = meadow.controllers.controllers[-1]
+        assert goal.exit == "east", "the editor spends no goal the brain earned"
+
+    def test_a_foreign_room_is_a_programmer_error(self, document):
+        document.set_selection([ids_of(document)[0]])
+        with pytest.raises(ValueError, match="not in this document's scene"):
+            document.move_creature(Room(name="elsewhere"))
+
+    def test_an_empty_selection_is_refused_by_name(self, document):
+        meadow, _ = room_with_chain(document, "meadow")
+        said: list[str] = []
+        document.status.connect(said.append)
+
+        document.move_creature(meadow)
+
+        assert "Select a chunk" in said[-1]
+        assert document.room is not meadow
+
+
+class TestMoveCreatureRefusals:
+    """Every refusal: a status line, no motion, and both histories standing.
+
+    The pre-flight runs before anything moves, so a refused move leaves a
+    room pair bit-identical to the one the gesture found â€” and clean,
+    because a dirty flag over an unmutated room is the mutated-but-clean
+    lie in mirror image.
+    """
+
+    def _armed(self, document):
+        """A selected creature, a target, both rooms clean, both armed."""
+        source = document.room
+        meadow, incumbents = room_with_chain(document, "meadow")
+        document.do(SetRadius(ids_of(document)[0], 0.7))
+        document.set_active_room(meadow)
+        document.do(SetRadius(incumbents[1], 0.7))
+        document.set_active_room(source)
+        document._states[source].dirty = False
+        document._states[meadow].dirty = False
+        document.set_selection([ids_of(document)[0]])
+        return source, meadow
+
+    def _refused(self, document, source, meadow, before, said, phrase):
+        assert phrase in said[-1], said[-1]
+        assert document.room is source, "no cut"
+        assert snapshot(source) == before[0]
+        assert snapshot(meadow) == before[1]
+        assert not document.room_dirty(source)
+        assert not document.room_dirty(meadow)
+        assert document._states[source].undo, "a refusal clears no history"
+        assert document._states[meadow].undo
+
+    def test_a_parked_source_disarms_with_every_other_edit(self, document):
+        source, meadow = self._armed(document)
+        document.set_room_abstracted(source, True)
+        before = (snapshot(source), snapshot(meadow))
+        said: list[str] = []
+        document.status.connect(said.append)
+
+        document.move_creature(meadow)
+
+        self._refused(
+            document, source, meadow, before, said, "Realize 'document'"
+        )
+
+    def test_a_parked_target_is_refused_in_the_doors_vocabulary(self, document):
+        source, meadow = self._armed(document)
+        document.set_room_abstracted(meadow, True)
+        before = (snapshot(source), snapshot(meadow))
+        said: list[str] = []
+        document.status.connect(said.append)
+
+        document.move_creature(meadow)
+
+        self._refused(document, source, meadow, before, said, "is parked")
+
+    def test_rooms_of_different_dimension_are_refused(self, document):
+        source, _ = self._armed(document)
+        flat = flat_room(document)
+        before = (snapshot(source), snapshot(flat))
+        said: list[str] = []
+        document.status.connect(said.append)
+
+        document.move_creature(flat)
+
+        assert "dimension" in said[-1]
+        assert document.room is source
+        assert snapshot(source) == before[0]
+        assert snapshot(flat) == before[1]
+
+    def test_an_unregistered_controller_refuses_the_whole_gesture(self, document):
+        """The test the transfer alone cannot pass.
+
+        Its gate asks ``chunk_refs`` who is travelling, and an unreadable
+        class answers nobody â€” so the flesh would go and the controller
+        would stay. The editor asks the registry instead, before any motion.
+        """
+        source, meadow = self._armed(document)
+        stray = _Unreadable(ids_of(document)[0])
+        assert tempo.chunk_refs(stray) == frozenset(), "invisible to the gate"
+        source.controllers.add(stray)
+        before = (snapshot(source), snapshot(meadow))
+        said: list[str] = []
+        document.status.connect(said.append)
+
+        document.move_creature(meadow)
+
+        self._refused(document, source, meadow, before, said, "_Unreadable")
+        assert stray in source.controllers.controllers
+
+    def test_one_bad_creature_refuses_the_others_too(self, document):
+        """A gesture that half-happens is the lie the pre-flight forbids."""
+        source, meadow = self._armed(document)
+        other = source.body.add_chunk("other", (9.0, 0.5, 0.0), radius=0.3)
+        source.controllers.add(_Unreadable(other))
+        document.set_selection([ids_of(document)[0], other])
+        before = (snapshot(source), snapshot(meadow))
+        said: list[str] = []
+        document.status.connect(said.append)
+
+        document.move_creature(meadow)
+
+        assert "_Unreadable" in said[-1]
+        assert snapshot(source) == before[0]
+        assert snapshot(meadow) == before[1]

@@ -236,7 +236,9 @@ manifest after), and watch it again.
 
 A move-creature-to-room gesture (doors are the sanctioned crossing;
 authoring-time population is Open Into Scene and Duplicate) — since
-designed as the transfer's editor face in docs/MOVE_CREATURE.md. Cross-room
+landed as the transfer's editor face by docs/MOVE_CREATURE.md: the
+Creature dock's Move to…, file-grade on both rooms, clearing both
+histories. Cross-room
 undo or a scene-level history. Coupling the editor to `Scene.activate` (a
 "simulate like the game" mode can exist someday; it is a policy toggle,
 not this rework). Seamless cameras, split views, or a second viewport.

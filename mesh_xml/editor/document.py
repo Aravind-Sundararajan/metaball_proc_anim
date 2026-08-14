@@ -39,6 +39,7 @@ from mesh_xml.render import DrawPoints, sdf
 from mesh_xml.render.gl.camera import CameraPose
 from mesh_xml.render.gl.metaball import MetaballSettings
 from mesh_xml.render.look import Look
+from mesh_xml.scene import transfer
 from mesh_xml.scene.door import Door
 from mesh_xml.scene.room import Room
 from mesh_xml.scene.scene import Scene
@@ -1730,6 +1731,168 @@ class Document(QObject):
         self.do(Macro(commands, text="Duplicate Creature"))
         self.set_selection(copies)
         self.status.emit(f"Duplicated {len(components)} creature(s)")
+
+    def _creature_label(self, component: set[int]) -> str:
+        """What the roster calls this component — the status line's noun.
+
+        The name is the editor's to compose: it rides the component's meta,
+        and the serializer, which is the other half of a move's refusals,
+        only ever knew the class.
+        """
+        chunks = tuple(sorted(component))
+        return next(
+            (
+                creature.label(index)
+                for index, creature in enumerate(self.creatures())
+                if creature.chunks == chunks
+            ),
+            f"Creature at chunk {min(component)}",
+        )
+
+    def _move_refusal(self, components: list[set[int]]) -> str:
+        """Why a move cannot be carried whole, or "" for one that can.
+
+        The pre-flight the transfer cannot run for itself. Its docstring
+        promises a creature that cannot be carried whole is not carried at
+        all, but travel is decided by :func:`mesh_xml.anim.tempo.chunk_refs`,
+        which answers an empty set for a class the serializer does not know
+        — so an unregistered controller never counts as travelling, is never
+        refused, and would simply stay behind on the source stack with its
+        references dangling until id reuse re-binds them to the wrong flesh.
+        So every controller on the stack is probed for registration
+        (unreadable references are unprovable ones), and every travelling
+        controller of every moving component is rebuilt in a dry run through
+        the identity remap — :meth:`Room.realize`'s idiom, and exactly what
+        the real rebuild will do. One refusal refuses everything, before
+        anything has moved.
+        """
+        for controller in self.controllers.controllers:
+            try:
+                serialize.fields_of(type(controller))
+            except serialize.ControllerFormatError:
+                return (
+                    f"Cannot move: {type(controller).__name__} is not a "
+                    "registered controller, so its chunk references cannot "
+                    "be read"
+                )
+        for component in components:
+            for controller in self.controllers.controllers:
+                if not (tempo.chunk_refs(controller) & component):
+                    continue
+                try:
+                    serialize.remap_ids(controller, {})
+                except (TypeError, ValueError) as exc:
+                    return (
+                        f"Cannot move {self._creature_label(component)!r}: "
+                        f"{type(controller).__name__} cannot be rebuilt "
+                        f"({exc})"
+                    )
+        return ""
+
+    def move_creature(self, target: Room) -> None:
+        """Move every creature the selection touches into ``target``.
+
+        File-grade: dirties both rooms, clears both histories, refuses
+        whole with the pre-flight's reasons. Ends with the cut to
+        ``target``, the arrivals selected and in its rest pose.
+
+        The journey itself is
+        :func:`mesh_xml.scene.transfer.move_creature` — the door's own
+        mechanism, and the editor is a second *caller* of it rather than a
+        second policy (``docs/MOVE_CREATURE.md`` §6). What the editor adds
+        is the pre-flight above, the bookkeeping either side of the motion,
+        and the cut that makes the arrival the gesture's visible product.
+        Creatures arrive at their own coordinates: a room is its own frame,
+        and with no door to say where "here" is, the same numbers are the
+        only arrival that states no position the author did not author.
+        """
+        if target not in self._states:
+            raise ValueError(
+                f"room {target.name!r} is not in this document's scene"
+            )
+        if not self.selection:
+            self.status.emit("Select a chunk of the creature to move first")
+            return
+        if self.room.abstracted:
+            self.status.emit(f"Realize {self.room.name!r} to edit it")
+            return
+        if target.abstracted:
+            self.status.emit(
+                f"{target.name!r} is parked; realize it to move a creature "
+                "into it"
+            )
+            return
+        if self.body.dim != target.body.dim:
+            self.status.emit(
+                f"rooms disagree on dimension: {self.body.dim} vs "
+                f"{target.body.dim}"
+            )
+            return
+
+        components = self._selected_creatures()
+        refusal = self._move_refusal(components)
+        if refusal:
+            self.status.emit(refusal)
+            return
+
+        # Composed while the flesh is still here: after the motion these
+        # chunks belong to another room and their meta with them.
+        labels = [self._creature_label(component) for component in components]
+
+        source = self.room
+        source_state = self._states[source]
+        target_state = self._states[target]
+        arrivals: set[int] = set()
+        departed: set[int] = set()
+        goals: list[tuple[str, str]] = []
+        for component, label in zip(components, labels):
+            landing = len(target.controllers.controllers)
+            mapping = transfer.move_creature(source, target, min(component))
+            # As each transfer lands, not once after the loop: a failure the
+            # pre-flight did not imagine must leave mutated rooms marked.
+            self._dirty_room(source)
+            self._dirty_room(target)
+            departed |= set(mapping)
+            arrivals |= set(mapping.values())
+            for controller in target.controllers.controllers[landing:]:
+                goal = getattr(controller, "exit", "")
+                if goal:
+                    goals.append((label, goal))
+
+        # The mapped arrivals only, folded in beside the incumbents — a
+        # whole-room recapture is realize's act, for its own room.
+        target_state.rest_pose.update(
+            {cid: target.body.chunk(cid).pos for cid in sorted(arrivals)}
+        )
+        # And the departed pruned in the same breath: ids allocate at
+        # max-plus-one, so the next Add here reuses one, and a stale entry
+        # would pass has_chunk and teleport the newcomer to where the
+        # departed creature once stood.
+        source_state.rest_pose = {
+            cid: pos
+            for cid, pos in source_state.rest_pose.items()
+            if cid not in departed
+        }
+        # A gesture's product takes the selection the way Add and Duplicate
+        # take it: replacement, not accumulation.
+        target_state.selection = set(arrivals)
+        # Both stacks are armed against bodies that no longer exist — a
+        # revert into a departed id raises, a resurrection lands on a freed
+        # id, a redo squats on an arrival. File-grade surgery clears the
+        # history it invalidates, the way _replace does.
+        for state in (source_state, target_state):
+            state.undo.clear()
+            state.redo.clear()
+
+        self.set_active_room(target)
+        self.scene_changed.emit()
+        moved = ", ".join(repr(label) for label in labels)
+        message = f"Moved {moved} to {target.name!r}"
+        if goals:
+            message += "; " + "; ".join(
+                f"{label!r} still wants out via {goal!r}" for label, goal in goals
+            )
+        self.status.emit(message)
 
     def export_mesh(self, path, resolution: int = 96) -> Path:
         """Polygonise the surface as drawn and write it beside the document.

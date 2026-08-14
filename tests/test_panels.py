@@ -1060,6 +1060,82 @@ class TestCreaturePanel:
         assert undo_depth(document) == 1
         assert panel._roster.count() == 2
 
+    def test_the_move_button_disarms_without_a_selection(self, document):
+        panel = panels.CreaturePanel(document)
+
+        document.set_selection([])
+        assert not panel._move.isEnabled()
+
+        document.set_selection({document.body.chunk_ids()[0]})
+        assert panel._move.isEnabled()
+
+    def test_the_menu_lists_the_other_rooms_and_disables_the_impossible(
+        self, document
+    ):
+        from mesh_xml.anim import ControllerStack
+        from mesh_xml.scene import Room
+
+        meadow = document.add_room(Room(name="meadow"))
+        den = document.add_room(Room(name="den"))
+        document.set_room_abstracted(den, True)
+        flat = Room(name="flat")
+        flat.body = Body(dim=2)
+        flat.controllers = ControllerStack(flat.body)
+        document.add_room(flat)
+        panel = panels.CreaturePanel(document)
+
+        actions = panel._move_menu().actions()
+
+        assert [action.text() for action in actions] == [
+            "meadow",
+            "den — parked",
+            "flat — 2-D",
+        ], "the active room is not among its own destinations"
+        assert [action.isEnabled() for action in actions] == [True, False, False]
+        assert meadow.name == "meadow"  # the enabled entry is the open room
+
+    def test_a_lone_room_says_so_rather_than_offering_nothing(self, document):
+        panel = panels.CreaturePanel(document)
+
+        actions = panel._move_menu().actions()
+
+        assert len(actions) == 1 and not actions[0].isEnabled()
+        assert "No other room" in actions[0].text()
+
+    def test_choosing_a_room_moves_for_real_and_asks_for_the_frame(
+        self, document
+    ):
+        from mesh_xml.scene import Room
+
+        meadow = document.add_room(Room(name="meadow"))
+        document.set_selection({document.body.chunk_ids()[0]})
+        panel = panels.CreaturePanel(document)
+        framed: list[int] = []
+        panel.moved.connect(lambda: framed.append(1))
+
+        panel._move_menu().actions()[0].trigger()
+
+        assert document.room is meadow, "the document moved, not a mock"
+        assert len(meadow.body.chunk_ids()) == 4
+        assert framed == [1], "one frame for one landed cut"
+
+    def test_a_refused_move_asks_for_no_frame(self, document):
+        from mesh_xml.scene import Room
+
+        meadow = document.add_room(Room(name="meadow"))
+        document.set_room_abstracted(meadow, True)
+        document.set_selection({document.body.chunk_ids()[0]})
+        panel = panels.CreaturePanel(document)
+        framed: list[int] = []
+        panel.moved.connect(lambda: framed.append(1))
+
+        # The menu disables a parked room, so this is the path around the UI:
+        # the verb refuses on its own, and the dock asks for no camera.
+        panel._on_move_to(meadow)
+
+        assert document.room is not meadow
+        assert framed == []
+
 
 class TestRoomPanel:
     """The rooms dock: the row selection is the active room, and the cut
