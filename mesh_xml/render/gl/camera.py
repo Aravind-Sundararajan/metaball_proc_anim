@@ -33,6 +33,7 @@ not the ``89.9`` such code usually has to settle for.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -43,6 +44,7 @@ __all__ = [
     "ORBIT_DEGREES_PER_PIXEL",
     "PITCH_LIMIT",
     "ZOOM_PER_WHEEL_UNIT",
+    "CameraPose",
     "OrbitCamera",
     "viewport_aspect",
 ]
@@ -79,6 +81,23 @@ AXIS_VIEWS = {
     "top": (0.0, 90.0),
     "bottom": (0.0, -90.0),
 }
+
+
+@dataclass(frozen=True)
+class CameraPose:
+    """Where a camera is, as plain data: orbit, dolly and pan, nothing else.
+
+    Deliberately only the fields that address the subject's space. The
+    projection toggle, field of view, clip planes and dolly bounds are how a
+    window looks rather than where it looks, and stay put across a restore.
+    The editor stashes one of these per room so a room switch can put the
+    camera back exactly where its author left it.
+    """
+
+    distance: float
+    yaw: float
+    pitch: float
+    target: tuple[float, float, float]
 
 
 def viewport_aspect(width: int, height: int) -> float:
@@ -348,6 +367,30 @@ class OrbitCamera:
             self._target
             + (-right * dx + up * dy).astype(np.float64) * world_per_pixel
         )
+
+    def pose(self) -> CameraPose:
+        """This camera's restorable state, read after the setters' clamps —
+        which is what lets :meth:`set_pose` promise exactness."""
+        return CameraPose(
+            distance=self._distance,
+            yaw=self._yaw,
+            pitch=self._pitch,
+            target=tuple(float(v) for v in self._target),
+        )
+
+    def set_pose(self, pose: CameraPose) -> None:
+        """Restore a captured pose, exactly.
+
+        The dolly bounds widen to reach the pose's distance — the documented
+        response to a subject at a different scale — because a pose some
+        camera once held coming back clamped would be a silent re-framing.
+        """
+        self.min_distance = min(self.min_distance, pose.distance)
+        self.max_distance = max(self.max_distance, pose.distance)
+        self.distance = pose.distance
+        self.yaw = pose.yaw
+        self.pitch = pose.pitch
+        self.target = pose.target
 
     def _rotation(self) -> np.ndarray:
         """``Rx(pitch) @ Ry(yaw)``: rows are right, up, backward."""

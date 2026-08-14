@@ -36,6 +36,7 @@ from mesh_xml.core.solver import SolverConfig
 from mesh_xml.core.terrain import Terrain
 from mesh_xml.io import scene_xml, xml_legacy, xml_v2
 from mesh_xml.render import DrawPoints, sdf
+from mesh_xml.render.gl.camera import CameraPose
 from mesh_xml.render.gl.metaball import MetaballSettings
 from mesh_xml.render.look import Look
 from mesh_xml.scene.door import Door
@@ -431,6 +432,9 @@ class _RoomState:
     structurally cannot contain another room's commands, the file this room
     is, and the surface settings (the blend and the look record save with
     the room's file; march quality and the debug views stay session-only).
+    The camera pose is session-only too: where the author last left the
+    room, ``None`` until a first switch away — which is how the viewport
+    knows a first entry frames instead of restoring.
     """
 
     draw: DrawPoints
@@ -441,6 +445,7 @@ class _RoomState:
     redo: list[Command] = field(default_factory=list)
     path: Path | None = None
     dirty: bool = False
+    camera: CameraPose | None = None
 
 
 class Document(QObject):
@@ -841,6 +846,22 @@ class Document(QObject):
         return [
             room for room in self.scene.rooms if self._states[room].dirty
         ]
+
+    def room_camera(self, room: Room) -> CameraPose | None:
+        """Where the author last left a room's camera, or ``None`` for one
+        never yet left — the viewport frames those instead of restoring."""
+        return self._states[room].camera
+
+    def set_room_camera(self, room: Room, pose: CameraPose) -> None:
+        """Stash the pose a cut is leaving behind.
+
+        Tolerates a room no longer in the scene: opening a manifest replaces
+        the table before the cut lands, so the pose of the room being left
+        has nowhere to go — and nothing to break.
+        """
+        state = self._states.get(room)
+        if state is not None:
+            state.camera = pose
 
     def set_active_room(self, room: Room) -> None:
         """Point the editor at ``room`` — the cut.
@@ -2061,6 +2082,9 @@ class Document(QObject):
         # The active room's pose only: opening a file into this room says
         # nothing about where the others should return to.
         state.rest_pose = {cid: body.chunk(cid).pos for cid in body.chunk_ids()}
+        # The stashed camera described the old contents; carrying it over
+        # would land a future re-entry framed on a file that is gone.
+        state.camera = None
         self.set_dirty(False)
         self.body_replaced.emit()
         self.topology_changed.emit()

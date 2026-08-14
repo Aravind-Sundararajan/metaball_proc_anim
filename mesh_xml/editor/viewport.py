@@ -557,6 +557,9 @@ class MetaballViewport(RaymarchView):
         self.prepass_divisor = 4
 
         self._document = document
+        #: The room the camera's pose currently describes — the stash key
+        #: when the next cut leaves it (:meth:`_carry_camera`).
+        self._camera_room = document.room
         self._texture: PrimitiveTexture = PrimitiveTexture()
         self._terrain: TerrainTexture = TerrainTexture()
         self._groups: GroupTexture = GroupTexture()
@@ -590,6 +593,7 @@ class MetaballViewport(RaymarchView):
 
         document.body_replaced.connect(self._abort_drag)
         document.body_replaced.connect(self._invalidate_geometry)
+        document.body_replaced.connect(self._carry_camera)
         document.topology_changed.connect(self._invalidate_geometry)
         document.chunk_changed.connect(self._on_chunk_changed)
         document.settings_changed.connect(self._invalidate_frame)
@@ -1119,6 +1123,29 @@ class MetaballViewport(RaymarchView):
             self.camera.distance = fit
 
         self.camera_changed.emit()
+
+    def _carry_camera(self) -> None:
+        """Move the camera across the cut: stash the room being left, restore
+        the one arrived in, and frame only a first-ever entry.
+
+        Hangs off ``body_replaced``, which also fires when a file opens
+        *into* the current room — the identity check keeps that path out.
+        Open drops the room's stashed pose and frames from its own caller;
+        only a room switch may restore one (SCENE_BINDING.md §2.3's side
+        table, one field wider).
+        """
+        document = self._document
+        room = document.room
+        if room is self._camera_room:
+            return
+        document.set_room_camera(self._camera_room, self.camera.pose())
+        self._camera_room = room
+        pose = document.room_camera(room)
+        if pose is None:
+            self.frame_all()
+        else:
+            self.camera.set_pose(pose)
+            self.camera_changed.emit()
 
     # ------------------------------------------------------------------
     # picking

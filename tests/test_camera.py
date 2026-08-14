@@ -446,3 +446,31 @@ class TestSnapView:
     def test_an_unknown_view_raises(self):
         with pytest.raises(ValueError, match="unknown view"):
             OrbitCamera().snap_view("isometric")
+
+
+class TestPose:
+    def test_a_pose_round_trips_exactly(self):
+        """Equality, not approx: a restored camera showing almost the same
+        frame is a re-framing, and the per-room stash exists to prevent one."""
+        camera = OrbitCamera(
+            distance=7.25,
+            yaw=123.0,
+            pitch=-37.5,
+            target=(1.0, 2.0, 3.0),
+            orthographic=True,
+        )
+
+        other = OrbitCamera()
+        other.set_pose(camera.pose())
+
+        assert other.pose() == camera.pose()
+        assert not other.orthographic, "projection is not pose; it stays put"
+
+    def test_set_pose_widens_the_dolly_bounds_to_reach(self):
+        """A pose stashed under widened bounds must not come back clamped."""
+        framed = OrbitCamera(max_distance=100.0, distance=80.0)
+
+        camera = OrbitCamera()
+        camera.set_pose(framed.pose())
+
+        assert camera.distance == 80.0

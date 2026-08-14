@@ -12,6 +12,10 @@ following ``tests/test_metaball.py``. Two things there cannot be established any
 other way: that the ``QPainter`` overlay survives being composited over a
 fullscreen GL pass, and that :class:`PrimitiveTexture` reallocates only when the
 primitive count changes. Check the report, not just the exit code.
+
+Between the two sits the camera-across-the-cut class: widget-level because
+the per-room pose stash hangs off the widget's signals, but never painting,
+so it asks for a Qt platform and not a GL context — ``test_app.py``'s bar.
 """
 
 import numpy as np
@@ -39,6 +43,7 @@ from mesh_xml.editor.viewport import (
 )
 from mesh_xml.render import sdf
 from mesh_xml.render.gl.camera import OrbitCamera
+from mesh_xml.scene import Room
 
 gl_context = pytest.importorskip("mesh_xml.render.gl.context")
 
@@ -1200,3 +1205,90 @@ class TestViewport:
         view.frame_all()
         assert view.camera.target[0] == pytest.approx(6.0, abs=0.5)
         assert view.camera.target[1] == pytest.approx(3.0, abs=0.5)
+
+
+# ----------------------------------------------------------------------
+# the camera across the cut
+# ----------------------------------------------------------------------
+
+
+class TestCameraAcrossTheCut:
+    """Per-room cameras: leaving a room stashes its pose, re-entering
+    restores it exactly, and only a first-ever entry frames."""
+
+    @staticmethod
+    def viewport(document: Document) -> MetaballViewport:
+        try:
+            gl_context.ensure_application()
+        except Exception as exc:  # pragma: no cover - no Qt platform plugin
+            pytest.skip(f"no Qt platform available: {exc}")
+        view = MetaballViewport(document)
+        view.resize(*SIZE)
+        return view
+
+    @staticmethod
+    def meadow(document: Document, offset: float = 9.0) -> Room:
+        """A second room, deliberately off-centre so framing it is visible."""
+        room = document.add_room(Room(name="meadow"))
+        ids = [
+            room.body.add_chunk(f"m{i}", (offset + i * 0.9, 1.0, 0.0), radius=0.3)
+            for i in range(3)
+        ]
+        for a, b in zip(ids, ids[1:]):
+            room.body.add_link(a, b)
+        return room
+
+    def test_a_first_entry_frames_the_room(self):
+        document = document_with(worm())
+        view = self.viewport(document)
+        meadow = self.meadow(document, offset=9.0)
+
+        document.set_active_room(meadow)
+
+        assert view.camera.target[0] == pytest.approx(9.9, abs=0.5)
+        assert view.camera.target[1] == pytest.approx(1.0, abs=0.5)
+
+    def test_a_round_trip_restores_the_pose_exactly(self):
+        document = document_with(worm())
+        view = self.viewport(document)
+        first = document.room
+        meadow = self.meadow(document)
+
+        view.camera.yaw = 123.0
+        view.camera.pitch = -37.5
+        view.camera.distance = 7.25
+        view.camera.target = (1.0, 2.0, 3.0)
+        view.camera.orthographic = True
+        left = view.camera.pose()
+
+        document.set_active_room(meadow)
+        view.camera.yaw = 300.0
+        view.camera.distance = 20.0
+        document.set_active_room(first)
+
+        assert view.camera.pose() == left, "the cut is a restore, not a re-frame"
+        # Projection is window state, not pose (SCENE_BINDING.md §2.3): both
+        # cuts — the framing entry and the restoring return — leave it alone.
+        assert view.camera.orthographic
+
+    def test_opening_a_file_does_not_inherit_the_stashed_pose(self):
+        """File > Open lands in the active room; a pose stashed over the old
+        contents must not survive to frame the new file's author."""
+        document = document_with(worm())
+        view = self.viewport(document)
+        first = document.room
+        meadow = self.meadow(document)
+
+        document.set_active_room(meadow)
+        assert document.room_camera(first) is not None, "leaving stashes"
+        document.set_active_room(first)
+        document.open("examples/chubby_worm.xml")
+        assert document.room_camera(first) is None, "open re-arms the frame"
+
+        # The observable half: a later round trip restores the post-open
+        # pose, not the one stashed over the departed contents.
+        view.camera.yaw = 45.0
+        after_open = view.camera.pose()
+        document.set_active_room(meadow)
+        document.set_active_room(first)
+        assert view.camera.pose() == after_open
