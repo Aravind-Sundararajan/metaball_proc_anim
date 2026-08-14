@@ -1558,6 +1558,179 @@ class CreaturePanel(_Panel):
         self._move.setEnabled(bool(self._document.selection))
 
 
+class TerrainPanel(_Panel):
+    """The world: what it is made of, and the two doors flesh crosses to reach it.
+
+    The dock exists because a world has two halves an author cannot grab. The
+    cones are geometry and are authored as geometry — with Add, drag,
+    Ctrl+click placement and every other gesture that already shapes a
+    creature, then promoted here (``docs/TERRAIN_AUTHORING.md`` §2: a chunk
+    graph *is* a cone list). The rest has no shape to grab: the fold radius,
+    the floor's height, and the ledger saying what the world currently
+    contains. Those live here, and nothing else does.
+
+    The grades split the way their owners do. The three verbs are commands —
+    one undo step each, dirtying like every command — while the two numbers
+    are file-grade settings, because a spin box an author drags must not
+    push twenty entries onto a history.
+    """
+
+    def __init__(self, document: Document, parent: QWidget | None = None) -> None:
+        super().__init__(document, parent)
+
+        self._ledger = _note("")
+        self._promote = QPushButton("Make Terrain")
+        self._demote = QPushButton("Edit as Chunks")
+        self._floor = QPushButton("Add Floor")
+        self._blend = _spin(0.0, 5.0, 0.05, decimals=2)
+        self._ground = _spin(-1000.0, 1000.0, 0.1, decimals=2)
+        self._has_ground = QCheckBox("Reference floor at")
+        #: The height the checkbox switched off, kept for switching back on —
+        #: the zero-g memo's argument at the other nullable setting: turning
+        #: a floor off and on again must not silently re-author it to zero.
+        self._ground_memo = 0.0
+
+        verbs = QWidget()
+        verbs_layout = QHBoxLayout(verbs)
+        verbs_layout.setContentsMargins(0, 0, 0, 0)
+        verbs_layout.addWidget(self._promote)
+        verbs_layout.addWidget(self._demote)
+
+        ground_row = QWidget()
+        ground_layout = QHBoxLayout(ground_row)
+        ground_layout.setContentsMargins(0, 0, 0, 0)
+        ground_layout.addWidget(self._has_ground)
+        ground_layout.addWidget(self._ground, 1)
+
+        form = _form()
+        form.addRow("Fold radius", self._blend)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self._ledger)
+        layout.addWidget(verbs)
+        layout.addLayout(form)
+        layout.addWidget(ground_row)
+        layout.addWidget(self._floor)
+        layout.addWidget(
+            _note(
+                "Shape a ridge out of chunks, then promote it — a chunk "
+                "chain and a terrain cone are the same eight numbers. The "
+                "world is one hard surface under the flesh: feet rest on "
+                "it, they do not blend into it."
+            )
+        )
+        layout.addStretch(1)
+
+        self._promote.setToolTip(
+            "Move every creature the selection touches out of the body and "
+            "into the world as cones. One undo step. Refused for anything a "
+            "controller drives — terrain does not walk."
+        )
+        self._demote.setToolTip(
+            "Bring the whole world's cones back as pinned chunks to reshape, "
+            "leaving its planes standing. Pinned because terrain does not "
+            "move; drop the pin yourself if you want it to."
+        )
+        self._floor.setToolTip(
+            "Turn the reference grid into a real plane at its own height. "
+            "The first promoted cone stands the grid down — a set world is "
+            "the world — and this is how the floor comes with it."
+        )
+        self._blend.setToolTip(
+            "The world's own smooth-minimum radius, folding its primitives "
+            "into each other. A plane meeting a ramp gains a fillet at this "
+            "radius, which is what reads as landscape. Saves with the room."
+        )
+        self._ground.setToolTip(
+            "The reference floor's height: the ground everything falls to "
+            "while the world has no plane of its own, and the height Add "
+            "Floor promotes. Saves with the room."
+        )
+
+        self._promote.clicked.connect(self._on_promote)
+        self._demote.clicked.connect(self._on_demote)
+        self._floor.clicked.connect(self._on_add_floor)
+        self._blend.valueChanged.connect(self._on_blend_changed)
+        self._ground.valueChanged.connect(self._on_ground_changed)
+        self._has_ground.toggled.connect(self._on_has_ground_toggled)
+        self._follow(
+            document.terrain_changed,
+            document.settings_changed,
+            document.selection_changed,
+            document.topology_changed,
+            document.body_replaced,
+        )
+
+        self.refresh()
+
+    @_user_edit
+    def _on_promote(self) -> None:
+        self._document.make_terrain()
+
+    @_user_edit
+    def _on_demote(self) -> None:
+        self._document.edit_terrain_as_chunks()
+
+    @_user_edit
+    def _on_add_floor(self) -> None:
+        self._document.add_floor_plane()
+
+    @_user_edit
+    def _on_blend_changed(self, value: float) -> None:
+        self._document.set_terrain_blend(float(value))
+
+    @_user_edit
+    def _on_ground_changed(self, value: float) -> None:
+        self._ground_memo = float(value)
+        self._document.solver_config.ground_y = float(value)
+        self._document.settings_edited()
+
+    @_user_edit
+    def _on_has_ground_toggled(self, on: bool) -> None:
+        # A floorless room is a real world — things fall out of it forever —
+        # so the height is nullable and the checkbox is the only way to say
+        # so. The number survives the switch off, the way zero-g remembers
+        # the gravity it turned down.
+        if on:
+            self._document.solver_config.ground_y = float(self._ground_memo)
+        else:
+            self._ground_memo = float(self._ground.value())
+            self._document.solver_config.ground_y = None
+        self._document.settings_edited()
+
+    def _refresh(self) -> None:
+        document = self._document
+        terrain = document.terrain
+        planes = 0 if terrain is None else len(terrain.planes)
+        cones = 0 if terrain is None else len(terrain.cones)
+        wanted, height = document.floor_reference()
+
+        if planes or cones:
+            self._ledger.setText(f"World: {planes} plane(s), {cones} cone(s).")
+        else:
+            self._ledger.setText(
+                "No world yet. The reference floor is the ground until one "
+                "primitive exists; the first cone stands it down."
+            )
+
+        self._promote.setEnabled(bool(document.selection))
+        self._demote.setEnabled(bool(cones))
+        self._floor.setEnabled(wanted and not planes)
+
+        self._blend.setEnabled(terrain is not None)
+        if terrain is not None:
+            _admit(self._blend, float(terrain.blend))
+            self._blend.setValue(float(terrain.blend))
+
+        has_ground = document.solver_config.ground_y is not None
+        if has_ground:
+            self._ground_memo = height
+        self._has_ground.setChecked(has_ground)
+        self._ground.setEnabled(has_ground)
+        _admit(self._ground, self._ground_memo)
+        self._ground.setValue(self._ground_memo)
+
+
 class ControllerPanel(_Panel):
     """The gait, editable: every controller on the stack, its knobs, its switch.
 
@@ -2391,6 +2564,7 @@ def build_panels(document: Document) -> dict[str, QWidget]:
         "Surface": SurfacePanel(document),
         "Lighting": LightingPanel(document),
         "Solver": SolverPanel(document),
+        "Terrain": TerrainPanel(document),
         "Smoothing": SmoothingPanel(document),
         "Curve": CurvePanel(document),
     }

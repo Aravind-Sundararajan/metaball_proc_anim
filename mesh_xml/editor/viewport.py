@@ -878,24 +878,17 @@ class MetaballViewport(RaymarchView):
         self._pending_rows = None
 
     def _floor_state(self) -> tuple[bool, float]:
-        """The reference grid as actually drawn: shown, unvetoed, undebugged.
+        """The reference grid as actually drawn — the document's derivation.
 
-        One derivation for the frame and the pick — :meth:`_floor_uniforms`
-        and :meth:`surface_hit` both read it, so the grid the author sees and
-        the grid a Ctrl+click answers cannot drift apart (the
+        One owner for the frame, the pick and the plane promotion:
+        :meth:`_floor_uniforms` and :meth:`surface_hit` read it here, and
+        :meth:`Document.add_floor_plane` reads it there, so the grid the
+        author sees, the grid a Ctrl+click answers, and the plane an Add
+        Floor writes cannot drift apart (the
         agreement-instead-of-construction hazard :func:`primitive_chunks`
-        names). Height is ``ground_y``, or the zero the shader has always
-        substituted for a floorless world.
+        names). It lives on the document because all three of its inputs do.
         """
-        terrain = self._document.terrain
-        settings = self._document.metaball
-        drawn = (
-            settings.show_floor
-            and settings.debug_mode == 0
-            and (terrain is None or terrain.is_empty)
-        )
-        height = self._document.solver_config.ground_y
-        return drawn, float(height if height is not None else 0.0)
+        return self._document.floor_state()
 
     def _floor_uniforms(self) -> dict[str, object]:
         """The reference grid's uniforms, owned here rather than by settings.

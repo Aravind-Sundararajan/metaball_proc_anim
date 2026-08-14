@@ -166,8 +166,12 @@ self_contact, self_contact_elasticity, self_friction; two for gravity
 eight and the cast-shadow arc's one — the Surface panel's
 surface-colour setter and the Lighting panel's now eight (the
 azimuth/elevation pair's one write, the swatch picker, the relocated
-horizon setter, and the five strengths) — nineteen in all
-(docs/LIGHTING.md §6, docs/CAST_SHADOWS.md §7). Every view-only site
+horizon setter, and the five strengths), then the terrain-authoring
+arc's two — the Terrain panel's floor height and its floorless toggle —
+twenty-one in all (docs/LIGHTING.md §6, docs/CAST_SHADOWS.md §7,
+docs/TERRAIN_AUTHORING.md §6). That arc's fold radius reaches this
+method one level down instead, through `Document.set_terrain_blend`,
+because a world is rebuilt rather than written into. Every view-only site
 (debug_mode, max_steps, show_floor, overlay, ortho) keeps emitting raw
 and keeps the file clean, which is the document/view split of §6
 enforced where edits happen.

@@ -30,6 +30,7 @@ from mesh_xml.editor.document import (
     SetControllerField,
     SetPinned,
     SetRadius,
+    SetTerrain,
 )
 
 
@@ -146,8 +147,11 @@ class TestStructuralCommands:
         assert document.body.has_link(add.chunk_id, tail)
 
     def test_remove_link_restores_properties(self, document):
+        """``render`` included, for the reason its sibling above gives."""
         a, b = ids_of(document)[0], ids_of(document)[1]
-        document.body.set_link(a, b, rest=3.0, type=LinkType.PUSH, elasticity=0.6)
+        document.body.set_link(
+            a, b, rest=3.0, type=LinkType.PUSH, elasticity=0.6, render=False
+        )
 
         document.do(RemoveLink(a, b))
         assert not document.body.has_link(a, b)
@@ -156,6 +160,7 @@ class TestStructuralCommands:
         link = document.body.link(a, b)
         assert link.rest == pytest.approx(3.0)
         assert link.type is LinkType.PUSH
+        assert link.render is False
 
     def test_duplicate_link_undo_does_not_remove_the_original(self, document):
         """add_link returns False for an existing edge; undo must respect that."""
@@ -1101,3 +1106,260 @@ class TestRefusalsSurface:
 
         with pytest.raises(xml_v2.SchemaError, match="finite"):
             document.open(path)
+
+
+class TestTerrainAuthoring:
+    """``docs/TERRAIN_AUTHORING.md``: the world is flesh that stopped moving.
+
+    The identity the arc stands on is that a chunk graph *is* a cone list â€”
+    the same eight numbers ``sdf.pack`` writes, folded by the same
+    ``round_cone`` â€” so most of what is tested here is that the boundary
+    between the two is lossless in both directions and honest about what it
+    drops at it.
+    """
+
+    def promote_all(self, document):
+        """The body promoted whole; returns the world it produced."""
+        document.set_selection(document.body.chunk_ids())
+        document.make_terrain()
+        return document.terrain
+
+    def said(self, document) -> list[str]:
+        messages: list[str] = []
+        document.status.connect(messages.append)
+        return messages
+
+    def test_set_terrain_round_trips_by_identity(self, document):
+        world = Terrain.flat(0.0)
+        document.do(SetTerrain(world))
+        assert document.terrain is world
+
+        document.undo()
+        assert document.terrain is None
+        document.redo()
+        assert document.terrain is world
+
+    def test_a_terrain_command_dirties_where_the_load_path_does_not(self, document):
+        """The seam the arc exists to close, from both sides."""
+        document.set_terrain(Terrain.flat(0.0))
+        assert not document.dirty, "a loaded world is not an unsaved change"
+
+        document.do(SetTerrain(Terrain.flat(1.0)))
+        assert document.dirty, "an authored one is"
+
+    def test_a_promoted_chain_leaves_the_body_as_cones_in_order(self, document):
+        chain = ids_of(document)
+        positions = [document.body.chunk(cid).pos for cid in chain]
+
+        world = self.promote_all(document)
+
+        assert document.body.chunk_ids() == []
+        assert len(world.cones) == len(chain) - 1, "one cone per rendered link"
+        assert world.cones[0][0:3] == pytest.approx(positions[0])
+        assert world.cones[0][4:7] == pytest.approx(positions[1])
+        assert world.cones[-1][4:7] == pytest.approx(positions[-1])
+
+    def test_a_mechanism_link_promotes_two_spheres_not_a_cone(self, document):
+        """``link_render`` is the promotion rule: what you saw is what promotes."""
+        a, b = ids_of(document)[0], ids_of(document)[1]
+        for chunk in ids_of(document)[2:]:
+            document.body.remove_chunk(chunk)
+        document.body.set_link(a, b, render=False)
+
+        world = self.promote_all(document)
+
+        assert len(world.cones) == 2, "two lone chunks, no fused span"
+        for cone in world.cones:
+            assert cone[0:3] == pytest.approx(cone[4:7]), "a sphere is a == b"
+
+    def test_the_promoted_records_are_the_packers_own_rows(self, document):
+        """An agreement test where construction was not available.
+
+        ``sdf.pack`` is float32, over draw positions, sorted group-major for
+        the renderer's own reasons; a promotion is float64 over body truth.
+        The numbers still have to be the same numbers, and this is what says
+        so if either side ever drifts.
+        """
+        from mesh_xml.render import sdf
+
+        rows = sdf.pack(document.body)
+        world = self.promote_all(document)
+
+        assert len(world.cones) == len(rows)
+        for cone, row in zip(world.cones, rows):
+            assert cone == pytest.approx(np.asarray(row, dtype=np.float64))
+
+    def test_one_undo_restores_body_and_world_together(self, document):
+        chain = ids_of(document)
+        links = document.body.n_links
+
+        self.promote_all(document)
+        assert len(document._undo) == 1, "one gesture, one step"
+
+        document.undo()
+        assert sorted(document.body.chunk_ids()) == sorted(chain)
+        assert document.body.n_links == links
+        assert document.terrain is None
+
+    def test_the_round_trip_is_the_identity_on_the_cone_list(self, document):
+        """Â§9's invariant, and why demote may weld on exact equality."""
+        before = self.promote_all(document).cones.copy()
+
+        document.edit_terrain_as_chunks()
+        self.promote_all(document)
+
+        assert np.array_equal(document.terrain.cones, before)
+
+    def test_demoted_chunks_come_back_pinned_and_welded(self, document):
+        chain = ids_of(document)
+        self.promote_all(document)
+
+        document.edit_terrain_as_chunks()
+
+        back = document.body.chunk_ids()
+        assert len(back) == len(chain), "shared endpoints welded, not doubled"
+        assert all(document.body.chunk(cid).pinned for cid in back)
+        assert document.body.n_links == len(chain) - 1
+        assert document.selection == set(back), "the product takes the selection"
+
+    def test_demote_leaves_the_planes_standing(self, document):
+        document.set_terrain(
+            Terrain.flat(0.0).add_cone((0, 0, 0), 0.3, (1, 0, 0), 0.3)
+        )
+
+        document.edit_terrain_as_chunks()
+
+        assert len(document.terrain.planes) == 1
+        assert len(document.terrain.cones) == 0
+
+    def test_demote_refuses_a_world_with_no_cones(self, document):
+        document.set_terrain(Terrain.flat(0.0))
+        said = self.said(document)
+        before = document.body.chunk_ids()
+
+        document.edit_terrain_as_chunks()
+
+        assert "No terrain cones" in said[-1]
+        assert document.body.chunk_ids() == before
+        assert len(document.terrain.planes) == 1
+
+    def test_promote_refuses_a_driven_creature_whole(self, document):
+        """Terrain does not walk â€” and refusing beats stripping the rig."""
+        from mesh_xml.anim.behavior import Grazer
+
+        document.controllers.add(Grazer(ids_of(document)[0], home=(0.0, 0.0, 0.0)))
+        said = self.said(document)
+        before = ids_of(document)
+
+        self.promote_all(document)
+
+        assert "terrain does not walk" in said[-1]
+        assert document.body.chunk_ids() == before
+        assert document.terrain is None
+        assert not document.can_undo
+
+    def test_promote_refuses_an_empty_selection(self, document):
+        said = self.said(document)
+        document.make_terrain()
+        assert "Select a chunk" in said[-1]
+        assert document.terrain is None
+
+    def test_the_first_cone_names_the_floor_it_repeals(self, document):
+        """The solver picks one world per tick, so the first cone stands the
+        reference floor down. Not compensated â€” said."""
+        document.solver_config.ground_y = 0.5
+        said = self.said(document)
+
+        self.promote_all(document)
+
+        assert "reference floor at 0.5 no longer acts" in said[-1]
+
+    def test_a_later_promotion_says_nothing_about_the_floor(self, document):
+        self.promote_all(document)
+        said = self.said(document)
+
+        document.do(AddChunk("lone", (9.0, 0.0, 0.0), 0.4))
+        self.promote_all(document)
+
+        assert "reference floor" not in said[-1], "it was already repealed"
+
+    def test_add_floor_promotes_the_reference_height(self, document):
+        document.solver_config.ground_y = 0.25
+
+        document.add_floor_plane()
+
+        plane = document.terrain.planes[0]
+        assert plane[:3] == pytest.approx((0.0, 1.0, 0.0))
+        assert plane[3] == pytest.approx(0.25)
+        assert document.dirty and len(document._undo) == 1
+
+    def test_add_floor_answers_the_promotion_that_vetoed_the_grid(self, document):
+        """The verb reads the reference, never the drawn grid.
+
+        Reading the grid would make the promotion's own advice impossible:
+        the cone that repealed the floor is exactly what stands the grid down.
+        """
+        self.promote_all(document)
+        assert not document.floor_state()[0], "the world vetoed the grid"
+
+        document.add_floor_plane()
+
+        assert len(document.terrain.planes) == 1
+
+    def test_add_floor_refuses_what_the_author_turned_off(self, document):
+        document.metaball.show_floor = False
+        said = self.said(document)
+
+        document.add_floor_plane()
+
+        assert "No reference floor" in said[-1]
+        assert document.terrain is None
+
+    def test_add_floor_refuses_a_second_plane(self, document):
+        document.add_floor_plane()
+        said = self.said(document)
+
+        document.add_floor_plane()
+
+        assert "already stands on 1 plane" in said[-1]
+        assert len(document.terrain.planes) == 1
+
+    def test_the_blend_is_a_setting_not_a_step(self, document):
+        self.promote_all(document)
+        depth = len(document._undo)
+
+        document.set_terrain_blend(0.5)
+
+        assert document.terrain.blend == pytest.approx(0.5)
+        assert len(document._undo) == depth, "a dragged number is not a move"
+        assert document.dirty
+        assert len(document.terrain.cones) == 4, "the world kept its shape"
+
+    def test_promotion_drops_what_the_record_cannot_carry(self, document):
+        """A cone is eight floats: paint, names and tempo stop at the boundary."""
+        from mesh_xml.editor.document import CREATURE_META, SetMeta
+
+        for cid in ids_of(document):
+            document.do(SetMeta(cid, CREATURE_META, "ridge"))
+
+        self.promote_all(document)
+        document.edit_terrain_as_chunks()
+
+        assert all(
+            document.body.meta_of(cid).get(CREATURE_META) is None
+            for cid in document.body.chunk_ids()
+        )
+
+    def test_a_promoted_world_saves_and_reopens(self, document, tmp_path):
+        """The arc's whole point: a world that survives the session."""
+        document.add_floor_plane()
+        self.promote_all(document)
+        path = tmp_path / "world.xml"
+        document.save(path)
+
+        reopened = Document()
+        reopened.open(path)
+
+        assert np.allclose(reopened.terrain.planes, document.terrain.planes)
+        assert np.allclose(reopened.terrain.cones, document.terrain.cones)
+        assert not reopened.dirty, "a loaded world is not an unsaved change"

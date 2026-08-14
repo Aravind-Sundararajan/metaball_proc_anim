@@ -1,6 +1,45 @@
 # Terrain authoring: the world is flesh that stopped moving
 
-**Status:** design — not yet reviewed.
+**Status:** landed — three commits, the two prerequisite fixes and the
+arc. §2's identity held exactly: the promoted records are `sdf.pack`'s own
+rows to the float, and the round trip is bit-identical on the cone list.
+Four things the implementation taught back, three of them corrections to
+this document:
+
+1. **§5's Add Floor could not read the drawn grid.** The design had it
+   promote "the grid the author is looking at" — but the first promoted
+   cone is precisely what vetoes the grid, so the promotion's own advice
+   ("Add Floor to keep it") was unfollowable: the verb refused the moment
+   it was needed. The derivation split in two — `floor_reference` (shown,
+   undebugged, at `ground_y`; deliberately blind to the world) and
+   `floor_state` (that, minus the veto, for the frame and the pick). Add
+   Floor asks the prior question, and refuses a *second* plane instead.
+2. **`_after_edit` needed no `_TERRAIN` tuple.** `SetTerrain` applies
+   *through* `set_terrain`, which already emits `terrain_changed` — one
+   emission site whether a world arrives from a file or from a command,
+   rather than the two the design would have created.
+3. **§7's defect had a sibling.** `RemoveLink` drops `render` exactly as
+   `RemoveChunk` did, by the same omission and with the same symptom. Both
+   fixed in the prerequisite commit; the probe is in the test docstrings.
+4. **The floor row needed the zero-g memo.** `ground_y` is nullable, so the
+   dock needs a checkbox as well as a spin — and switching a floor off and
+   back on must not silently re-author its height to zero, which is the
+   argument `SolverPanel`'s gravity memo already made at the other nullable
+   setting.
+5. **§11's example world is a plane, not a capsule ramp, and its step is a
+   boulder.** Two measurements changed it. A buried capsule is a *ridge with
+   sides*: the walker wanders in z and strolls straight past a 2.4-wide one
+   without touching it, so the hillside became an inclined half-space — as
+   wide as the world, impossible to miss, and the thing §1 was describing
+   when it said a plane blending into a ramp gains a fillet. And a fat
+   capsule across the walking line stops this gait at **every height tried**
+   (0.06 blocks as hard as 0.15), which is a limb-tier fact rather than an
+   authoring one; it is now a field note in `TERRAIN.md` §4, and the
+   example's cone sits beside the route as a boulder instead. What ships
+   walks: the quadruped crosses the plain and climbs the hill with every
+   foothold at 0.08 clearance — its own radius — the whole way up.
+
+Suite 1630 → 1660.
 **Arc:** `docs/TERRAIN.md` §5 named "terrain editing UI" out of scope with
 a promise attached — "the format and rendering land first; authoring stays
 in Python this round" — and every other round has since landed on top of
