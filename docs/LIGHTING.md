@@ -404,7 +404,8 @@ row move, and its background half moves panels and asserts dirty.
   the floor's 48-step cost on every creature pixel — the plateau
   note says shading is where frame time now lives, and this arc
   already spends that budget on AO's five taps. Named residual, next
-  look arc's first candidate — and until it lands, AO's ambient-only
+  look arc's first candidate (designed: docs/CAST_SHADOWS.md) — and
+  until it lands, AO's ambient-only
   reach (§2) is the honest cap on how much this arc makes creases
   read.
 - **No halo or bloom.** A miss-pixel halo keyed on the march's
