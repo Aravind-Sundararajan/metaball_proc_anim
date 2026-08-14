@@ -246,11 +246,14 @@ reads flesh, not contact.
 
 ## 7. Deliberately not done
 
-- **Capsule-vs-world.** Terrain and floor still meet chunk spheres
-  only, so a span can still sag through a ridge between footfalls. A
-  real gap, named here, and its own arc: world contact has different
-  broadphase economics and none of the graph-exclusion machinery.
-  That arc is now designed — docs/WORLD_CONTACT.md.
+- **Capsule-vs-world.** Terrain and floor met chunk spheres only, so a
+  span could sag through a ridge between footfalls. A real gap, named
+  here, and its own arc: world contact has different broadphase
+  economics and none of the graph-exclusion machinery. That arc has
+  since landed — docs/WORLD_CONTACT.md — and the sag is retired:
+  rendered spans rest on the terrain at their exact round-cone
+  clearance, deferring to the sphere clamp only the landings it
+  already owns.
 - **No prehension.** A grip a brain commands — grab, hold, release —
   is the controller feature §7 always meant. This arc gives it the
   substrate: commanded holds can be honest contact instead of pinned

@@ -111,7 +111,9 @@ sphere.
 
 Terrain itself (this is its prerequisite, not it). Orientation constraints on
 single chunks. Twist along chains. Contact manifolds beyond the ground plane
-(the body-vs-itself part of that has since landed — §7).
+(the body-vs-itself part of that has since landed — §7 — and the
+body-vs-world part with it: rendered spans meet the terrain too,
+docs/WORLD_CONTACT.md).
 
 ## 6. What implementation taught the design
 

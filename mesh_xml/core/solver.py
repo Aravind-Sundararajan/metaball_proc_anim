@@ -49,6 +49,9 @@ TICK_DT = 1.0 / TICK_HZ
 
 _MAX_CATCHUP_TICKS = 8
 _COINCIDENT_EPS = 1e-6
+_SPAN_TAPS_MIN = 8
+_SPAN_TAPS_MAX = 32
+_CHORD_SLACK = 1e-6
 
 
 @dataclass
@@ -80,6 +83,10 @@ class SolverConfig:
     ``Terrain.flat`` *is* the old floor spelled in the new vocabulary, so the
     terrain simply wins. An empty terrain defers to ``ground_y`` instead: "no
     primitives yet" is an authoring state, not a request to repeal the floor.
+    Against a terrain the rendered spans collide too (docs/WORLD_CONTACT.md):
+    the flesh between chunks rests on the world at its exact round-cone
+    clearance, so a shin's span cannot stand through a ledge both its
+    spheres clear — not optional, because the world's law never was.
 
     ``self_contact`` turns on collision between a body's own flesh — chunk
     spheres and the round cones along rendered links (docs/SELF_CONTACT.md) —
@@ -154,7 +161,12 @@ def step(
     _project(body, config)
     # Shape first, separation second, world last: self-contact may push a
     # chunk toward the floor, and the world passes running after it is what
-    # guarantees the tick cannot end with a chunk underground.
+    # guarantees the tick cannot end with a chunk underground. The world
+    # phase speaks twice — spans, then spheres — in that order because the
+    # sphere clamp is exact and terminal: a span scatter on curved world can
+    # push an endpoint back under the field, and the clamp running last is
+    # what keeps the floor's last word; an end landing the span pass defers
+    # is handed to that same clamp, a re-measurement still ahead this tick.
     _collide_self(body, config)
     # One world per tick: ``Terrain.flat`` and ``ground_y`` describe the same
     # floor, so letting both act would resolve the same contact twice. A set,
@@ -162,6 +174,7 @@ def step(
     # terrain stands down itself, because "no primitives yet" is an authoring
     # state, not a request to repeal a floor the config still asks for.
     if config.terrain is not None and not config.terrain.is_empty:
+        _collide_terrain_spans(body, config)
         _collide_terrain(body, config)
     else:
         _collide_ground(body, config)
@@ -286,6 +299,278 @@ def _collide_terrain(body: Body, config: SolverConfig) -> None:
 
     scale = _grip_scale(grip, slid)
     pos[contact] -= slide * scale[:, None]
+
+
+def _span_minima(phi: np.ndarray) -> np.ndarray:
+    """Candidate landings per tap row: half-open local minima of ``phi``.
+
+    Strict from the left, slack to the right — ``phi[i] < phi[i-1]`` and
+    ``phi[i] <= phi[i+1]``, the end taps one-sided — so a plateau of equal
+    taps yields exactly one candidate, at its entry, deterministically. The
+    tie rule is load-bearing, not defensive: a side-view world's ``n_z = 0``
+    primitives make the field *bitwise* invariant along ``z`` (``z * 0 = 0``
+    exactly), so a span lying along a groove reads bitwise-equal ``phi``
+    across many taps, and a both-sides-strict stencil would find no minimum
+    there and bury the span silently forever. Rows shorter than the
+    rectangle pad by repeating their final tap, which can never carry the
+    strict left drop — padding is inert by construction, and a span's true
+    last tap keeps its one-sided rule through the equal padding beside it.
+    """
+    cand = np.zeros(phi.shape, dtype=bool)
+    cand[:, 0] = phi[:, 0] <= phi[:, 1]
+    cand[:, 1:-1] = (phi[:, 1:-1] < phi[:, :-2]) & (phi[:, 1:-1] <= phi[:, 2:])
+    cand[:, -1] = phi[:, -1] < phi[:, -2]
+    return cand
+
+
+def _collide_terrain_spans(body: Body, config: SolverConfig) -> None:
+    """Rest the flesh between chunks on the terrain, at the world's own mu.
+
+    :func:`_collide_terrain` lifts chunk spheres only; this pass covers the
+    spans between them (docs/WORLD_CONTACT.md), so a shin's span cannot
+    stand through a ledge both its spheres clear. The rendered span is the
+    convex hull of its two end balls, and the linearly-worn ball
+    parametrizes that hull exactly, so the span's world clearance is one
+    scalar function of its parameter — ``phi(t) = distance(p(t)) - r(t)``
+    with both lerped — whose minimum is the *exact* field-convention
+    clearance of the round cone, Lipschitz in ``t`` with constant
+    ``L + |r1 - r2|``. Over a plane no pass is needed at all: the deepest
+    point of a hull of balls against a plane is an end ball, so the sphere
+    clamp already resolves it, and this pass silences itself there
+    *structurally* (the chord rule below), not by branch.
+
+    Discovery is one rectangular batch over prefiltered survivors — no
+    Python loop over spans, no dense span-by-tap grid before compression.
+    A rendered span survives on one midpoint evaluation: contact anywhere
+    along it requires ``distance(mid) < L/2 + max(r1, r2)``, an honest cull
+    because the field is 1-Lipschitz and no centreline point is farther
+    than ``L/2`` from the midpoint. Each survivor lays
+    ``1 + ceil(L / max(r1, r2))`` taps, clipped to ``_SPAN_TAPS_MIN`` /
+    ``_SPAN_TAPS_MAX`` — per span, from its own geometry, so a resting
+    span's landing parameter never re-grids because a stranger entered the
+    prefilter and the friction anchor below stays put. The half-open
+    stencil (:func:`_span_minima`) turns taps into candidates; interior
+    candidates take one free parabolic refinement, vertex clamped to the
+    bracket and kept only where deeper, because ``phi`` is piecewise-smooth
+    and a crease can make the parabola lie. Any penetration deeper than
+    ``(L + |r1 - r2|) / (2 * (K - 1))`` — about half the fat radius — is
+    discovered the tick it exists; at the tap ceiling the bound degrades
+    honestly to about one radius on a 64-radius span.
+
+    Two deferrals, each a proof that the landing is already owned, and no
+    other exclusion: a landing whose refined parameter sits at grid point 0
+    or 1 *is* the sphere pass's contact — same point, same measurement,
+    same normal — and the clamp still ahead this tick resolves it exactly
+    (at a pinned buried end the clamp then drops it: authored position
+    wins, the one convention kept everywhere). And a landing at or above
+    the chord of its own ends — ``phi(t) >= lerp(phi(0), phi(1), t) -
+    _CHORD_SLACK``, the two end taps being exactly the endpoint spheres'
+    own clearances — is bounded by the ends' resolutions: on any flat
+    stretch ``phi`` is affine and equals its chord, so plane worlds keep
+    zero span contacts bit-identically, float-lane jitter falling orders
+    below the slack. Everything else is kept, end zones included: a
+    grounded owner's end tap is negative every tick from reground, and
+    deferring on "the owner's sphere sees the world" would leave a lateral
+    ledge-lip bite in its end zone standing forever.
+
+    Response is the landed barycentric rule with half its terms at zero.
+    The denominator is the first-power interpolated inverse mass over every
+    participant, the world participating at inverse mass zero — its terms
+    are 0, not absent — so a both-pinned span is skipped (the world will
+    not fight a pin) and a landing beside a pinned end hands the free end
+    ``depth``, never ``depth / t``. One scalar per contact scales both
+    endpoint pushes, so they are the barycentric split of a single normal
+    impulse and momentum leaves through the world as through a pin; the
+    share is full — the world passes have never owned an elasticity knob —
+    and mid-span landings under-close by the linear denominator, absorbed
+    by rediscovery. The scatter runs under this pass's own incidence
+    gather, one full incidence per endpoint per contact, weight one over
+    the larger count: a hub chunk carrying several grounded spans sums
+    convexly instead of overshooting. A zero normal — deep in a blend
+    pocket — discovers nothing: a span landing with no direction is
+    dropped (its grip budget would be zero anyway), where the sphere pass
+    instead keeps its contact and stalls the chunk; every chunk in the
+    pocket still belongs to that pass.
+
+    Friction is ``ground_friction`` on the floor's own terms — one world,
+    one law, no second mu. The budget is the normal closure this contact
+    actually applied this tick, ``share * weight * q`` with ``q`` the
+    squared barycentric form that measures the contact *point's*
+    displacement — never the discovered depth, or grip would inflate
+    whenever the scatter under-delivers and mu would become a function of
+    solver structure. Slide reads after the normal scatter from the
+    settled positions against ``prev``, with the parameter and normal
+    frozen from discovery; the world contributes no motion of its own —
+    the slide has no world term because the world is static, and the day
+    moving platforms exist this is the line that learns a velocity. The
+    undo divides by the same ``q`` that measured the closure, so a
+    saturated cap is static grip at the contact point, mid-span included,
+    with the pinned-end lever capped once per contact — grip near a pin
+    degrades with the lever arm instead of flinging — under the same
+    incidence weight as the normal share, acting on ``pos`` and never
+    ``prev``.
+    """
+    terrain = config.terrain
+    if terrain is None or terrain.is_empty:
+        return
+
+    ridx = np.nonzero(body.link_render)[0]
+    if ridx.size == 0:
+        return
+
+    pos = body.pos
+    prev = body.prev_pos
+    radius = body.radius
+    inv_mass = body.inv_mass
+
+    la = body.link_a[ridx]
+    lb = body.link_b[ridx]
+    p1 = pos[la]
+    seg = pos[lb] - pos[la]
+    length = np.sqrt(np.einsum("id,id->i", seg, seg))
+    r1 = radius[la]
+    r2 = radius[lb]
+    mid = p1 + np.float32(0.5) * seg
+    half = np.float32(0.5) * length
+    rmax = np.maximum(r1, r2)
+
+    survivors = np.nonzero(terrain.distance(mid) < half + rmax)[0]
+    if survivors.size == 0:
+        return
+    la, lb = la[survivors], lb[survivors]
+    p1, seg = p1[survivors], seg[survivors]
+    length, r1, r2 = length[survivors], r1[survivors], r2[survivors]
+    rmax = rmax[survivors]
+
+    # The tap rectangle: every survivor's own linspace(0, 1, K_i) in its
+    # first K_i columns, padding repeating the final tap. Spacing is at
+    # most one fat radius, which the Lipschitz bound turns into the
+    # discovery guarantee above.
+    taps = np.clip(
+        1 + np.ceil(length / rmax).astype(np.int64),
+        _SPAN_TAPS_MIN,
+        _SPAN_TAPS_MAX,
+    )
+    cols = np.arange(int(taps.max()), dtype=np.float64)
+    t = np.minimum(cols[None, :] / (taps - 1)[:, None], 1.0)
+    grid = p1[:, None, :] + t[..., None] * seg[:, None, :]
+    phi = terrain.distance(grid) - ((1.0 - t) * r1[:, None] + t * r2[:, None])
+
+    si, ci = np.nonzero(_span_minima(phi))
+    if si.size == 0:
+        return
+    t_hat = t[si, ci]
+    phi_hat = phi[si, ci]
+
+    # One free refinement, interior candidates only: the parabola through
+    # the candidate and its two neighbours costs nothing (all three taps
+    # exist), and its clamped vertex is trusted only where it measures
+    # deeper than the tap.
+    interior = (ci > 0) & (ci < taps[si] - 1)
+    if interior.any():
+        ii = np.nonzero(interior)[0]
+        sv, cv = si[ii], ci[ii]
+        lo, mid_phi, hi = phi[sv, cv - 1], phi[sv, cv], phi[sv, cv + 1]
+        curvature = (lo - mid_phi) + (hi - mid_phi)
+        safe = np.where(curvature > 0.0, curvature, 1.0)
+        offset = 0.5 * (lo - hi) / ((taps[sv] - 1) * safe)
+        offset = np.where(curvature > 0.0, offset, 0.0)
+        t_v = np.clip(t[sv, cv] + offset, t[sv, cv - 1], t[sv, cv + 1])
+        phi_v = terrain.distance(p1[sv] + t_v[:, None] * seg[sv]) - (
+            (1.0 - t_v) * r1[sv] + t_v * r2[sv]
+        )
+        deeper = phi_v < mid_phi
+        t_hat[ii] = np.where(deeper, t_v, t_hat[ii])
+        phi_hat[ii] = np.where(deeper, phi_v, phi_hat[ii])
+
+    # The two deferrals, and the sign of contact itself. A landing at grid
+    # point 0 or 1 IS the sphere pass's contact and the clamp ahead
+    # resolves it exactly; a landing at or above the chord of its own end
+    # taps is bounded by the ends' resolutions — on a plane phi equals its
+    # chord and the pass keeps nothing, structurally.
+    penetrating = phi_hat < 0.0
+    at_end = (t_hat == 0.0) | (t_hat == 1.0)
+    chord = (1.0 - t_hat) * phi[si, 0] + t_hat * phi[si, -1]
+    kept = penetrating & ~at_end & (phi_hat < chord - _CHORD_SLACK)
+    if not kept.any():
+        return
+    si, t_hat = si[kept], t_hat[kept]
+    depth = -phi_hat[kept]
+
+    # Only kept contacts sample their normal — four field evaluations each,
+    # the dominant cost — and a zero normal discovers nothing.
+    normal = terrain.normal(p1[si] + t_hat[:, None] * seg[si])
+    directed = np.einsum("id,id->i", normal, normal) > 0.0
+    if not directed.all():
+        si, t_hat = si[directed], t_hat[directed]
+        depth, normal = depth[directed], normal[directed]
+    if si.size == 0:
+        return
+
+    ca = la[si]
+    cb = lb[si]
+    w_a = inv_mass[ca]
+    w_b = inv_mass[cb]
+
+    # First-power interpolated inverse mass over every participant; the
+    # world's two terms are 0, not absent. Movable iff the live terms keep
+    # the sum positive — a both-pinned span is skipped clean.
+    denom = (1.0 - t_hat) * w_a + t_hat * w_b
+    live = denom > 0.0
+    if not live.all():
+        t_hat, depth, normal, denom = t_hat[live], depth[live], normal[live], denom[live]
+        ca, cb, w_a, w_b = ca[live], cb[live], w_a[live], w_b[live]
+    if ca.size == 0:
+        return
+    share = depth / denom
+
+    # This pass's own incidence gather: one full incidence per endpoint per
+    # contact, weight one over the larger count — several landings on one
+    # hub chunk sum convexly, the module's founding lesson.
+    hits = np.zeros(body.n_chunks, dtype=np.float32)
+    np.add.at(hits, ca, np.float32(1.0))
+    np.add.at(hits, cb, (cb != ca).astype(np.float32))
+    weight = np.float32(1.0) / np.maximum(hits[ca], hits[cb])
+
+    # One scalar per contact, split barycentrically: momentum leaves
+    # through the world exactly as it leaves through a pin.
+    weighted = normal * (share * weight)[:, None]
+    correction = np.zeros_like(pos)
+    np.add.at(correction, ca, (w_a * (1.0 - t_hat))[:, None] * weighted)
+    np.add.at(correction, cb, (w_b * t_hat)[:, None] * weighted)
+    free = inv_mass != 0.0
+    pos[free] += correction[free]
+
+    mu = max(config.ground_friction, 0.0)
+    if mu == 0.0:
+        return
+
+    # Grip on the floor's terms: the budget is the closure actually
+    # applied at the contact point, the slide reads from the settled
+    # positions with the discovery frame frozen, and the world is static —
+    # no world term in the relative motion.
+    q = (1.0 - t_hat) * (1.0 - t_hat) * w_a + t_hat * t_hat * w_b
+    applied = (share * weight) * q
+    moved = (1.0 - t_hat)[:, None] * (pos[ca] - prev[ca]) + t_hat[:, None] * (
+        pos[cb] - prev[cb]
+    )
+    slide = moved - np.einsum("id,id->i", moved, normal)[:, None] * normal
+    slid = np.sqrt(np.einsum("id,id->i", slide, slide))
+
+    grip = mu * applied
+    scale = _grip_scale(grip, slid)
+    # Full delivery through the squared form, the lever capped once per
+    # contact: scale == 1 is static grip at the contact point, mid-span
+    # included, and grip beside a pin degrades with the lever arm instead
+    # of flinging.
+    lever = np.maximum((1.0 - t_hat) * w_a, t_hat * w_b)
+    u = np.minimum(scale / q, 1.0 / lever)
+    undo = slide * (u * weight)[:, None]
+
+    correction = np.zeros_like(pos)
+    np.add.at(correction, ca, (-w_a * (1.0 - t_hat))[:, None] * undo)
+    np.add.at(correction, cb, (-w_b * t_hat)[:, None] * undo)
+    pos[free] += correction[free]
 
 
 def _segment_params(
