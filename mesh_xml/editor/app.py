@@ -88,6 +88,7 @@ class MainWindow(QMainWindow):
                 "Surface",
                 "Lighting",
                 "Solver",
+                "Terrain",
                 "Smoothing",
                 "Curve",
             )

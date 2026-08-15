@@ -60,6 +60,7 @@ __all__ = [
     "AddController",
     "RemoveController",
     "ReplaceControllers",
+    "SetTerrain",
     "Macro",
     "Creature",
 ]
@@ -67,6 +68,23 @@ __all__ = [
 #: Spacing of a grown chunk, in radii. Under 2.0 on purpose: neighbours must
 #: overlap for the smooth-min surface to read as one volume rather than beads.
 _GROW_SPACING = 1.6
+
+def _vec3(pos) -> tuple[float, float, float]:
+    """A body position as a cone record's three floats: 2-D lives at ``z = 0``.
+
+    The widening :meth:`~mesh_xml.core.terrain.Terrain._widen` performs for
+    every question asked of it, performed once at the boundary where flesh
+    becomes world — a promoted 2-D ridge is the same ridge sliced back.
+    """
+    values = [float(v) for v in pos]
+    values += [0.0] * (3 - len(values))
+    return values[0], values[1], values[2]
+
+
+def _fit(xyz, dim: int) -> tuple[float, ...]:
+    """A cone endpoint back in the body's dimension — the widening undone."""
+    return tuple(float(v) for v in xyz[:dim])
+
 
 #: Chunk-meta key carrying the creature's authored name. Painted across the
 #: component like colour and tempo: a creature has no object of its own, so
@@ -139,7 +157,7 @@ class RemoveChunk:
     _radius: float = 0.25
     _inv_mass: float = 1.0
     _meta: dict = field(default_factory=dict)
-    _links: list[tuple[int, float, int, float]] = field(default_factory=list)
+    _links: list[tuple[int, float, int, float, bool]] = field(default_factory=list)
 
     def apply(self, document: Document) -> None:
         body = document.body
@@ -148,9 +166,18 @@ class RemoveChunk:
         self._radius, self._inv_mass = chunk.radius, chunk.inv_mass
         self._meta = dict(chunk.meta)
         # Incident links die with the chunk, so they have to be recorded here or
-        # undo silently returns a chunk with no connections.
+        # undo silently returns a chunk with no connections. ``render`` rides
+        # along with the rest: it decides membership in the surface, and
+        # add_link defaults it True, so a mechanism link restored without it
+        # comes back welded into flesh it was never part of.
         self._links = [
-            (link.a if link.b == self.chunk_id else link.b, link.rest, int(link.type), link.elasticity)
+            (
+                link.a if link.b == self.chunk_id else link.b,
+                link.rest,
+                int(link.type),
+                link.elasticity,
+                link.render,
+            )
             for link in body.links()
             if self.chunk_id in (link.a, link.b)
         ]
@@ -168,10 +195,15 @@ class RemoveChunk:
             id=self.chunk_id,
             meta=self._meta,
         )
-        for other, rest, link_type, elasticity in self._links:
+        for other, rest, link_type, elasticity, render in self._links:
             if body.has_chunk(other):
                 body.add_link(
-                    self.chunk_id, other, rest=rest, type=LinkType(link_type), elasticity=elasticity
+                    self.chunk_id,
+                    other,
+                    rest=rest,
+                    type=LinkType(link_type),
+                    elasticity=elasticity,
+                    render=render,
                 )
 
 
@@ -272,15 +304,25 @@ class RemoveLink:
     _rest: float = 0.0
     _type: int = 0
     _elasticity: float = 1.0
+    _render: bool = True
 
     def apply(self, document: Document) -> None:
         link = document.body.link(self.a, self.b)
         self._rest, self._type, self._elasticity = link.rest, int(link.type), link.elasticity
+        # As in RemoveChunk: render decides membership in the surface and
+        # add_link defaults it True, so a restore without it welds a
+        # mechanism link into flesh it was never part of.
+        self._render = link.render
         document.body.remove_link(self.a, self.b)
 
     def revert(self, document: Document) -> None:
         document.body.add_link(
-            self.a, self.b, rest=self._rest, type=LinkType(self._type), elasticity=self._elasticity
+            self.a,
+            self.b,
+            rest=self._rest,
+            type=LinkType(self._type),
+            elasticity=self._elasticity,
+            render=self._render,
         )
 
 
@@ -388,6 +430,31 @@ class ReplaceControllers:
 
     def revert(self, document: Document) -> None:
         document.controllers = self._previous
+
+
+@dataclass
+class SetTerrain:
+    """Install a world, keeping the old one for undo.
+
+    The :class:`ReplaceControllers` shape, and legal without a deep copy for
+    the reason :meth:`Document.set_terrain` already states: identity *is* the
+    change signal, so every consumer in the codebase treats a
+    :class:`~mesh_xml.core.terrain.Terrain` as immutable and a swap is the
+    only way a world changes. Applying routes through ``set_terrain``, which
+    is where ``terrain_changed`` is emitted — one emission site, whether the
+    world arrived from a file or from this command.
+    """
+
+    terrain: "Terrain | None"
+    text: str = "Set Terrain"
+    _previous: "Terrain | None" = None
+
+    def apply(self, document: Document) -> None:
+        self._previous = document.terrain
+        document.set_terrain(self.terrain)
+
+    def revert(self, document: Document) -> None:
+        document.set_terrain(self._previous)
 
 
 @dataclass
@@ -1043,15 +1110,50 @@ class Document(QObject):
         changed" and an unchanged one as nothing to do. Mutating a ``Terrain``
         in place therefore goes unnoticed on purpose — build a new one.
 
-        Not a :class:`Command` and not a dirty-flag edit: terrain authoring
-        stays in Python this round (TERRAIN.md §4), and :meth:`adopt` routes
-        through here after :meth:`_replace` has already declared the document
-        clean — a loaded world must not reopen as an unsaved change.
+        **This is the load path, and it stays clean on purpose**:
+        :meth:`adopt` routes through here after :meth:`_replace` has already
+        declared the document clean, and a loaded world must not reopen as an
+        unsaved change. The *edit* path is :class:`SetTerrain`, which applies
+        through here and dirties the room the way every command does
+        (``docs/TERRAIN_AUTHORING.md`` §6) — the same view-only/file-grade
+        split the settings arc drew, arriving at the one setting that never
+        got it.
         """
         if terrain is self.solver_config.terrain:
             return
         self.solver_config.terrain = terrain
         self.terrain_changed.emit()
+
+    def floor_reference(self) -> tuple[bool, float]:
+        """The reference floor the author asked for, world or no world.
+
+        Shown, not in a debug view, at ``ground_y`` — or the zero the shader
+        has always substituted for a floorless room. Deliberately blind to
+        the terrain: this is the question :meth:`add_floor_plane` asks —
+        *what floor was this room standing on?* — and the answer must not
+        change because the author just promoted a hill.
+        """
+        settings = self.metaball
+        height = self.solver_config.ground_y
+        return (
+            settings.show_floor and settings.debug_mode == 0,
+            float(height if height is not None else 0.0),
+        )
+
+    def floor_state(self) -> tuple[bool, float]:
+        """The reference grid as actually drawn: the reference, minus the veto.
+
+        The one derivation, here rather than in the viewport because all
+        three of its owners are here — the room's settings, its solver
+        config and its world — and everything that must agree about the
+        drawn grid reads it: the frame's uniforms and the pick's trace. The
+        veto is stated exactly once, in this sentence: a terrain *is* the
+        world, and a grid slicing through its hills would read as a second,
+        contradictory floor.
+        """
+        wanted, height = self.floor_reference()
+        terrain = self.terrain
+        return wanted and (terrain is None or terrain.is_empty), height
 
     # ------------------------------------------------------------------
     # settings
@@ -1731,6 +1833,234 @@ class Document(QObject):
         self.do(Macro(commands, text="Duplicate Creature"))
         self.set_selection(copies)
         self.status.emit(f"Duplicated {len(components)} creature(s)")
+
+    # ------------------------------------------------------------------
+    # the world
+    # ------------------------------------------------------------------
+
+    def _cones_of(self, component: set[int]) -> list[tuple]:
+        """One cone record per rendered link, then one per unclaimed chunk.
+
+        :func:`mesh_xml.render.sdf.pack`'s own rule, in the format's
+        vocabulary: that function writes ``[pos[a], rad[a], pos[b], rad[b]]``
+        for every rendered link and ``[centre, r, centre, r]`` for every
+        chunk no rendered link fuses, and
+        :meth:`~mesh_xml.core.terrain.Terrain.add_cone` builds that exact
+        record. A chunk graph *is* a cone list
+        (``docs/TERRAIN_AUTHORING.md`` §2), which is why a mechanism link
+        promotes nothing and its chunks promote as spheres — what the author
+        saw is what promotes.
+
+        Link order is the body's own, so promotion appends features in the
+        order they were built and the round trip of §9 is the identity.
+        """
+        body = self.body
+        records: list[tuple] = []
+        claimed: set[int] = set()
+        for link in body.links():
+            if not link.render or link.a not in component or link.b not in component:
+                continue
+            claimed |= {link.a, link.b}
+            a, b = body.chunk(link.a), body.chunk(link.b)
+            records.append((a.pos, a.radius, b.pos, b.radius))
+        for cid in sorted(component - claimed):
+            chunk = body.chunk(cid)
+            records.append((chunk.pos, chunk.radius, chunk.pos, chunk.radius))
+        return records
+
+    def _grown_terrain(self, cones: list[tuple], blend: float | None = None) -> Terrain:
+        """The room's world with ``cones`` appended, as a new object.
+
+        Rebuilt through the public authoring methods rather than by touching
+        the arrays, so a promotion answers to the same validation a file
+        does — and rebuilt at all because identity is the change signal
+        (:meth:`set_terrain`): a world that mutated in place would go
+        unnoticed by every consumer that draws it. A world's first cone
+        arrives at :class:`~mesh_xml.core.terrain.Terrain`'s own default
+        blend, deliberately not the room's metaball blend: the terrain folds
+        with its own radius (``docs/TERRAIN.md`` §1), and borrowing the
+        flesh's would re-open the one-value-two-owners drift.
+        """
+        current = self.terrain
+        if blend is None:
+            blend = current.blend if current is not None else Terrain().blend
+        grown = Terrain(blend=blend)
+        if current is not None:
+            for plane in current.planes:
+                grown.add_plane(plane[:3], float(plane[3]))
+            for cone in current.cones:
+                grown.add_cone(cone[0:3], float(cone[3]), cone[4:7], float(cone[7]))
+        for a, ra, b, rb in cones:
+            grown.add_cone(_vec3(a), float(ra), _vec3(b), float(rb))
+        return grown
+
+    def set_terrain_blend(self, blend: float) -> None:
+        """Retune the world's fold radius — a setting, not a structural edit.
+
+        File-grade like every other tuning knob (``docs/SETTINGS.md`` §5):
+        it dirties the room and lands on no undo stack, because it is a
+        number an author drags rather than a move they make. The world is
+        rebuilt rather than written into, for :meth:`set_terrain`'s reason.
+        """
+        terrain = self.terrain
+        if terrain is None:
+            self.status.emit("No world to blend — promote a feature first")
+            return
+        rebuilt = self._grown_terrain([], blend=blend)
+        if rebuilt.blend == terrain.blend:
+            return
+        self.set_terrain(rebuilt)
+        self.settings_edited()
+
+    def make_terrain(self) -> None:
+        """Graduate every creature the selection touches into the world.
+
+        The flesh leaves the body and its cones append to the room's
+        terrain — one undo step, because the removals are commands already
+        and :class:`SetTerrain` is the world's (§6). Refused whole: a
+        component any controller references is a creature, not a feature,
+        and a gesture that promoted half a selection would be the
+        mutated-but-clean lie in a new costume.
+        """
+        if not self.selection:
+            self.status.emit("Select a chunk of the feature to make terrain")
+            return
+        components = self._selected_creatures()
+        for component in components:
+            driving = sum(
+                1
+                for controller in self.controllers.controllers
+                if tempo.chunk_refs(controller) & component
+            )
+            if driving:
+                self.status.emit(
+                    f"{self._creature_label(component)!r} is driven by "
+                    f"{driving} controller(s); terrain does not walk"
+                )
+                return
+
+        # Said before the flesh goes: after the removals the floor's own
+        # state has already flipped and the chunks are gone with their meta.
+        was_bare = self.terrain is None or self.terrain.is_empty
+        drawn, height = self.floor_state()
+        labels = [self._creature_label(component) for component in components]
+
+        cones: list[tuple] = []
+        commands: list[Command] = []
+        for component in components:
+            cones += self._cones_of(component)
+            commands += [
+                RemoveChunk(cid, text="Make Terrain") for cid in sorted(component)
+            ]
+        commands.append(SetTerrain(self._grown_terrain(cones), text="Make Terrain"))
+        if not self.do(Macro(commands, text="Make Terrain")):
+            return
+
+        moved = ", ".join(repr(label) for label in labels)
+        message = f"Promoted {moved} — {len(cones)} cone(s)"
+        if was_bare and drawn:
+            # The solver picks one world per tick, so the first cone stands
+            # the reference floor down. Not compensated — said.
+            message += (
+                f"; the reference floor at {height:g} no longer acts, "
+                "Add Floor to keep it"
+            )
+        self.status.emit(message)
+
+    def edit_terrain_as_chunks(self) -> None:
+        """Hand the world's cones back as pinned flesh, planes left standing.
+
+        Total rather than selection-grown, because terrain has no components
+        to select half of: it is one field folded from one list, and two
+        features that touch are one surface with no seam. Endpoints that
+        match exactly in position and radius weld into one chunk — exact,
+        not tolerant, because every shared endpoint this editor wrote came
+        from copying one chunk's own numbers into two records.
+
+        They come back **pinned**: terrain does not move, and unpinned flesh
+        collapses the moment the transport runs. The pin is the author's to
+        drop; promotion ignores it either way.
+        """
+        terrain = self.terrain
+        if terrain is None or not len(terrain.cones):
+            self.status.emit("No terrain cones to edit; planes have no chunks")
+            return
+
+        next_id = max(self.body.chunk_ids(), default=-1) + 1
+        welded: dict[tuple, int] = {}
+        commands: list[Command] = []
+        arrivals: list[int] = []
+        pairs: list[tuple[int, int]] = []
+        for cone in terrain.cones:
+            ends = []
+            for centre, radius in ((cone[0:3], cone[3]), (cone[4:7], cone[7])):
+                key = (float(centre[0]), float(centre[1]), float(centre[2]), float(radius))
+                if key not in welded:
+                    welded[key] = next_id
+                    commands.append(
+                        AddChunk(
+                            f"terrain{len(welded) - 1}",
+                            _fit(key[:3], self.body.dim),
+                            radius=float(radius),
+                            pinned=True,
+                            chunk_id=next_id,
+                            text="Edit Terrain as Chunks",
+                        )
+                    )
+                    arrivals.append(next_id)
+                    next_id += 1
+                ends.append(welded[key])
+            if ends[0] != ends[1]:
+                pairs.append((ends[0], ends[1]))
+        commands += [
+            AddLink(a, b, text="Edit Terrain as Chunks") for a, b in pairs
+        ]
+
+        kept = Terrain(blend=terrain.blend)
+        for plane in terrain.planes:
+            kept.add_plane(plane[:3], float(plane[3]))
+        # The world stands down first, so the flesh is never briefly both.
+        if not self.do(
+            Macro(
+                [SetTerrain(kept, text="Edit Terrain as Chunks")] + commands,
+                text="Edit Terrain as Chunks",
+            )
+        ):
+            return
+        self.set_selection(arrivals)
+        self.status.emit(
+            f"{len(terrain.cones)} cone(s) back as {len(arrivals)} pinned chunk(s); "
+            f"{len(kept.planes)} plane(s) left standing"
+        )
+
+    def add_floor_plane(self) -> None:
+        """Promote the reference floor into a real half-space plane.
+
+        The floor the author asked for, at the height they asked for it
+        (:meth:`floor_reference`) — never one they never turned on, because
+        promoting an invisible plane is inventing one. It reads the
+        *reference*, not the drawn grid, and the distinction is load-bearing:
+        the first promoted cone already vetoed the grid, and the whole point
+        of this verb is to answer that promotion. Afterwards the veto is
+        honest — the plane it stands the grid down for is now really there.
+        """
+        wanted, height = self.floor_reference()
+        if not wanted:
+            self.status.emit(
+                "No reference floor to promote — show the floor in Surface, "
+                "and leave the debug views"
+            )
+            return
+        terrain = self.terrain
+        if terrain is not None and len(terrain.planes):
+            self.status.emit(
+                f"The world already stands on {len(terrain.planes)} plane(s)"
+            )
+            return
+        grown = self._grown_terrain([])
+        grown.add_plane((0.0, 1.0, 0.0), height)
+        if self.do(SetTerrain(grown, text="Add Floor")):
+            self.status.emit(f"Floor plane at {height:g} is the world now")
 
     def _creature_label(self, component: set[int]) -> str:
         """What the roster calls this component — the status line's noun.

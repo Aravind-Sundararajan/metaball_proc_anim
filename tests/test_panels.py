@@ -126,6 +126,7 @@ class TestBuildPanels:
             "Surface",
             "Lighting",
             "Solver",
+            "Terrain",
             "Smoothing",
             "Curve",
         ]
@@ -488,6 +489,113 @@ class TestSolverPanel:
         tooltip = panel._iterations.toolTip()
         assert "8%" in tooltip
         assert "softness" in tooltip
+
+
+class TestTerrainPanel:
+    """The world's dock: a ledger, two doors, and the numbers with no shape."""
+
+    def world(self, document):
+        from mesh_xml.core.terrain import Terrain
+
+        return Terrain.flat(0.0).add_cone((0, 0, 0), 0.3, (1, 0, 0), 0.3)
+
+    def test_the_ledger_counts_what_the_world_is_made_of(self, document):
+        panel = panels.TerrainPanel(document)
+        assert "No world yet" in panel._ledger.text()
+
+        document.set_terrain(self.world(document))
+        document.terrain_changed.emit()
+
+        assert "1 plane(s), 1 cone(s)" in panel._ledger.text()
+
+    def test_promote_disarms_without_a_selection(self, document):
+        panel = panels.TerrainPanel(document)
+        document.set_selection([])
+        assert not panel._promote.isEnabled()
+
+        document.set_selection({document.body.chunk_ids()[0]})
+        assert panel._promote.isEnabled()
+
+    def test_demote_disarms_without_cones(self, document):
+        from mesh_xml.core.terrain import Terrain
+
+        panel = panels.TerrainPanel(document)
+        assert not panel._demote.isEnabled()
+
+        document.set_terrain(Terrain.flat(0.0))
+        document.terrain_changed.emit()
+        assert not panel._demote.isEnabled(), "planes have no chunks"
+
+        document.set_terrain(self.world(document))
+        document.terrain_changed.emit()
+        assert panel._demote.isEnabled()
+
+    def test_add_floor_disarms_once_the_world_stands_on_one(self, document):
+        panel = panels.TerrainPanel(document)
+        assert panel._floor.isEnabled()
+
+        panel._floor.click()
+
+        assert len(document.terrain.planes) == 1
+        assert not panel._floor.isEnabled()
+
+    def test_the_verbs_move_the_document_not_a_mock(self, document):
+        panel = panels.TerrainPanel(document)
+        document.set_selection(document.body.chunk_ids())
+
+        panel._promote.click()
+        assert document.body.chunk_ids() == []
+        assert len(document.terrain.cones) == 3
+
+        panel._demote.click()
+        assert len(document.body.chunk_ids()) == 4
+        assert len(document.terrain.cones) == 0
+
+    def test_the_ground_spin_round_trips_and_dirties(self, document):
+        panel = panels.TerrainPanel(document)
+        assert document.solver_config.ground_y == pytest.approx(0.0)
+        assert panel._has_ground.isChecked(), "a room founds itself with a floor"
+
+        panel._ground.setValue(0.75)
+
+        assert document.solver_config.ground_y == pytest.approx(0.75)
+        assert document.dirty
+        assert undo_depth(document) == 0, "a setting, not a step"
+
+    def test_unchecking_the_floor_says_floorless_rather_than_zero(self, document):
+        """And switching it back on must not re-author the height to zero."""
+        panel = panels.TerrainPanel(document)
+        panel._ground.setValue(0.75)
+
+        panel._has_ground.setChecked(False)
+
+        assert document.solver_config.ground_y is None
+        assert not panel._ground.isEnabled()
+        assert panel._ground.value() == pytest.approx(0.75), "the number is remembered"
+
+        panel._has_ground.setChecked(True)
+        assert document.solver_config.ground_y == pytest.approx(0.75)
+
+    def test_the_blend_spin_reaches_the_world_without_a_history_entry(self, document):
+        panel = panels.TerrainPanel(document)
+        document.set_terrain(self.world(document))
+        document.terrain_changed.emit()
+
+        panel._blend.setValue(0.45)
+
+        assert document.terrain.blend == pytest.approx(0.45)
+        assert len(document.terrain.cones) == 1, "the world kept its shape"
+        assert undo_depth(document) == 0
+
+    def test_a_world_pushed_by_the_document_adds_nothing(self, document):
+        """The refresh writes the blend spin; the spin must not write back."""
+        panel = panels.TerrainPanel(document)
+        document.set_terrain(self.world(document))
+        document.terrain_changed.emit()
+
+        assert panel._blend.value() == pytest.approx(0.3)
+        assert undo_depth(document) == 0
+        assert not document.dirty
 
 
 class TestSmoothingPanel:

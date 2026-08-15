@@ -75,12 +75,15 @@ did not come from. The undo/redo menu items re-read on switch, which the
 suite's `history_changed` already causes.
 
 That answers room *content*. Scene *structure* — add room, remove room,
-rename, and door records — takes the stance terrain already holds:
-`set_terrain` is deliberately not a `Command` and not a dirty-flag edit
+rename, and door records — takes the stance terrain held at the time:
+`set_terrain` was deliberately not a `Command` and not a dirty-flag edit
 ("terrain authoring stays in Python this round"), and `Room.doors` is
-authored "like terrain is authored" by its own docstring. **Rooms and doors
-are file-grade edits this round**: explicit, immediate, not on any undo
-stack — the same weight as File > New. This dissolves the paradox a
+authored "like terrain is authored" by its own docstring. Terrain has
+since moved — `docs/TERRAIN_AUTHORING.md` made the world's edits ordinary
+commands and left `set_terrain` as the load path — but the argument below
+never leaned on terrain's grade, only on the paradox, so **rooms and doors
+stay file-grade edits**: explicit, immediate, not on any undo stack — the
+same weight as File > New. This dissolves the paradox a
 per-room design otherwise trips on (undoing "Remove Room" from a history
 that died with the room) without inventing a third history for it.
 

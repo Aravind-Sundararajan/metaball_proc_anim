@@ -100,14 +100,28 @@ same friction budget standing still keeps. A guard test fails if any future
 change lets walking beat the static limit: that would be the contact model
 inventing grip.
 
-Two field notes for authors. High friction is not free: at μ = 0.5 the walker
+Three field notes for authors. High friction is not free: at μ = 0.5 the walker
 *wedges* on the steep fillet at the ramp's base where μ = 0.35 skates over it —
 sticky feet trip on terrain features that looser feet slide past. And
 ``upload_terrain`` is the terrain upload, not the inherited raw ``upload``;
 the raw path leaves the plane/cone split at zero and the world silently does
 not draw.
 
+The third was measured while building ``examples/ramp_world.xml``: **a fat
+capsule laid across the walking line stops the quadruped at every height
+tried** — 0.06 blocks it exactly as hard as 0.15, so this is not the feet
+failing to lift but the gait meeting a face it has no answer for. Ramps it
+climbs; steps it does not take. Two consequences for authoring: put a ramp
+under anything you want walked up, and prefer a *plane* for that ramp — a
+buried capsule is a ridge with sides, and a wandering walker strolls past a
+ridge rather than onto it. Whether a gait should learn to step is a question
+for the limb tier, not this one.
+
 ## 5. Not in scope
 
 Moving platforms. Terrain editing UI (the format and rendering land first;
-authoring stays in Python this round). Creature-vs-creature collision. Boxes.
+authoring stays in Python this round) — **since landed by
+docs/TERRAIN_AUTHORING.md**, on the observation this round was already
+sitting on without noticing: a chunk graph *is* a cone list, so the world
+is shaped with the creature's own tools and promoted. Creature-vs-creature
+collision. Boxes.
