@@ -156,11 +156,6 @@ class DrawPoints:
             raise ValueError(f"stiffness must be in [0, 1], got {stiffness}")
         self.stiffness[body.slot(chunk_id)] = stiffness
 
-    def set_damping(self, body: Body, chunk_id: int, damping: float) -> None:
-        if not 0.0 <= damping <= 1.0:
-            raise ValueError(f"damping must be in [0, 1], got {damping}")
-        self.damping[body.slot(chunk_id)] = damping
-
     def snap(self, body: Body) -> None:
         """Drop all lag and velocity. For teleports, where lag would read as a smear."""
         self.sync(body)

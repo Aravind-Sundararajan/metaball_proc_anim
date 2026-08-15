@@ -24,7 +24,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
-import xml.etree.ElementTree as ET
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal
@@ -538,7 +537,7 @@ class Document(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         #: The scene this document edits: rooms in the plural, one clock
-        #: between them (``docs/ROOMS.md`` package 6). A fresh document is a
+        #: between them. A fresh document is a
         #: scene of one room — the null case that must stay bit-for-bit the
         #: old editor. A document *is still* one room at a time: ``room`` is
         #: the active one, drawn by the viewport and addressed by every
@@ -739,7 +738,7 @@ class Document(QObject):
         The editor's cut deliberately is not :meth:`Scene.activate`: rooms
         stay realized unless an author parks one here, because an
         abstracted far side is a closed door and a scene-wide policy would
-        show every traveller waiting in a doorway (SCENE_BINDING.md §3).
+        show every traveller waiting in a doorway.
         Not an edit: no command, no dirty flag — a simulation state, like
         running. Realizing recaptures the rest pose, because the rebuilt
         creature standing wherever its brain walked *is* the pose Reset
@@ -1097,7 +1096,7 @@ class Document(QObject):
         Read from :attr:`solver_config` rather than stored again: the solver
         collides with the terrain and the viewport draws it, and two copies of
         a world is exactly how the picture and the physics would drift apart.
-        One world (TERRAIN.md §2) — this property is a view of it, not a
+        One world — this property is a view of it, not a
         second home for it.
         """
         return self.solver_config.terrain
@@ -1115,7 +1114,7 @@ class Document(QObject):
         declared the document clean, and a loaded world must not reopen as an
         unsaved change. The *edit* path is :class:`SetTerrain`, which applies
         through here and dirties the room the way every command does
-        (``docs/TERRAIN_AUTHORING.md`` §6) — the same view-only/file-grade
+        — the same view-only/file-grade
         split the settings arc drew, arriving at the one setting that never
         got it.
         """
@@ -1244,8 +1243,14 @@ class Document(QObject):
             self.topology_changed.emit()
             self.selection_changed.emit()
         else:
-            chunk_id = getattr(command, "chunk_id", -1)
-            self.chunk_changed.emit(chunk_id)
+            # Only a command that names a chunk announces one. Five of the
+            # fifteen — the terrain and controller commands — have no chunk to
+            # name, and the -1 they used to send bought a full primitive repack
+            # and GPU upload for an edit that moved no flesh. Their own signals
+            # (terrain_changed, controllers_changed) already carry the news.
+            chunk_id = getattr(command, "chunk_id", None)
+            if chunk_id is not None:
+                self.chunk_changed.emit(chunk_id)
         if isinstance(command, _CONTROLLER):
             self.controllers_changed.emit()
         self.history_changed.emit()
@@ -1292,8 +1297,8 @@ class Document(QObject):
         past the body's +x extent — origin on an empty body — because a new
         component is what an empty selection says you meant.
 
-        ``at`` is the same rule's second position source (``docs/PICK.md``
-        §3): a gesture that already knows where — the surface pick, its
+        ``at`` is the same rule's second position source: a gesture that
+        already knows where — the surface pick, its
         offset along the normal already taken — states the position verbatim,
         and the selection stands aside. The hit states the attachment:
         ``attach_to`` earns exactly one link and, absent an explicit
@@ -1541,7 +1546,7 @@ class Document(QObject):
     def set_creature_pattern(self, name: str, param: float | None = None) -> None:
         """Pattern every creature the selection touches, as one undo step.
 
-        The tempo mechanism for the skin (``docs/TEXTURES.md`` package 3):
+        Pattern is creature-wide state with no object of its own:
         the pattern name and its parameter ride every chunk of each
         component as meta, so they survive any one chunk's deletion and
         every format era that carries meta. A name outside the vocabulary —
@@ -1586,7 +1591,7 @@ class Document(QObject):
     def set_chunk_colour(self, rgb: tuple[float, float, float]) -> None:
         """Paint exactly the selected chunks, as one undo step.
 
-        The per-part gesture (``docs/TEXTURES.md`` package 2), beside
+        The per-part gesture, beside
         :meth:`set_creature_colour` and deliberately narrower: a statement
         about the chunks in hand, not their component. The weighted skin is
         what makes the difference visible — unpainted neighbours keep their
@@ -1614,20 +1619,23 @@ class Document(QObject):
         A creature has no object of its own — per-creature edits (colour,
         tempo) resolve the selection to whole components and act on those.
         Sorted seeds keep the component order stable for command building.
+
+        Derived from the body's one traversal rather than walked per seed:
+        :meth:`Body.neighbors` rescans every link on every call, which made
+        this quadratic and put a third of a second of frozen UI behind "select
+        all, paint" on a herd.
         """
+        members = {
+            cid: component
+            for component in self.body.components()
+            for cid in component
+        }
         components: list[set[int]] = []
         seen: set[int] = set()
         for selected in sorted(self.selection):
             if selected in seen:
                 continue
-            component: set[int] = set()
-            frontier = [selected]
-            while frontier:
-                current = frontier.pop()
-                if current in component:
-                    continue
-                component.add(current)
-                frontier.extend(self.body.neighbors(current))
+            component = set(members[selected])
             seen |= component
             components.append(component)
         return components
@@ -1846,13 +1854,13 @@ class Document(QObject):
         for every rendered link and ``[centre, r, centre, r]`` for every
         chunk no rendered link fuses, and
         :meth:`~mesh_xml.core.terrain.Terrain.add_cone` builds that exact
-        record. A chunk graph *is* a cone list
-        (``docs/TERRAIN_AUTHORING.md`` §2), which is why a mechanism link
+        record. A chunk graph *is* a cone list, which is why a mechanism link
         promotes nothing and its chunks promote as spheres — what the author
         saw is what promotes.
 
         Link order is the body's own, so promotion appends features in the
-        order they were built and the round trip of §9 is the identity.
+        order they were built and demote-then-promote is the identity on the
+        cone list — ``test_the_round_trip_is_the_identity_on_the_cone_list``.
         """
         body = self.body
         records: list[tuple] = []
@@ -1878,7 +1886,7 @@ class Document(QObject):
         unnoticed by every consumer that draws it. A world's first cone
         arrives at :class:`~mesh_xml.core.terrain.Terrain`'s own default
         blend, deliberately not the room's metaball blend: the terrain folds
-        with its own radius (``docs/TERRAIN.md`` §1), and borrowing the
+        with its own radius, and borrowing the
         flesh's would re-open the one-value-two-owners drift.
         """
         current = self.terrain
@@ -1897,7 +1905,7 @@ class Document(QObject):
     def set_terrain_blend(self, blend: float) -> None:
         """Retune the world's fold radius — a setting, not a structural edit.
 
-        File-grade like every other tuning knob (``docs/SETTINGS.md`` §5):
+        File-grade like every other tuning knob:
         it dirties the room and lands on no undo stack, because it is a
         number an author drags rather than a move they make. The world is
         rebuilt rather than written into, for :meth:`set_terrain`'s reason.
@@ -2129,7 +2137,7 @@ class Document(QObject):
         The journey itself is
         :func:`mesh_xml.scene.transfer.move_creature` — the door's own
         mechanism, and the editor is a second *caller* of it rather than a
-        second policy (``docs/MOVE_CREATURE.md`` §6). What the editor adds
+        second policy. What the editor adds
         is the pre-flight above, the bookkeeping either side of the motion,
         and the cut that makes the arrival the gesture's visible product.
         Creatures arrive at their own coordinates: a room is its own frame,
@@ -2232,9 +2240,8 @@ class Document(QObject):
         the separate animals the viewport shows, not as one weld. Positions
         are the draw positions, matching what the viewer sees. A painted or
         patterned skin rides as OBJ vertex colours, evaluated by the same
-        albedo fold the viewport shades by (``docs/TEXTURES.md`` package 4);
-        an unpainted body exports the file it always exported, byte for
-        byte, because its attribute table is empty.
+        albedo fold the viewport shades by; an unpainted body exports the file
+        it always exported, byte for byte, because its attribute table is empty.
         """
         from mesh_xml.io.mesh_export import write_mesh
         from mesh_xml.render import field
@@ -2293,7 +2300,7 @@ class Document(QObject):
 
         Routed through adopt so the solver and blend reset with everything
         else: New after a tuned file must not carry that file's physics into
-        a rig that never stated it (docs/SETTINGS.md §5).
+        a rig that never stated it.
         """
         self.adopt(Body())
         self.status.emit("New rig")
@@ -2425,9 +2432,9 @@ class Document(QObject):
             blend if blend is not None else MetaballSettings().blend
         )
         self._state.metaball.look = look if look is not None else Look()
-        # _replace stops short of settings on SCENE_BINDING.md §2.1's terms —
-        # open used to reset them, and a reset needed no announcement. Solver,
-        # blend and look restore from the file, so the panels must re-read.
+        # _replace deliberately leaves settings alone: solver, blend and look
+        # restore from the file here rather than through it, so the panels
+        # must re-read.
         self.settings_changed.emit()
 
     def save(self, path) -> None:
@@ -2628,15 +2635,11 @@ def _read_rig(path: Path) -> tuple[xml_v2.Rig, str]:
 
 
 def _is_versioned_body(path: Path) -> bool:
-    """Whether the file's root tag says ``<body>`` — ``is_manifest``'s sniff.
+    """Whether the file's root tag says ``<body>``.
 
     Decides only "did the v3/v2 reader already own this file"; an
     unparseable file is not a versioned body, and the legacy ladder that
     then runs produces the real error.
     """
-    try:
-        for _event, element in ET.iterparse(path, events=("start",)):
-            return element.tag == "body"
-    except (OSError, ET.ParseError):
-        return False
+    return scene_xml.root_tag(path) == "body"
     return False

@@ -174,6 +174,17 @@ def registered() -> dict[str, type]:
     return {name: entry.cls for name, entry in _BY_NAME.items()}
 
 
+def is_registered(cls: type) -> bool:
+    """Whether the registry knows ``cls`` — the predicate, without the raise.
+
+    Callers that walk a live stack ask this constantly (which controllers can
+    be retimed, which carry placed points), and every one of them was writing
+    the same try/except around :func:`fields_of`. The question belongs to the
+    module that owns the registry.
+    """
+    return cls in _BY_CLASS
+
+
 def fields_of(cls: type) -> tuple[str, ...]:
     """The field names the registry persists for ``cls``.
 

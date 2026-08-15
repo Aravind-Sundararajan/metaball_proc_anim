@@ -84,6 +84,7 @@ from mesh_xml.core.distance import (
     DEGENERATE_EPSILON as _DEGENERATE_EPSILON,
 )
 from mesh_xml.core.distance import (
+    NORMAL_EPSILON,
     round_cone,
     smooth_min,
     smooth_min_weight,
@@ -101,11 +102,6 @@ __all__ = [
     "round_cone",
     "smooth_min",
 ]
-
-#: Central-difference offset for :func:`normal`. Large enough that float64
-#: cancellation in the difference stays negligible, small enough that the
-#: estimate is local to one surface feature.
-NORMAL_EPSILON = 1e-4
 
 #: Distance below which :func:`raymarch` calls a ray landed. Sphere tracing
 #: approaches the surface geometrically and never reaches it, so termination is
@@ -183,7 +179,8 @@ def albedo(
 ) -> np.ndarray:
     """Surface colour of the blended field at ``points``: ``(..., 3)``.
 
-    The CPU twin of ``sd_group_albedo`` (``docs/TEXTURES.md``): the distance
+    The CPU twin of ``sd_group_albedo``, held equal to it by
+    ``test_albedo_matches_the_oracle``: the distance
     fold re-run carrying colour beside it, each step blending by the weight
     :func:`~mesh_xml.core.distance.smooth_min_weight` reports — the same
     ``h`` the distance took, so the skin cannot disagree with the flesh

@@ -1267,7 +1267,7 @@ class TestCameraAcrossTheCut:
         document.set_active_room(first)
 
         assert view.camera.pose() == left, "the cut is a restore, not a re-frame"
-        # Projection is window state, not pose (SCENE_BINDING.md §2.3): both
+        # Projection is window state, not pose: both
         # cuts — the framing entry and the restoring return — leave it alone.
         assert view.camera.orthographic
 

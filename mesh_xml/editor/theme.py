@@ -4,8 +4,7 @@ The app has had a visual identity since the raymarcher first drew a frame —
 a dark field, ivory chunk dots, link blue, selection orange. This module
 does not invent a second one; every constant below is sourced from a value
 the render already owns, and ``tests/test_theme.py`` holds them to their
-sources so the chrome cannot drift away from the viewport it frames
-(``docs/CHROME.md``).
+sources so the chrome cannot drift away from the viewport it frames.
 
 Fusion is the base style because it is the one Qt style that obeys a dark
 palette everywhere — indicators, sliders, menus — where the platform styles

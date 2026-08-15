@@ -127,21 +127,6 @@ class ControlContext:
         """
         return self.config.terrain if self.config is not None else None
 
-    def ground_level(self, chunk_id: int) -> float | None:
-        """The world ``y`` a chunk of this radius comes to rest at, or ``None``.
-
-        Not ``config.ground_y``. Collision resolves by holding a chunk one radius
-        clear of the plane, so a controller aiming a foot at the plane itself is
-        aiming one radius underground and will seek into the floor forever. This
-        is the number a foothold wants, and having it here keeps every controller
-        from rediscovering the offset — or, worse, not rediscovering it.
-        """
-        if self.config is None or self.config.ground_y is None:
-            return None
-        if not self.body.has_chunk(chunk_id):
-            return None
-        return float(self.config.ground_y + self.body.radius[self.body.slot(chunk_id)])
-
     def seek(
         self,
         chunk_id: int,

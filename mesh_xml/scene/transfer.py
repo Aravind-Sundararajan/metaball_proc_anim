@@ -1,7 +1,7 @@
 """Creature transfer: serialize-out, re-id, serialize-in — without the file.
 
 Moving a creature between rooms is the door's mechanism ahead of the door
-(``docs/ROOMS.md`` package 3). It is deliberately the save/load journey run
+It is deliberately the save/load journey run
 in memory: the chunks cross with their masses, pins and meta, the links
 with their rests, types and render flags, and the controllers are rebuilt
 through :func:`mesh_xml.anim.serialize.remap_ids` — the decode path — so
@@ -64,14 +64,12 @@ def move_creature(
     body = source.body
     body.slot(chunk_id)  # unknown ids fail here, before anything moves
 
-    component: set[int] = set()
-    frontier = [chunk_id]
-    while frontier:
-        current = frontier.pop()
-        if current in component:
-            continue
-        component.add(current)
-        frontier.extend(body.neighbors(current))
+    # The body's own traversal: walking neighbors() per seed rescans every link
+    # on every step, and the creature is exactly one of the components it
+    # already knows how to find.
+    component = set(
+        next(members for members in body.components() if chunk_id in members)
+    )
 
     shift = (
         np.zeros(body.dim, dtype=np.float64)

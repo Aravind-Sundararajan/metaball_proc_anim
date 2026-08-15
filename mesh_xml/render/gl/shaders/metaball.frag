@@ -91,7 +91,7 @@ const float GRID_MAJOR      = 5.0;   // minor cells per major line
 const float GRID_FADE_START = 18.0;  // eye distance where the grid starts to go
 const float GRID_FADE_END   = 55.0;  // ... and where it has fully gone
 
-// The shading model's baked constants (docs/LIGHTING.md 2) -- the
+// The shading model's baked constants -- the
 // vocabulary's opinion, like SDF_STRIPE_BAND, so light_strength = 1 lands
 // the pre-arc diffuse level exactly.
 const float DIFFUSE        = 0.75;  // key level at unit strength
@@ -185,7 +185,7 @@ bool maybe_shadowed(vec3 point, vec3 light) {
 // How much key reaches a receiver point — the reference floor, creature
 // flesh and terrain alike take the one answer: a march toward the light
 // through sd_field, never the composite, so the creature casts and the
-// world only catches (docs/CAST_SHADOWS.md 3 — terrain has no bound for
+// world only catches (terrain has no bound for
 // the gate to test). The running min of d/t is the classic penumbra
 // estimate — distance the occluder clears the ray by, over how far along
 // it sits. The tile mask stands down for the march and is restored after:
@@ -223,7 +223,7 @@ float key_shadow(vec3 point, vec3 light) {
 // What colour the surface is at a hit, before any light touches it: the
 // terrain's flat colour where the world won the hard min, else the
 // creature's — its group's folded albedo when the attribute table is armed
-// (docs/TEXTURES.md), its group's flat colour when not, and the single
+// its group's flat colour when not, and the single
 // surface colour when no groups are uploaded at all. Debug mode 4 writes
 // this raw, which is what lets the CPU oracle check colour numerically
 // through the same readback the depth modes use, lighting never in frame.
@@ -290,7 +290,7 @@ void main() {
     // The backdrop: a vertical wash in screen space, deliberately not a sky
     // dome -- screen-keyed survives the orthographic toggle, and a two-stop
     // vertical lerp has no horizon line to tilt against the grid's own
-    // (docs/LIGHTING.md 3). Debug mode 1 shares the miss branch below, so
+    // Debug mode 1 shares the miss branch below, so
     // its backdrop is the gradient too: eyeballed, never oracle-compared.
     vec3 sky = mix(u_background_colour, u_background_top, v_uv.y);
 
@@ -344,7 +344,7 @@ void main() {
     vec3 light = normalize(u_light_direction);
     float shadow = key_shadow(position, light);
 
-    // One authored key, and the backdrop is the fill (docs/LIGHTING.md 2).
+    // One authored key, and the backdrop is the fill.
     // The fill is hemispheric on world-up -- the axis countershade keys on
     // -- and never tracks the key, so a countershaded belly reads as
     // pigment against quiet ground light instead of being cancelled twice.
@@ -395,7 +395,7 @@ void main() {
     // The occlusion authorities stay disjoint, one term each: AO scales the
     // fill and the glow, never the key -- occlusion is the environment
     // failing to reach a crease -- and the key failing to reach one is the
-    // cast shadow, which gates the key alone (docs/CAST_SHADOWS.md 5).
+    // cast shadow, which gates the key alone.
     vec3 shaded = albedo * (ambient * ao + key * shadow) + glow * ao;
     frag_colour = vec4(shaded, 1.0);
 }

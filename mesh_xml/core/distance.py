@@ -1,7 +1,7 @@
 """The primitive signed-distance math, shared by creature and world.
 
 This began life in :mod:`mesh_xml.render.field` and moved here the day terrain
-arrived: the world is a field too (``docs/TERRAIN.md``), and ``core`` may not
+arrived: the world is a field too, and ``core`` may not
 import from ``render``. The functions are unchanged by the move — everything
 float64, everything shaped ``(..., 3)`` with the trailing axis as the vector.
 
@@ -18,6 +18,7 @@ import numpy as np
 
 __all__ = [
     "DEGENERATE_EPSILON",
+    "NORMAL_EPSILON",
     "PRIMITIVE_STRIDE",
     "TETRAHEDRON",
     "as_blend",
@@ -54,6 +55,11 @@ DEGENERATE_EPSILON = 1e-6
 TETRAHEDRON = np.array(
     [[1.0, -1.0, -1.0], [-1.0, -1.0, 1.0], [-1.0, 1.0, -1.0], [1.0, 1.0, 1.0]]
 )
+
+#: Central-difference offset every gradient estimator in the tree samples at.
+#: One home, because two fields sampling at different widths would disagree
+#: about the same surface's normal — and the disagreement would be invisible.
+NORMAL_EPSILON = 1e-4
 
 
 def round_cone(points: np.ndarray, primitive: np.ndarray) -> np.ndarray:
@@ -155,7 +161,7 @@ def smooth_min_weight(
     The weight is the ``h`` the polynomial form already computes: the fold's
     gradient is ``h·∇a + (1−h)·∇b``, so ``h`` *is* "how much of ``a`` is
     here", and anything folded beside the distance — a surface colour
-    (``docs/TEXTURES.md``) — blends by the same number or it disagrees with
+    — blends by the same number or it disagrees with
     the flesh about where a blend is. The distance returned is
     :func:`smooth_min`'s expression term for term, so a caller switching to
     this variant changes nothing about the field.

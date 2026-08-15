@@ -77,19 +77,18 @@ class SolverConfig:
     floor asks for one. Without it, and with nothing pinned, a body under
     gravity simply falls forever, which is correct and also useless to look at.
 
-    ``terrain`` is the general world: an SDF the body collides with
-    (docs/TERRAIN.md). When set and non-empty it takes precedence over
+    ``terrain`` is the general world: an SDF the body collides with. When set and non-empty it takes precedence over
     ``ground_y`` — having both is not a conflict worth raising over, because
     ``Terrain.flat`` *is* the old floor spelled in the new vocabulary, so the
     terrain simply wins. An empty terrain defers to ``ground_y`` instead: "no
     primitives yet" is an authoring state, not a request to repeal the floor.
-    Against a terrain the rendered spans collide too (docs/WORLD_CONTACT.md):
+    Against a terrain the rendered spans collide too:
     the flesh between chunks rests on the world at its exact round-cone
     clearance, so a shin's span cannot stand through a ledge both its
     spheres clear — not optional, because the world's law never was.
 
     ``self_contact`` turns on collision between a body's own flesh — chunk
-    spheres and the round cones along rendered links (docs/SELF_CONTACT.md) —
+    spheres and the round cones along rendered links —
     wherever the touching regions are strangers in the graph. Off by default
     for the same reason ``ground_y`` is ``None``: a rig's own overlap is
     authored, not accidental. Chunks along a limb are placed overlapping so
@@ -114,8 +113,7 @@ class SolverConfig:
     tangential slide at the contact. ``0.0`` — the default, and the old
     behaviour exactly — separates without grip; raised, a coiled body holds
     its wrap by the load actually crossing the contact. This is passive
-    non-slip only: choosing to hold and let go stays a controller feature
-    (docs/SELF_CONTACT.md §5).
+    non-slip only: choosing to hold and let go stays a controller feature.
 
     ``ground_friction`` is the Coulomb coefficient ``mu``. Each contact tick
     the floor may undo up to ``mu`` times the chunk's penetration depth of its
@@ -327,7 +325,7 @@ def _collide_terrain_spans(body: Body, config: SolverConfig) -> None:
     """Rest the flesh between chunks on the terrain, at the world's own mu.
 
     :func:`_collide_terrain` lifts chunk spheres only; this pass covers the
-    spans between them (docs/WORLD_CONTACT.md), so a shin's span cannot
+    spans between them, so a shin's span cannot
     stand through a ledge both its spheres clear. The rendered span is the
     convex hull of its two end balls, and the linearly-worn ball
     parametrizes that hull exactly, so the span's world clearance is one
@@ -676,7 +674,7 @@ def _grip_scale(grip: np.ndarray, slid: np.ndarray) -> np.ndarray:
 def _collide_self(body: Body, config: SolverConfig) -> None:
     """Keep the flesh from passing through itself, and let it grip.
 
-    The manifold is the rendered flesh (docs/SELF_CONTACT.md): chunk spheres,
+    The manifold is the rendered flesh: chunk spheres,
     the round cones along rendered links, and the crossings between them.
     Three families discover fresh each call — sphere–sphere on the landed
     stranger rule, capsule–capsule between rendered spans, sphere–capsule for

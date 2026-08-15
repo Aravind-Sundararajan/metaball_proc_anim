@@ -1,7 +1,7 @@
 """The scene: rooms in the plural, one clock between them.
 
-``docs/ROOMS.md`` takes this decision in advance and this module makes it
-literal: adding a room to a scene *aliases* the scene's own clock into it,
+One clock per scene is not a convention here, it is the construction:
+adding a room to a scene *aliases* the scene's own clock into it,
 so "one clock per scene" is not a convention that two accumulators could
 quietly drift away from — there is no second accumulator. Rooms then tick
 from the scene's :meth:`advance`, and cross-room time cannot skew because

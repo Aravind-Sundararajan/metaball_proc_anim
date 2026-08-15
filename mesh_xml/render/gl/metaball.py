@@ -67,6 +67,7 @@ __all__ = [
     "TerrainTexture",
     "GroupTexture",
     "BoundsTexture",
+    "AttributeTexture",
     "TileTexture",
     "fragment_source",
     "pack_terrain",
@@ -130,7 +131,7 @@ class MetaballSettings:
     #: The authored look — key light, environment, palette base — composed
     #: whole rather than mirrored field by field, so the record the file
     #: round-trips and the record the frame renders are the same object and
-    #: cannot drift (docs/LIGHTING.md §4). ``terrain_colour`` rides it too: a
+    #: cannot drift. ``terrain_colour`` rides it too: a
     #: render preference like the other colours, which is why it is not on
     #: :class:`~mesh_xml.core.terrain.Terrain` — the terrain's *blend* is world
     #: data and travels with the upload instead (:class:`TerrainTexture`).
@@ -161,7 +162,8 @@ class MetaballSettings:
             "u_ao_strength": float(look.ao_strength),
             # No arithmetic between parse and upload: the shader's == 1.0
             # endpoint branch must see exactly the 1.0 the file or the
-            # default stated (docs/CAST_SHADOWS.md 4).
+            # default stated — ``test_shadow_strength_one_is_byte_identical_to_a_strength_blind_shader``
+            # fails the moment arithmetic creeps in here.
             "u_shadow_strength": float(look.shadow_strength),
             "u_glow_strength": float(look.glow_strength),
             "u_surface_colour": tuple(float(v) for v in look.surface_colour),
@@ -396,7 +398,7 @@ class AttributeTexture(PrimitiveTexture):
     different uniform names. The count doubles as the arming switch: the
     shader folds colour only when it equals the primitive count, so the
     empty table a uniform body packs to leaves the flat path running
-    bit-for-bit (``docs/TEXTURES.md``).
+    bit-for-bit.
     """
 
     _unit: int = dataclass_field(default=ATTRIBUTE_TEXTURE_UNIT, repr=False)

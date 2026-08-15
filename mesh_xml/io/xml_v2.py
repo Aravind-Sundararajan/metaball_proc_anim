@@ -86,7 +86,7 @@ gait requires it.
 
 ``<terrain>``: additive in v3, absent means none
 ------------------------------------------------
-The world the creature stands in (``docs/TERRAIN.md``) is a ``<terrain>``
+The world the creature stands in is a ``<terrain>``
 section beside ``<controllers>``: a ``blend`` attribute and ``<plane>`` /
 ``<cone>`` children in authoring order — which is fold order, and therefore
 part of the world, exactly as controller order is part of the gait. A document
@@ -104,7 +104,7 @@ by an ulp on every save.
 
 ``<doors>``: additive in v3, absent means none
 ----------------------------------------------
-Where the room leads (``docs/ROOMS.md`` package 5) is a ``<doors>`` section
+Where the room leads is a ``<doors>`` section
 beside ``<terrain>``, on exactly its terms: one ``<door>`` per exit — a name,
 a world point, the destination room and door by name, an arrival radius —
 written only when there is at least one door, and absent meaning none, which
@@ -118,7 +118,7 @@ every save.
 
 ``<solver>``: additive in v3, absent means the config the caller already runs
 -----------------------------------------------------------------------------
-The physics a body was tuned under (``docs/SETTINGS.md``) is a ``<solver>``
+The physics a body was tuned under is a ``<solver>``
 section beside ``<doors>``: every :class:`~mesh_xml.core.solver.SolverConfig`
 field except ``terrain``, because the world already rides above under its own
 name, and a config that also carried it would be two spellings of one world —
@@ -156,7 +156,7 @@ vocabulary.
 
 ``<look>``: additive in v3, absent means the shipped defaults
 -------------------------------------------------------------
-The shading a room reads under (``docs/LIGHTING.md``) is a ``<look>`` section
+The shading a room reads under is a ``<look>`` section
 beside ``<metaball>``: every :class:`~mesh_xml.render.look.Look` field — the
 key light's direction, colour and strength, the ambient, occlusion, shadow
 and glow levels, and the palette's base colours — written in full when
@@ -164,7 +164,10 @@ written at all, the ``<solver>`` ruling. Full writing protects the *stated*
 attributes' values, not against new terms: ``shadow_strength`` arrived after
 the section did, defaulting to 1.0, so a pre-shadow ``<look>`` reopens
 shadowed — the format's first additive attribute whose default relights a
-saved record, deliberate on the AO precedent (docs/CAST_SHADOWS.md §7). A separate section rather than more attributes on
+saved record, deliberate on the precedent ``ao_strength`` set: an
+additive attribute whose default changes an old file's picture is allowed
+when the new default is the one the author would have asked for. A
+separate section rather than more attributes on
 ``<metaball>`` because the two records change for different reasons:
 ``blend`` states the surface's *geometry* — the silhouette, the pick, what
 the solver's skin means — while ``<look>`` states its shading and the

@@ -618,11 +618,6 @@ class MetaballViewport(RaymarchView):
         return self._texture
 
     @property
-    def terrain_texture(self) -> TerrainTexture:
-        """The world's texture. Exposed so a test can watch what was uploaded."""
-        return self._terrain
-
-    @property
     def idle(self) -> bool:
         """Whether the last :meth:`tick` decided there was nothing to draw."""
         return self._idle
@@ -1124,8 +1119,8 @@ class MetaballViewport(RaymarchView):
         Hangs off ``body_replaced``, which also fires when a file opens
         *into* the current room — the identity check keeps that path out.
         Open drops the room's stashed pose and frames from its own caller;
-        only a room switch may restore one (SCENE_BINDING.md §2.3's side
-        table, one field wider).
+        only a room switch may restore one. The stash is per room and carries
+        the full pose; projection is not in it — that is window state.
         """
         document = self._document
         room = document.room
@@ -1207,7 +1202,7 @@ class MetaballViewport(RaymarchView):
         """Ctrl+click's half of the Add rule: the click states the position.
 
         The pick answers with the surface the author saw, and the hit states
-        the attachment (``docs/PICK.md`` §3): flesh earns a link to the
+        the attachment: flesh earns a link to the
         struck chunk and borrows its radius, the world starts a free 0.5.
         The centre sits one radius out along the normal — the
         ``Terrain.project`` clearance generalized, because aiming at the
@@ -1243,7 +1238,7 @@ class MetaballViewport(RaymarchView):
         ):
             # Ahead of the whole ladder and consuming hit and miss alike: a
             # failed place that spun the camera would punish the author for
-            # missing by a pixel (docs/PICK.md §4). Exactly Ctrl — a chord
+            # missing by a pixel. Exactly Ctrl — a chord
             # carrying Shift is a selection gesture and falls through to the
             # ladder that owns it.
             position = event.position()

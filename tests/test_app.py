@@ -113,7 +113,7 @@ class TestIcon:
 class TestRoomCamera:
     """The dock's cut carries the camera: restore where the author left a
     room, frame only a first entry. Projection is deliberately absent here —
-    it is window state, untouched by cuts (SCENE_BINDING.md §2.3)."""
+    it is window state, untouched by cuts."""
 
     @staticmethod
     def add_meadow(document: Document):
