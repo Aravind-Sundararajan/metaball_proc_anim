@@ -28,10 +28,15 @@ quietly starts depending on a stylesheet.
 
 from __future__ import annotations
 
+import atexit
+import shutil
+import tempfile
+from pathlib import Path
+
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
-__all__ = ["ACCENT", "FIELD", "INK", "INFO", "SELECT", "WINDOW", "apply"]
+__all__ = ["ACCENT", "FIELD", "INK", "INFO", "MARKS", "SELECT", "WINDOW", "apply"]
 
 # ----------------------------------------------------------------------
 # the palette, with each colour's source named
@@ -80,6 +85,74 @@ SELECT = "#5b4a2e"
 
 #: Informational blue: viewport.LINK_COLOUR, the overlay's link stroke.
 INFO = "#78beeb"
+
+
+# ----------------------------------------------------------------------
+# the marks: small glyphs the stylesheet can only reach as image files
+# ----------------------------------------------------------------------
+#
+# Qt draws a spin box's arrows, a combo's caret and a check's tick from the
+# *style*, and the moment a stylesheet claims the widget it stops drawing
+# them — which is how the editor shipped every numeric field as a text box
+# with two blank stubs where its stepper should be, and every checkbox as a
+# hollow outline or, inside a table, a black square. The stylesheet can put
+# them back, but `image:` only accepts a file, so these have to exist on
+# disk.
+#
+# They are generated rather than committed because the alternative is four
+# hex values living in asset files where this module's one-palette rule
+# cannot see them: recolour DIM here and committed arrows would keep the old
+# tone forever, silently. Generating from the constants makes the palette the
+# single source it claims to be, and ``tests/test_theme.py`` reads the files
+# back to prove the carry.
+
+
+def _marks() -> dict[str, str]:
+    """Write the stylesheet's glyphs to a temp dir; return name → posix path.
+
+    Paths are posix because Qt style sheets parse ``\\`` as an escape, so a
+    Windows path silently yields no image at all.
+    """
+    directory = Path(tempfile.mkdtemp(prefix="mesh_xml_theme_"))
+    atexit.register(shutil.rmtree, directory, True)
+
+    def write(name: str, body: str) -> str:
+        path = directory / f"{name}.svg"
+        path.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8">'
+            f"{body}</svg>",
+            encoding="utf-8",
+        )
+        return path.as_posix()
+
+    def caret(name: str, points: str, colour: str) -> tuple[str, str]:
+        return name, write(name, f'<polygon points="{points}" fill="{colour}"/>')
+
+    # Wide and shallow reads as a dash at this size, not as a direction; the
+    # caret needs most of the box in both axes before eight pixels of it say
+    # "up".
+    up, down = "0.6,5.6 4,1.9 7.4,5.6", "0.6,2.4 4,6.1 7.4,2.4"
+    return dict(
+        (
+            caret("up", up, DIM),
+            caret("down", down, DIM),
+            caret("up_off", up, QUIET),
+            caret("down_off", down, QUIET),
+            (
+                "tick",
+                write(
+                    "tick",
+                    f'<polyline points="1.3,4.2 3.2,6.1 6.7,2.2" fill="none" '
+                    f'stroke="{ON_ACCENT}" stroke-width="1.5" '
+                    'stroke-linecap="round" stroke-linejoin="round"/>',
+                ),
+            ),
+        )
+    )
+
+
+#: Glyph name to file path, generated once per process from the palette above.
+MARKS = _marks()
 
 
 def _palette() -> QPalette:
@@ -238,7 +311,10 @@ QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{
     border: 1px solid {BORDER};
     border-radius: 5px;
     padding: 3px 8px;
-    min-height: 17px;
+    /* 18 rather than 17 so the field's border box is an even 26px and the two
+       stepper buttons below halve it exactly. At 17 they left a three-pixel
+       seam mid-field that read as a rendering fault. */
+    min-height: 18px;
     selection-background-color: {ACCENT};
     selection-color: {ON_ACCENT};
 }}
@@ -249,6 +325,9 @@ QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{
    genuinely uses it. */
 QSpinBox, QDoubleSpinBox {{
     max-width: 118px;
+    /* The stepper stands inside the field's border, so the text needs the
+       room back or a suffixed value ("100.0 u/s") runs under the arrows. */
+    padding-right: 22px;
 }}
 QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{
     border-color: {ACCENT};
@@ -262,11 +341,105 @@ QComboBox::drop-down {{
     border: none;
     width: 20px;
 }}
+QComboBox::down-arrow {{
+    image: url({MARKS["down"]});
+    width: 9px;
+    height: 9px;
+}}
+QComboBox::down-arrow:disabled {{
+    image: url({MARKS["down_off"]});
+}}
 QComboBox QAbstractItemView {{
     background: {RAISED};
     border: 1px solid {BORDER};
     selection-background-color: {ACCENT};
     selection-color: {ON_ACCENT};
+}}
+
+/* The stepper. Claiming the field above cost these their arrows, so they are
+   drawn back from the generated marks — and given a hit target, because a
+   spin button Qt sized itself was four pixels of nothing. The divider is a
+   single border-left up the pair's shared edge, so the two read as one
+   control rather than as two buttons parked beside a number. */
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 17px;
+    height: 13px;
+    background: transparent;
+    border-left: 1px solid {BORDER};
+    border-bottom: 1px solid {BORDER};
+    border-top-right-radius: 5px;
+}}
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 17px;
+    height: 13px;
+    background: transparent;
+    border-left: 1px solid {BORDER};
+    border-bottom-right-radius: 5px;
+}}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+    background: {HOVER};
+}}
+QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed,
+QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {{
+    background: {ACCENT};
+}}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+    image: url({MARKS["up"]});
+    width: 9px;
+    height: 9px;
+}}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+    image: url({MARKS["down"]});
+    width: 9px;
+    height: 9px;
+}}
+QSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:disabled,
+QSpinBox::up-arrow:off, QDoubleSpinBox::up-arrow:off {{
+    image: url({MARKS["up_off"]});
+}}
+QSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:disabled,
+QSpinBox::down-arrow:off, QDoubleSpinBox::down-arrow:off {{
+    image: url({MARKS["down_off"]});
+}}
+
+/* Checks. Unstyled, these were a hollow outline in a panel and a filled black
+   square in a table — one control wearing two broken faces, because an item
+   view draws its indicator against Base while a panel draws it against Window.
+   Styling both together is what makes them the same control again. The accent
+   is a mark at this size, so a checked box may wear it whole. */
+QCheckBox::indicator, QAbstractItemView::indicator, QTableWidget::indicator,
+QGroupBox::indicator, QMenu::indicator {{
+    width: 14px;
+    height: 14px;
+    border: 1px solid {BORDER};
+    border-radius: 4px;
+    background: {FIELD};
+}}
+QCheckBox::indicator:hover, QAbstractItemView::indicator:hover,
+QTableWidget::indicator:hover, QGroupBox::indicator:hover {{
+    border-color: {DIM};
+}}
+QCheckBox::indicator:checked, QAbstractItemView::indicator:checked,
+QTableWidget::indicator:checked, QGroupBox::indicator:checked,
+QMenu::indicator:checked {{
+    background: {ACCENT};
+    border-color: {ACCENT};
+    image: url({MARKS["tick"]});
+}}
+QCheckBox::indicator:disabled, QAbstractItemView::indicator:disabled,
+QTableWidget::indicator:disabled, QGroupBox::indicator:disabled {{
+    background: {WINDOW};
+    border-color: {BORDER};
+}}
+QCheckBox::indicator:checked:disabled, QTableWidget::indicator:checked:disabled,
+QAbstractItemView::indicator:checked:disabled {{
+    background: {QUIET};
+    border-color: {QUIET};
 }}
 
 QTableWidget {{

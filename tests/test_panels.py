@@ -1318,6 +1318,108 @@ class TestCreaturePanel:
         assert framed == []
 
 
+#: The width app.py gives the scene dock — the width these columns have to
+#: survive, not a width chosen to make the assertions pass.
+_DOCK_PX = 280
+
+#: What Qt spends on a cell's own left and right inset before any text. Small
+#: and approximate on purpose: the assertion it serves is "the name fits with
+#: room to spare", not a pixel-exact reproduction of Qt's item delegate.
+_CELL_PADDING_PX = 10
+
+
+def _laid_out(panel: QWidget, width: int) -> QWidget:
+    """Show ``panel`` at ``width`` so its tables lay their headers out for real.
+
+    Qt defers section geometry until a widget is actually shown, and a plain
+    ``resize`` on a hidden table leaves every section reporting its size in a
+    638px header that no dock ever gives it.
+    """
+    panel.resize(width, 700)
+    panel.show()
+    APPLICATION.processEvents()
+    panel.hide()
+    return panel
+
+
+class TestTableLegibility:
+    """Columns an author can read at the width the render left them.
+
+    The dock is narrow on purpose — the render takes the width it earns — and
+    Qt's answer to a table that does not fit is to shave every section until
+    the labels truncate mid-glyph. "Roon" and "Vame" are worse than a missing
+    column, because they look like data. These are the tests that fail when
+    the squeeze comes back.
+    """
+
+    def test_the_room_name_column_fits_a_room_name(self, document):
+        """A path elides without loss; the cell an author clicks does not.
+
+        Measured against the text the column actually has to show, not against
+        the file column beside it: at the old width Name came out *three pixels
+        wider* than File and still elided "quadruped" to "quadr…", so an
+        ordering assertion passed the bug it was written for. What matters is
+        whether the name fits, so that is what is asked.
+
+        The panel also has to be *shown* at the dock's width for any of this to
+        measure anything — a ``resize`` on an unshown table never reaches its
+        header, which keeps its initial 638px and reports every section at the
+        size it would have had in a dock three times too wide.
+        """
+        from mesh_xml.scene import Room
+
+        document.add_room(Room(name="quadruped"))
+        # Bound, not inlined: a panel nothing holds is collected, and Qt takes
+        # the table's C++ side down with it mid-assertion.
+        panel = _laid_out(panels.RoomPanel(document), _DOCK_PX)
+        table = panel._table
+
+        needed = table.fontMetrics().horizontalAdvance("quadruped")
+        actual = table.horizontalHeader().sectionSize(panels._R_NAME)
+        assert actual >= needed + _CELL_PADDING_PX, (
+            f"the room column is {actual}px and 'quadruped' needs "
+            f"{needed + _CELL_PADDING_PX}px — the name an author clicks elides"
+        )
+
+    def test_a_shortened_path_is_still_readable_on_hover(self, document):
+        """The elision is only affordable because nothing is actually lost."""
+        panel = panels.RoomPanel(document)
+
+        tip = panel._table.item(0, panels._R_FILE).toolTip()
+        assert tip, "the elided column tells the author nothing on hover"
+
+    def test_the_doors_table_never_squeezes_a_label_away(self, document):
+        """Six columns do not fit, so they scroll rather than shrink."""
+        panel = _laid_out(panels.RoomPanel(document), _DOCK_PX)
+        header = panel._doors.horizontalHeader()
+
+        assert header.minimumSectionSize() >= panels._DOOR_FLOOR_PX
+        assert (
+            panel._doors.horizontalScrollBarPolicy()
+            != Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        ), "columns below the floor with no way to scroll to them are unreachable"
+        for column in range(panel._doors.columnCount()):
+            assert header.sectionSize(column) >= panels._DOOR_FLOOR_PX
+
+    def test_headers_sit_over_the_edge_their_values_start_from(self, document):
+        """Centred labels above left-aligned rows: two axes for one column."""
+        rooms = panels.RoomPanel(document)
+        chunks = panels.ChunkPanel(document)
+        left = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+
+        for table in (rooms._table, rooms._doors, chunks._table):
+            assert table.horizontalHeader().defaultAlignment() == left
+
+        # ...except the two columns whose values are centred too, which keep
+        # their labels centred so the rule stays "the header follows the data".
+        for table, column in (
+            (rooms._table, panels._R_ABSTRACT),
+            (chunks._table, panels._PINNED),
+        ):
+            item = table.horizontalHeaderItem(column)
+            assert item.textAlignment() == Qt.AlignmentFlag.AlignCenter
+
+
 class TestRoomPanel:
     """The rooms dock: the row selection is the active room, and the cut
     goes through the document, never around it."""

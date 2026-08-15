@@ -137,6 +137,9 @@ _ROOM_COLUMNS = ("Name", "Creatures", "Abstract", "File")
 
 _D_NAME, _D_AT, _D_TO_ROOM, _D_TO_DOOR, _D_RADIUS, _D_STATUS = range(6)
 _DOOR_COLUMNS = ("Name", "At", "Room", "Door", "Radius", "")
+#: Narrowest a doors column may be squeezed. "Radius" is the widest header,
+#: so this is what it takes for the labels to survive a narrow dock.
+_DOOR_FLOOR_PX = 58
 
 
 def _user_edit(handler: Callable[..., None]) -> Callable[..., None]:
@@ -242,6 +245,28 @@ def _fit_rows(table: QTableWidget, cap: int) -> QTableWidget:
 #: real one from the font at paint time; this only has to be close, because it
 #: sizes a maximum nothing depends on being exact.
 _ROW_HEIGHT_PX = 26
+
+
+def _align_headers(table: QTableWidget, centred: tuple[int, ...] = ()) -> QTableWidget:
+    """Set each header over the edge its own column's values start from.
+
+    Qt centres header labels and left-aligns cell text, so every table here
+    shipped with "Name" floating in the middle of a column of names hugging its
+    left edge — two axes for one column, which is the sort of thing that reads
+    as unfinished without ever being noticed as wrong. Columns in ``centred``
+    are the ones whose *values* are centred too (the check marks), so they keep
+    their labels over the middle and the rule stays "the header follows the
+    data".
+    """
+    header = table.horizontalHeader()
+    header.setDefaultAlignment(
+        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+    )
+    for column in centred:
+        item = table.horizontalHeaderItem(column)
+        if item is not None:
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    return table
 
 
 def _spin(
@@ -2110,10 +2135,15 @@ class RoomPanel(_Panel):
         # it, which starved Name down to two letters — the one cell an author
         # reads and clicks. A path can elide; a name being clicked cannot.
         header.setSectionResizeMode(_R_FILE, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(_R_FILE, 68)
-        header.setMinimumSectionSize(42)
+        # 68 was still too generous: at the dock's real width the three fixed
+        # columns left the stretch column about seventy pixels, and the room an
+        # author clicks read "quadr…". A path is the one cell here that loses
+        # nothing by eliding — it is recognised by its tail, and it carries the
+        # whole path as a tooltip — so it pays for the name, not the reverse.
+        header.resizeSection(_R_FILE, 44)
+        header.setMinimumSectionSize(40)
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        return table
+        return _align_headers(table, centred=(_R_ABSTRACT,))
 
     def _build_actions(self) -> QWidget:
         row = QWidget()
@@ -2142,7 +2172,15 @@ class RoomPanel(_Panel):
             header.setSectionResizeMode(
                 column, QHeaderView.ResizeMode.ResizeToContents
             )
-        return table
+        # Six columns do not fit the dock the render left us, and Qt's answer
+        # to that is to shave every section until the headers read "Vame | At
+        # | Roon" — labels truncated mid-glyph, which is worse than absent
+        # because they look like data. A floor plus a scrollbar keeps every
+        # column legible and reachable: the table scrolls, the words don't lie.
+        header.setMinimumSectionSize(_DOOR_FLOOR_PX)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        return _align_headers(table)
 
     def _build_doors(self) -> QWidget:
         box = QGroupBox("Doors — the active room's exits")
@@ -2291,7 +2329,13 @@ class RoomPanel(_Panel):
             text = f"{star}{path.name}"
         else:
             text = f"{star}unsaved" if star else "—"
-        self._cell(row, _R_FILE).setText(text)
+        cell = self._cell(row, _R_FILE)
+        cell.setText(text)
+        # The column is deliberately narrow enough to elide, so the whole path
+        # — not the shortened name the cell shows — has to be readable on
+        # hover, or the elision costs the author the one thing the column is
+        # for: knowing *which* file this room came from.
+        cell.setToolTip(str(path) if path is not None else "Not saved to a file")
 
     def _door_cell(self, row: int, column: int) -> QTableWidgetItem:
         item = self._doors.item(row, column)
@@ -2428,7 +2472,7 @@ class ChunkPanel(_Panel):
         header.setSectionResizeMode(_NAME, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(_RADIUS, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(_PINNED, QHeaderView.ResizeMode.ResizeToContents)
-        return table
+        return _align_headers(table, centred=(_PINNED,))
 
     def _build_actions(self) -> QWidget:
         row = QWidget()
