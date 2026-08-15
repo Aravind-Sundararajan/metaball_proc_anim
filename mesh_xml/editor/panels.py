@@ -220,6 +220,26 @@ def _form() -> QFormLayout:
     return layout
 
 
+def _cap_rows(table: QTableWidget, rows: int) -> QTableWidget:
+    """Stop an empty table from claiming a dock's whole height.
+
+    A table given a stretch factor takes every pixel offered whether or not it
+    has anything to put there, and the Rooms dock spent seven hundred vertical
+    pixels on a one-room list above an empty door list. Past ``rows`` the table
+    scrolls, which is the honest trade: the common case is a handful of rows,
+    and the uncommon one gets a scrollbar rather than the whole window.
+    """
+    header = table.horizontalHeader().sizeHint().height()
+    table.setMaximumHeight(header + rows * _ROW_HEIGHT_PX + 4)
+    return table
+
+
+#: Assumed table row height in pixels for :func:`_cap_rows`. Qt computes the
+#: real one from the font at paint time; this only has to be close, because it
+#: sizes a maximum nothing depends on being exact.
+_ROW_HEIGHT_PX = 26
+
+
 def _spin(
     minimum: float,
     maximum: float,
@@ -250,8 +270,14 @@ def _admit(box, value) -> None:
 
 
 def _note(text: str) -> QLabel:
-    """Small print that belongs next to a control, not in a manual nobody opens."""
+    """Small print that belongs next to a control, not in a manual nobody opens.
+
+    Named so the theme can dim it: these are permanent fixtures under the
+    controls they explain, and prose that never goes away should not carry
+    the same weight as the values it sits beneath.
+    """
     label = QLabel(text)
+    label.setObjectName("note")
     label.setWordWrap(True)
     label.setTextFormat(Qt.TextFormat.PlainText)
     font = label.font()
@@ -2011,7 +2037,7 @@ class RoomPanel(_Panel):
         self._remove_door = QPushButton("Remove Door")
 
         layout = QVBoxLayout(self)
-        layout.addWidget(self._table, 1)
+        layout.addWidget(_cap_rows(self._table, 8))
         layout.addWidget(self._build_actions())
         layout.addWidget(
             _note(
@@ -2021,7 +2047,8 @@ class RoomPanel(_Panel):
                 "is closed until it realizes."
             )
         )
-        layout.addWidget(self._build_doors(), 1)
+        layout.addWidget(self._build_doors())
+        layout.addStretch(1)
 
         self._new.setToolTip(
             "Add an empty room to the scene and switch to it. Its name is "
@@ -2074,7 +2101,14 @@ class RoomPanel(_Panel):
         header.setSectionResizeMode(
             _R_ABSTRACT, QHeaderView.ResizeMode.ResizeToContents
         )
-        header.setSectionResizeMode(_R_FILE, QHeaderView.ResizeMode.ResizeToContents)
+        # File is Interactive, not ResizeToContents: a content-sized column
+        # takes whatever "quadruped.xml" needs and the stretch column pays for
+        # it, which starved Name down to two letters — the one cell an author
+        # reads and clicks. A path can elide; a name being clicked cannot.
+        header.setSectionResizeMode(_R_FILE, QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(_R_FILE, 68)
+        header.setMinimumSectionSize(42)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         return table
 
     def _build_actions(self) -> QWidget:
@@ -2109,7 +2143,7 @@ class RoomPanel(_Panel):
     def _build_doors(self) -> QWidget:
         box = QGroupBox("Doors — the active room's exits")
         layout = QVBoxLayout(box)
-        layout.addWidget(self._doors, 1)
+        layout.addWidget(_cap_rows(self._doors, 6))
         buttons = QWidget()
         buttons_layout = QHBoxLayout(buttons)
         buttons_layout.setContentsMargins(0, 0, 0, 0)
