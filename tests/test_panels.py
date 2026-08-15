@@ -118,7 +118,6 @@ class TestBuildPanels:
     def test_returns_one_panel_per_dock_title(self, document):
         built = panels.build_panels(document)
         assert list(built) == [
-            "Playback",
             "Rooms",
             "Chunks",
             "Creatures",
@@ -136,6 +135,79 @@ class TestBuildPanels:
             assert isinstance(panel, QWidget)
             assert panel.document is document
 
+
+class TestInspectorRail:
+    """Navigation that hides itself is not navigation.
+
+    The panels used to live in a tabified dock whose tab row does not fit any
+    width worth giving it — Qt elided the labels to initials, and turning on
+    scroll buttons took two panels off screen entirely. The rail's whole claim
+    is that every panel is reachable at a glance, so these tests are about
+    reachability first and prettiness not at all.
+    """
+
+    def test_every_panel_gets_a_button_and_none_are_hidden(self, document):
+        from mesh_xml.editor.rail import Inspector
+
+        built = {t: w for t, w in panels.build_panels(document).items() if t != "Rooms"}
+        inspector = Inspector(built)
+
+        buttons = inspector._buttons.buttons()
+        assert len(buttons) == len(built), "a panel with no button is unreachable"
+        assert all(not b.isHidden() for b in buttons)
+        assert {b.toolTip() for b in buttons} == set(built)
+
+    def test_every_panel_has_an_icon_of_its_own(self, document):
+        """A missing name falls back to a letter, which is the old problem back.
+
+        This is the test that fails when a panel is added and its glyph is
+        not, rather than the panel quietly shipping as an initial in a strip
+        of pictures.
+        """
+        from mesh_xml.editor import icons
+
+        built = panels.build_panels(document)
+        missing = [t for t in built if icons.panel_icon(t) is None]
+        assert missing == [], f"panels with no icon: {missing}"
+
+    def test_choosing_a_panel_raises_it_and_says_its_name(self, document):
+        from mesh_xml.editor.rail import Inspector
+
+        built = {t: w for t, w in panels.build_panels(document).items() if t != "Rooms"}
+        inspector = Inspector(built)
+        seen: list[str] = []
+        inspector.shown.connect(seen.append)
+
+        index = list(built).index("Terrain")
+        inspector._buttons.button(index).click()
+
+        assert inspector.current == "Terrain"
+        assert inspector._stack.currentWidget() is built["Terrain"]
+        assert "TERRAIN" in inspector._heading.text()
+        assert seen[-1] == "Terrain"
+
+    def test_exactly_one_button_is_marked(self, document):
+        from mesh_xml.editor.rail import Inspector
+
+        built = {t: w for t, w in panels.build_panels(document).items() if t != "Rooms"}
+        inspector = Inspector(built)
+
+        inspector.show_panel("Lighting")
+        checked = [b for b in inspector._buttons.buttons() if b.isChecked()]
+        assert len(checked) == 1
+        assert checked[0].toolTip() == "Lighting"
+
+    def test_an_unknown_panel_name_is_ignored_rather_than_raising(self, document):
+        from mesh_xml.editor.rail import Inspector
+
+        built = {t: w for t, w in panels.build_panels(document).items() if t != "Rooms"}
+        inspector = Inspector(built)
+        before = inspector.current
+
+        inspector.show_panel("Nonesuch")
+
+        assert inspector.current == before
+
     def test_assembling_the_panels_edits_nothing(self, document):
         built = panels.build_panels(document)
         assert built
@@ -143,63 +215,110 @@ class TestBuildPanels:
         assert not document.dirty
 
 
-class TestPlaybackPanel:
-    def test_the_play_button_drives_the_document(self, document):
-        panel = panels.PlaybackPanel(document)
-        panel._play.click()
-        assert document.running
+class TestHints:
+    """Prose an author reads once should not be furniture forever.
 
-    def test_the_document_drives_the_play_button(self, document):
-        panel = panels.PlaybackPanel(document)
-        document.set_running(True)
-        assert panel._play.isChecked()
-        assert panel._play.text() == "Pause"
+    The distinction these tests defend is hint against note: a hint explains a
+    control that is already on screen and already carries a tooltip, so it
+    folds; a note reports state that appears nowhere else, so it stays. Getting
+    that backwards would either hide a "no creatures yet" message or leave the
+    paragraphs in place, and both look like the toggle simply not working.
 
-    def test_rest_pose_restores_the_captured_positions(self, document):
-        panel = panels.PlaybackPanel(document)
-        target = document.body.chunk_ids()[3]
-        original = document.body.chunk(target).pos
+    Asserted with ``isHidden`` rather than ``isVisible``: an unshown panel's
+    children are all invisible whatever the toggle says, so ``isVisible`` here
+    would pass in every direction and prove nothing.
+    """
 
-        document.set_running(True)
-        document.advance(1.0)
-        assert document.body.chunk(target).pos != pytest.approx(original)
+    def test_hints_start_folded(self, document):
+        panel = panels.RoomPanel(document)
+        hints = panel.findChildren(QLabel, "hint")
 
-        panel._rest.click()
-        assert document.body.chunk(target).pos == pytest.approx(original)
+        assert hints, "the rooms dock's prose is no longer registered as hints"
+        assert all(h.isHidden() for h in hints)
 
-    def test_a_single_step_advances_a_paused_body(self, document):
-        panel = panels.PlaybackPanel(document)
-        seen = []
-        panel.stepped.connect(lambda: seen.append(1))
+    def test_the_toggle_unfolds_and_refolds_them(self, document):
+        panel = panels.RoomPanel(document)
+        try:
+            reached = panels.set_hints_visible(panel, True)
+            assert reached == len(panel.findChildren(QLabel, "hint"))
+            assert not any(h.isHidden() for h in panel.findChildren(QLabel, "hint"))
 
-        before = document.body.pos.copy()
-        panel.single_step()
+            panels.set_hints_visible(panel, False)
+            assert all(h.isHidden() for h in panel.findChildren(QLabel, "hint"))
+        finally:
+            panels.set_hints_visible(panel, False)
 
-        assert not np.array_equal(before, document.body.pos)
-        assert seen == [1]
+    def test_a_panel_built_later_agrees_with_the_ones_built_already(self, document):
+        """A panel is not only built at startup — rooms open, documents load.
 
-    def test_a_single_step_is_inert_while_running(self, document):
-        """Stepping a running simulation would double-tick it, invisibly."""
-        panel = panels.PlaybackPanel(document)
-        document.set_running(True)
-        before = document.body.pos.copy()
+        Without the module flag the newcomer would come up unfolded inside an
+        app whose prose is folded, and only that one panel would disagree.
+        """
+        panel = panels.RoomPanel(document)
+        try:
+            panels.set_hints_visible(panel, True)
+            unfolded = panels.SolverPanel(document)
+            assert not any(
+                h.isHidden() for h in unfolded.findChildren(QLabel, "hint")
+            )
 
-        panel.single_step()
-        assert np.array_equal(before, document.body.pos)
-        assert not panel._step.isEnabled()
+            panels.set_hints_visible(panel, False)
+            folded = panels.SolverPanel(document)
+            assert all(h.isHidden() for h in folded.findChildren(QLabel, "hint"))
+        finally:
+            panels.set_hints_visible(panel, False)
 
-    def test_the_readout_follows_the_clock(self, document):
-        panel = panels.PlaybackPanel(document)
-        assert panel._ticks.text() == "0"
+    def test_a_hint_is_never_shown_before_it_has_a_parent(self, document):
+        """setVisible(True) on a parentless widget opens a window, not a label."""
+        panel = panels.RoomPanel(document)
+        try:
+            panels.set_hints_visible(panel, True)
+            assert not panels._hint("late").isVisible(), (
+                "an unparented hint showed itself as a top-level window"
+            )
+        finally:
+            panels.set_hints_visible(panel, False)
 
-        document.set_running(True)
-        document.advance(0.5)
-        panel.refresh()
+    def test_folding_the_hints_leaves_the_state_notes_alone(self, document):
+        """A note is the only place its fact appears, so it never folds.
 
-        assert document.clock.ticks > 0
-        assert panel._ticks.text() == str(document.clock.ticks)
-        assert panel._dropped.text() == str(document.clock.dropped)
-        assert panel._alpha.text() == f"{document.clock.alpha:.3f}"
+        Read on an *empty* document, because that is when an empty-state note
+        is the thing on screen — on a populated one it is correctly hidden by
+        its own panel, and the toggle could break it without the test noticing.
+        """
+        empty = Document()
+        creatures = panels.CreaturePanel(empty)
+        controllers = panels.ControllerPanel(empty)
+
+        for panel in (creatures, controllers):
+            note = panel._empty
+            assert note.objectName() == "note"
+            assert note not in panel.findChildren(QLabel, "hint")
+            assert not note.isHidden(), "the empty-state note was not on screen"
+
+        panels.set_hints_visible(creatures, False)
+        panels.set_hints_visible(controllers, False)
+
+        assert not creatures._empty.isHidden(), "folding hints took a note with it"
+        assert not controllers._empty.isHidden()
+
+    def test_every_panel_that_carries_prose_carries_it_as_hints(self, document):
+        """The conversion, stated as a set so a new paragraph joins the fold."""
+        built = panels.build_panels(document)
+        carrying = {
+            title
+            for title, panel in built.items()
+            if panel.findChildren(QLabel, "hint")
+        }
+        assert carrying == {
+            "Rooms",
+            "Chunks",
+            "Surface",
+            "Lighting",
+            "Solver",
+            "Terrain",
+            "Smoothing",
+        }
 
 
 class TestSurfacePanel:
@@ -1243,6 +1362,108 @@ class TestCreaturePanel:
 
         assert document.room is not meadow
         assert framed == []
+
+
+#: The width app.py gives the scene dock — the width these columns have to
+#: survive, not a width chosen to make the assertions pass.
+_DOCK_PX = 280
+
+#: What Qt spends on a cell's own left and right inset before any text. Small
+#: and approximate on purpose: the assertion it serves is "the name fits with
+#: room to spare", not a pixel-exact reproduction of Qt's item delegate.
+_CELL_PADDING_PX = 10
+
+
+def _laid_out(panel: QWidget, width: int) -> QWidget:
+    """Show ``panel`` at ``width`` so its tables lay their headers out for real.
+
+    Qt defers section geometry until a widget is actually shown, and a plain
+    ``resize`` on a hidden table leaves every section reporting its size in a
+    638px header that no dock ever gives it.
+    """
+    panel.resize(width, 700)
+    panel.show()
+    APPLICATION.processEvents()
+    panel.hide()
+    return panel
+
+
+class TestTableLegibility:
+    """Columns an author can read at the width the render left them.
+
+    The dock is narrow on purpose — the render takes the width it earns — and
+    Qt's answer to a table that does not fit is to shave every section until
+    the labels truncate mid-glyph. "Roon" and "Vame" are worse than a missing
+    column, because they look like data. These are the tests that fail when
+    the squeeze comes back.
+    """
+
+    def test_the_room_name_column_fits_a_room_name(self, document):
+        """A path elides without loss; the cell an author clicks does not.
+
+        Measured against the text the column actually has to show, not against
+        the file column beside it: at the old width Name came out *three pixels
+        wider* than File and still elided "quadruped" to "quadr…", so an
+        ordering assertion passed the bug it was written for. What matters is
+        whether the name fits, so that is what is asked.
+
+        The panel also has to be *shown* at the dock's width for any of this to
+        measure anything — a ``resize`` on an unshown table never reaches its
+        header, which keeps its initial 638px and reports every section at the
+        size it would have had in a dock three times too wide.
+        """
+        from mesh_xml.scene import Room
+
+        document.add_room(Room(name="quadruped"))
+        # Bound, not inlined: a panel nothing holds is collected, and Qt takes
+        # the table's C++ side down with it mid-assertion.
+        panel = _laid_out(panels.RoomPanel(document), _DOCK_PX)
+        table = panel._table
+
+        needed = table.fontMetrics().horizontalAdvance("quadruped")
+        actual = table.horizontalHeader().sectionSize(panels._R_NAME)
+        assert actual >= needed + _CELL_PADDING_PX, (
+            f"the room column is {actual}px and 'quadruped' needs "
+            f"{needed + _CELL_PADDING_PX}px — the name an author clicks elides"
+        )
+
+    def test_a_shortened_path_is_still_readable_on_hover(self, document):
+        """The elision is only affordable because nothing is actually lost."""
+        panel = panels.RoomPanel(document)
+
+        tip = panel._table.item(0, panels._R_FILE).toolTip()
+        assert tip, "the elided column tells the author nothing on hover"
+
+    def test_the_doors_table_never_squeezes_a_label_away(self, document):
+        """Six columns do not fit, so they scroll rather than shrink."""
+        panel = _laid_out(panels.RoomPanel(document), _DOCK_PX)
+        header = panel._doors.horizontalHeader()
+
+        assert header.minimumSectionSize() >= panels._DOOR_FLOOR_PX
+        assert (
+            panel._doors.horizontalScrollBarPolicy()
+            != Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        ), "columns below the floor with no way to scroll to them are unreachable"
+        for column in range(panel._doors.columnCount()):
+            assert header.sectionSize(column) >= panels._DOOR_FLOOR_PX
+
+    def test_headers_sit_over_the_edge_their_values_start_from(self, document):
+        """Centred labels above left-aligned rows: two axes for one column."""
+        rooms = panels.RoomPanel(document)
+        chunks = panels.ChunkPanel(document)
+        left = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+
+        for table in (rooms._table, rooms._doors, chunks._table):
+            assert table.horizontalHeader().defaultAlignment() == left
+
+        # ...except the two columns whose values are centred too, which keep
+        # their labels centred so the rule stays "the header follows the data".
+        for table, column in (
+            (rooms._table, panels._R_ABSTRACT),
+            (chunks._table, panels._PINNED),
+        ):
+            item = table.horizontalHeaderItem(column)
+            assert item.textAlignment() == Qt.AlignmentFlag.AlignCenter
 
 
 class TestRoomPanel:

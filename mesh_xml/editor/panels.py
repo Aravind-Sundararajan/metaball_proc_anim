@@ -21,16 +21,21 @@ refresh, and :func:`_user_edit` drops any control signal that arrives while it i
 held. Every handler carries the decorator, so a missing guard is visible at the
 point of declaration rather than at the point of failure.
 
-Three pieces of state are deliberately *not* the document's, and all three are
-marked as such at their definition: :attr:`SurfacePanel.show_rig_overlay`, which
-:class:`~mesh_xml.render.gl.metaball.MetaballSettings` has no field for,
+Two pieces of state are deliberately *not* the document's, and both are marked
+as such at their definition: :attr:`SurfacePanel.show_rig_overlay`, which
+:class:`~mesh_xml.render.gl.metaball.MetaballSettings` has no field for, and
 :attr:`SurfacePanel.orthographic`, which belongs to the viewport's
-:class:`~mesh_xml.render.gl.camera.OrbitCamera` and not to the rig at all, and
-:meth:`PlaybackPanel.single_step`, which has no counterpart on
-:class:`~mesh_xml.editor.document.Document`. All three are exposed as panel
-signals so the main window can wire them to the viewport rather than any of them
-being smuggled onto the document behind its own contract. The radius curve in
-:mod:`mesh_xml.editor.curve_panel` is a fourth, for the same reason.
+:class:`~mesh_xml.render.gl.camera.OrbitCamera` and not to the rig at all. Both
+are exposed as panel signals so the main window can wire them to the viewport
+rather than either being smuggled onto the document behind its own contract. The
+radius curve in :mod:`mesh_xml.editor.curve_panel` is a third, for the same
+reason.
+
+The transport is not here. Play, Step and Rest Pose are the window's own
+actions, shared by the toolbar and the menus so shortcut and checked state have
+one owner; a Playback panel repeating them as three buttons spent a whole rail
+slot disagreeing with nothing. The clock those buttons drive reads out on the
+status bar, where a number that changes ten times a second belongs.
 """
 
 from __future__ import annotations
@@ -45,11 +50,10 @@ import numpy as np
 from PySide6.QtCore import (
     QItemSelectionModel,
     Qt,
-    QTimer,
     Signal,
     SignalInstance,
 )
-from PySide6.QtGui import QColor, QFontDatabase
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -95,7 +99,6 @@ from mesh_xml.editor.document import (
 )
 
 __all__ = [
-    "PlaybackPanel",
     "SurfacePanel",
     "LightingPanel",
     "SolverPanel",
@@ -105,6 +108,7 @@ __all__ = [
     "ControllerPanel",
     "RoomPanel",
     "build_panels",
+    "set_hints_visible",
 ]
 
 #: Slider steps across the blend range. The slider is an int widget; the spin box
@@ -137,6 +141,9 @@ _ROOM_COLUMNS = ("Name", "Creatures", "Abstract", "File")
 
 _D_NAME, _D_AT, _D_TO_ROOM, _D_TO_DOOR, _D_RADIUS, _D_STATUS = range(6)
 _DOOR_COLUMNS = ("Name", "At", "Room", "Door", "Radius", "")
+#: Narrowest a doors column may be squeezed. "Radius" is the widest header,
+#: so this is what it takes for the labels to survive a narrow dock.
+_DOOR_FLOOR_PX = 58
 
 
 def _user_edit(handler: Callable[..., None]) -> Callable[..., None]:
@@ -220,24 +227,50 @@ def _form() -> QFormLayout:
     return layout
 
 
-def _cap_rows(table: QTableWidget, rows: int) -> QTableWidget:
-    """Stop an empty table from claiming a dock's whole height.
+def _fit_rows(table: QTableWidget, cap: int) -> QTableWidget:
+    """Size a table to what it holds, up to ``cap`` rows.
 
     A table given a stretch factor takes every pixel offered whether or not it
-    has anything to put there, and the Rooms dock spent seven hundred vertical
-    pixels on a one-room list above an empty door list. Past ``rows`` the table
-    scrolls, which is the honest trade: the common case is a handful of rows,
-    and the uncommon one gets a scrollbar rather than the whole window.
+    has anything to put there, and the scene dock spent seven hundred vertical
+    pixels on a one-room list above an empty door list. Sizing to content and
+    capping is the honest shape: an empty list is a thin strip that says it is
+    empty, a full one stops growing before it eats the panel, and past the cap
+    it scrolls. Call it again whenever the row count changes.
     """
     header = table.horizontalHeader().sizeHint().height()
-    table.setMaximumHeight(header + rows * _ROW_HEIGHT_PX + 4)
+    shown = max(1, min(table.rowCount(), cap))
+    height = header + shown * _ROW_HEIGHT_PX + 4
+    table.setMinimumHeight(height)
+    table.setMaximumHeight(height)
     return table
 
 
-#: Assumed table row height in pixels for :func:`_cap_rows`. Qt computes the
+#: Assumed table row height in pixels for :func:`_fit_rows`. Qt computes the
 #: real one from the font at paint time; this only has to be close, because it
 #: sizes a maximum nothing depends on being exact.
 _ROW_HEIGHT_PX = 26
+
+
+def _align_headers(table: QTableWidget, centred: tuple[int, ...] = ()) -> QTableWidget:
+    """Set each header over the edge its own column's values start from.
+
+    Qt centres header labels and left-aligns cell text, so every table here
+    shipped with "Name" floating in the middle of a column of names hugging its
+    left edge — two axes for one column, which is the sort of thing that reads
+    as unfinished without ever being noticed as wrong. Columns in ``centred``
+    are the ones whose *values* are centred too (the check marks), so they keep
+    their labels over the middle and the rule stays "the header follows the
+    data".
+    """
+    header = table.horizontalHeader()
+    header.setDefaultAlignment(
+        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+    )
+    for column in centred:
+        item = table.horizontalHeaderItem(column)
+        if item is not None:
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    return table
 
 
 def _spin(
@@ -287,6 +320,54 @@ def _note(text: str) -> QLabel:
     return label
 
 
+#: Whether newly built hints start visible. Module state because hints are
+#: created all through a panel's life — a controller box built when a
+#: controller is added has to agree with the ten built at startup — and
+#: because the preference is one answer for the whole app, not per panel.
+_HINTS_VISIBLE = False
+
+
+def _hint(text: str) -> QLabel:
+    """Onboarding prose: true, worth reading once, and not worth the wall.
+
+    Distinct from :func:`_note`, which reports *state* — what the selection
+    holds, why a list is empty, which controller will not be saved. A note has
+    to be on screen because it is the only place its fact appears. A hint
+    explains a control that is already there and already carries a tooltip, so
+    it earns its space the first time and spends it forever after: the Scene
+    dock gave four of its nine hundred pixels' worth of column to two
+    paragraphs an author reads once and then reads around.
+
+    So hints answer to :func:`set_hints_visible` as a group, and default to
+    folded. The prose is not deleted and not moved into a manual — it is one
+    toggle away, in the panel it belongs to.
+    """
+    label = _note(text)
+    label.setObjectName("hint")
+    # Hidden explicitly, never *shown* explicitly: the label has no parent yet,
+    # and setVisible(True) on a parentless widget makes it a top-level window —
+    # a hint would flash on screen as its own little frame every time a panel
+    # was built with the prose unfolded. Left alone it simply inherits its
+    # parent's visibility once it joins a layout, which is the state wanted.
+    if not _HINTS_VISIBLE:
+        label.setVisible(False)
+    return label
+
+
+def set_hints_visible(root: QWidget, visible: bool) -> int:
+    """Fold or unfold every hint under ``root``; return how many were reached.
+
+    The count is returned because "the toggle did nothing" and "there was
+    nothing to toggle" look identical on screen, and only one of them is a bug.
+    """
+    global _HINTS_VISIBLE
+    _HINTS_VISIBLE = visible
+    hints = root.findChildren(QLabel, "hint")
+    for label in hints:
+        label.setVisible(visible)
+    return len(hints)
+
+
 def _rgb(colour: QColor) -> tuple[float, float, float]:
     return (colour.redF(), colour.greenF(), colour.blueF())
 
@@ -299,128 +380,6 @@ def _swatch(button: QPushButton, colour: QColor) -> None:
     ink = "#000000" if colour.lightnessF() > 0.5 else "#ffffff"
     button.setText(colour.name())
     button.setStyleSheet(f"background-color: {colour.name()}; color: {ink};")
-
-
-class PlaybackPanel(_Panel):
-    """Transport, and an honest readout of what the clock is actually doing.
-
-    Dropped ticks are the number worth watching. A simulation that cannot keep
-    up runs slow rather than falling further behind, which is the right
-    behaviour and is completely invisible unless something says so.
-    """
-
-    #: A single tick has been run outside the clock. The main window connects
-    #: this to the viewport, because the document has no per-tick signal to
-    #: repaint on and stepping while paused would otherwise draw nothing.
-    stepped = Signal()
-
-    READOUT_INTERVAL_MS = 100
-
-    def __init__(self, document: Document, parent: QWidget | None = None) -> None:
-        super().__init__(document, parent)
-
-        self._play = QPushButton("Play")
-        self._play.setCheckable(True)
-        self._step = QPushButton("Step")
-        self._rest = QPushButton("Rest Pose")
-        self._ticks = QLabel()
-        self._dropped = QLabel()
-        self._alpha = QLabel()
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(self._build_transport())
-        layout.addWidget(self._build_readout())
-        layout.addStretch(1)
-
-        self._play.toggled.connect(self._on_play_toggled)
-        self._step.clicked.connect(self._on_step_clicked)
-        self._rest.clicked.connect(self._on_rest_clicked)
-        self._follow(document.running_changed)
-
-        # The clock advances every frame and emits nothing, so the readout is
-        # polled. Cheap, and it keeps Document free of a per-tick signal that
-        # every other view would have to learn to ignore.
-        self._timer = QTimer(self)
-        self._timer.setInterval(self.READOUT_INTERVAL_MS)
-        self._timer.timeout.connect(self.refresh)
-        self._timer.start()
-
-        self.refresh()
-
-    def single_step(self) -> None:
-        """Run exactly one simulation tick while paused.
-
-        Delegates to :meth:`Document.step_once` rather than reproducing the tick
-        body, so anything added to a tick later — controllers in Phase 4 — runs
-        here too instead of silently applying only during playback.
-        """
-        document = self._document
-        if document.running:
-            return
-        document.step_once()
-        self.stepped.emit()
-        self.refresh()
-
-    def _build_transport(self) -> QWidget:
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        for button in (self._play, self._step, self._rest):
-            layout.addWidget(button)
-
-        self._step.setToolTip(
-            "Advance one fixed tick. The clock is not consumed, so the tick "
-            "count below does not move."
-        )
-        self._rest.setToolTip(
-            "Return every chunk to the pose captured when playback last stopped, "
-            "and drop all motion."
-        )
-        return row
-
-    def _build_readout(self) -> QWidget:
-        box = QGroupBox(f"Clock ({solver.TICK_HZ:g} Hz)")
-        layout = _form()
-        box.setLayout(layout)
-
-        fixed = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
-        for label, value in (
-            ("Ticks", self._ticks),
-            ("Dropped", self._dropped),
-            ("Alpha", self._alpha),
-        ):
-            value.setFont(fixed)
-            layout.addRow(label, value)
-
-        self._dropped.setToolTip(
-            "Ticks the clock refused to run to avoid a catch-up spiral. Anything "
-            "above zero means the simulation is running slow."
-        )
-        return box
-
-    @_user_edit
-    def _on_play_toggled(self, playing: bool) -> None:
-        self._document.set_running(playing)
-
-    @_user_edit
-    def _on_step_clicked(self) -> None:
-        self.single_step()
-
-    @_user_edit
-    def _on_rest_clicked(self) -> None:
-        self._document.reset_pose()
-        self.refresh()
-
-    def _refresh(self) -> None:
-        running = self._document.running
-        self._play.setChecked(running)
-        self._play.setText("Pause" if running else "Play")
-        self._step.setEnabled(not running)
-
-        clock = self._document.clock
-        self._ticks.setText(f"{clock.ticks}")
-        self._dropped.setText(f"{clock.dropped}")
-        self._alpha.setText(f"{clock.alpha:.3f}")
 
 
 class SurfacePanel(_Panel):
@@ -549,7 +508,7 @@ class SurfacePanel(_Panel):
         layout.addWidget(self._blend)
         layout.addWidget(self._blend_slider)
         layout.addWidget(
-            _note(
+            _hint(
                 "Blend fattens as well as smooths. A chunk with two or more "
                 "links sits inside both of its cones, so it reads about k/4 "
                 "wider than its authored radius and the body beads slightly at "
@@ -577,7 +536,7 @@ class SurfacePanel(_Panel):
         layout.addRow(self._ortho)
         layout.addRow(self._floor)
         layout.addRow(
-            _note(
+            _hint(
                 "Orthographic keeps the subject about the same size on screen: "
                 "the camera derives its ortho height from the perspective "
                 "framing, so the toggle is a comparison rather than a "
@@ -857,7 +816,7 @@ class LightingPanel(_Panel):
         layout.addRow("Terrain", self._terrain_colour)
         layout.addRow("Ambient", self._ambient)
         layout.addRow(
-            _note(
+            _hint(
                 "The backdrop lights the creature: shadows fill with the "
                 "sky and horizon tones — sky half from above, a quieter "
                 "ground half from below. A black backdrop fills nothing."
@@ -1103,7 +1062,7 @@ class SolverPanel(_Panel):
             layout.addRow(axis, spin)
         layout.addRow(self._zero_g)
         layout.addRow(
-            _note(
+            _hint(
                 "Applied to a 2-D rig by trimming, so a 3-D gravity survives "
                 "being handed to one unchanged."
             )
@@ -1269,7 +1228,7 @@ class SmoothingPanel(_Panel):
         layout.addRow(self._scope)
         layout.addRow(self._mixed)
         layout.addRow(
-            _note(
+            _hint(
                 "Per-tick coefficients, not per-second: they are applied once "
                 f"per {solver.TICK_HZ:g} Hz tick and are only meaningful against "
                 "that fixed rate. Do not read them as rates and do not scale "
@@ -1277,7 +1236,7 @@ class SmoothingPanel(_Panel):
             )
         )
         layout.addRow(
-            _note(
+            _hint(
                 "Stiffness and damping are stored per point, and these boxes "
                 "write the selected chunks only — a tight head over a loose "
                 "gut. Select nothing to write every point, which also sets what "
@@ -1637,7 +1596,7 @@ class TerrainPanel(_Panel):
         layout.addWidget(ground_row)
         layout.addWidget(self._floor)
         layout.addWidget(
-            _note(
+            _hint(
                 "Shape a ridge out of chunks, then promote it — a chunk "
                 "chain and a terrain cone are the same eight numbers. The "
                 "world is one hard surface under the flesh: feet rest on "
@@ -2037,10 +1996,10 @@ class RoomPanel(_Panel):
         self._remove_door = QPushButton("Remove Door")
 
         layout = QVBoxLayout(self)
-        layout.addWidget(_cap_rows(self._table, 8))
+        layout.addWidget(_fit_rows(self._table, 8))
         layout.addWidget(self._build_actions())
         layout.addWidget(
-            _note(
+            _hint(
                 "Click a room to edit it; every room keeps simulating "
                 "either way. Abstract parks a room at its cheap tier — "
                 "anchors and brains only — and a door into a parked room "
@@ -2106,10 +2065,15 @@ class RoomPanel(_Panel):
         # it, which starved Name down to two letters — the one cell an author
         # reads and clicks. A path can elide; a name being clicked cannot.
         header.setSectionResizeMode(_R_FILE, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(_R_FILE, 68)
-        header.setMinimumSectionSize(42)
+        # 68 was still too generous: at the dock's real width the three fixed
+        # columns left the stretch column about seventy pixels, and the room an
+        # author clicks read "quadr…". A path is the one cell here that loses
+        # nothing by eliding — it is recognised by its tail, and it carries the
+        # whole path as a tooltip — so it pays for the name, not the reverse.
+        header.resizeSection(_R_FILE, 44)
+        header.setMinimumSectionSize(40)
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        return table
+        return _align_headers(table, centred=(_R_ABSTRACT,))
 
     def _build_actions(self) -> QWidget:
         row = QWidget()
@@ -2138,12 +2102,20 @@ class RoomPanel(_Panel):
             header.setSectionResizeMode(
                 column, QHeaderView.ResizeMode.ResizeToContents
             )
-        return table
+        # Six columns do not fit the dock the render left us, and Qt's answer
+        # to that is to shave every section until the headers read "Vame | At
+        # | Roon" — labels truncated mid-glyph, which is worse than absent
+        # because they look like data. A floor plus a scrollbar keeps every
+        # column legible and reachable: the table scrolls, the words don't lie.
+        header.setMinimumSectionSize(_DOOR_FLOOR_PX)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        return _align_headers(table)
 
     def _build_doors(self) -> QWidget:
         box = QGroupBox("Doors — the active room's exits")
         layout = QVBoxLayout(box)
-        layout.addWidget(_cap_rows(self._doors, 6))
+        layout.addWidget(_fit_rows(self._doors, 6))
         buttons = QWidget()
         buttons_layout = QHBoxLayout(buttons)
         buttons_layout.setContentsMargins(0, 0, 0, 0)
@@ -2151,7 +2123,7 @@ class RoomPanel(_Panel):
         buttons_layout.addWidget(self._remove_door)
         layout.addWidget(buttons)
         layout.addWidget(
-            _note(
+            _hint(
                 "A door is a place plus a promise: brains walk to it, the "
                 "scene carries whoever arrives to the far room's paired "
                 "door. The last column says when a promise cannot be kept "
@@ -2287,7 +2259,13 @@ class RoomPanel(_Panel):
             text = f"{star}{path.name}"
         else:
             text = f"{star}unsaved" if star else "—"
-        self._cell(row, _R_FILE).setText(text)
+        cell = self._cell(row, _R_FILE)
+        cell.setText(text)
+        # The column is deliberately narrow enough to elide, so the whole path
+        # — not the shortened name the cell shows — has to be readable on
+        # hover, or the elision costs the author the one thing the column is
+        # for: knowing *which* file this room came from.
+        cell.setToolTip(str(path) if path is not None else "Not saved to a file")
 
     def _door_cell(self, row: int, column: int) -> QTableWidgetItem:
         item = self._doors.item(row, column)
@@ -2342,6 +2320,12 @@ class RoomPanel(_Panel):
             self._write_door_row(row, door)
         self._remove_door.setEnabled(bool(doors))
 
+        # Both tables follow their contents: a scene of one room and a room
+        # with no doors should look like what they are, not like two empty
+        # boxes waiting to be filled.
+        _fit_rows(self._table, 8)
+        _fit_rows(self._doors, 6)
+
 
 class ChunkPanel(_Panel):
     """The chunk table, bound to the selection.
@@ -2371,7 +2355,7 @@ class ChunkPanel(_Panel):
         layout.addWidget(self._table, 1)
         layout.addWidget(self._build_actions())
         layout.addWidget(
-            _note(
+            _hint(
                 "Add grows a linked chunk out of the selection, or a free one "
                 "when nothing is selected. Connect chains the selection in "
                 "table order; disconnect drops every link between selected "
@@ -2418,7 +2402,7 @@ class ChunkPanel(_Panel):
         header.setSectionResizeMode(_NAME, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(_RADIUS, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(_PINNED, QHeaderView.ResizeMode.ResizeToContents)
-        return table
+        return _align_headers(table, centred=(_PINNED,))
 
     def _build_actions(self) -> QWidget:
         row = QWidget()
@@ -2589,7 +2573,6 @@ def build_panels(document: Document) -> dict[str, QWidget]:
     from mesh_xml.editor.curve_panel import CurvePanel
 
     return {
-        "Playback": PlaybackPanel(document),
         "Rooms": RoomPanel(document),
         "Chunks": ChunkPanel(document),
         "Creatures": CreaturePanel(document),

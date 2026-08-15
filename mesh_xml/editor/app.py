@@ -17,25 +17,74 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QAction, QFontDatabase, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
+    QLabel,
     QMainWindow,
     QMessageBox,
-    QTabBar,
     QToolBar,
 )
 
+from mesh_xml.core import solver
+from mesh_xml.editor import icons, panels as panels_module, theme
 from mesh_xml.editor.document import Document, RemoveChunk
 from mesh_xml.editor.panels import build_panels
+from mesh_xml.editor.rail import Inspector
 from mesh_xml.editor.viewport import MetaballViewport
 from mesh_xml.render.gl.context import configure_surface_format, ensure_application
 
-__all__ = ["MainWindow", "main"]
+__all__ = ["ClockReadout", "MainWindow", "main"]
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
+
+
+class ClockReadout(QLabel):
+    """What the clock is actually doing, on the status bar.
+
+    Dropped ticks are the number worth watching: a simulation that cannot keep
+    up runs slow rather than falling further behind, which is the right
+    behaviour and completely invisible unless something says so. So the count
+    goes amber the moment it leaves zero — the one state here that is news.
+
+    It reads out on the status bar rather than in a dock because it is three
+    numbers that change ten times a second, which is what a status bar is, and
+    because the panel it used to live in spent a whole inspector slot repeating
+    a transport the toolbar already owned.
+
+    Polled rather than driven: the clock advances every frame and emits
+    nothing, and a per-tick signal on the document is a signal every other view
+    would have to learn to ignore.
+    """
+
+    INTERVAL_MS = 100
+
+    def __init__(self, document: Document, parent: QLabel | None = None) -> None:
+        super().__init__(parent)
+        self._document = document
+        self.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        self.setToolTip(
+            f"Simulation clock at {solver.TICK_HZ:g} Hz. Dropped counts ticks "
+            "the clock refused to run to avoid a catch-up spiral — anything "
+            "above zero means the simulation is running slow. Alpha is the "
+            "interpolation position between the last two ticks."
+        )
+        self._timer = QTimer(self)
+        self._timer.setInterval(self.INTERVAL_MS)
+        self._timer.timeout.connect(self.refresh)
+        self._timer.start()
+        self.refresh()
+
+    def refresh(self) -> None:
+        clock = self._document.clock
+        self.setText(
+            f"{clock.ticks} ticks   {clock.dropped} dropped   α {clock.alpha:.3f}"
+        )
+        self.setStyleSheet(
+            f"color: {theme.ACCENT};" if clock.dropped else f"color: {theme.DIM};"
+        )
 
 
 class MainWindow(QMainWindow):
@@ -56,79 +105,57 @@ class MainWindow(QMainWindow):
         self.document.body_replaced.connect(self._refresh_title)
         self.document.history_changed.connect(self._refresh_history)
 
+        self.clock_readout = ClockReadout(self.document)
+        self.statusBar().addPermanentWidget(self.clock_readout)
+
         self.resize(1500, 940)
         self._refresh_title()
         self._refresh_history()
         self.statusBar().showMessage("Ready")
 
     def _build_docks(self) -> None:
-        self.panels = build_panels(self.document)
-        for title, widget in self.panels.items():
-            dock = QDockWidget(title, self)
-            dock.setWidget(widget)
-            dock.setObjectName(f"dock_{title.lower().replace(' ', '_')}")
-            # Rooms sit apart on the left: the dock is a map of the scene,
-            # not another knob on the active room like everything tabbed
-            # on the right.
-            area = (
-                Qt.DockWidgetArea.LeftDockWidgetArea
-                if title == "Rooms"
-                else Qt.DockWidgetArea.RightDockWidgetArea
-            )
-            self.addDockWidget(area, dock)
-            self._docks[title] = dock
+        """Two docks: the scene on the left, everything else in one inspector.
 
-        # Playback stays visible; the four editing panels share one tab stack,
-        # because five panels stretched down a single column leaves every one of
-        # them too short to use.
-        tabbed = [
-            self._docks[t]
-            for t in (
-                "Chunks",
-                "Controllers",
-                "Surface",
-                "Lighting",
-                "Solver",
-                "Terrain",
-                "Smoothing",
-                "Curve",
-            )
-            if t in self._docks
-        ]
-        for previous, dock in zip(tabbed, tabbed[1:]):
-            self.tabifyDockWidget(previous, dock)
-        if tabbed:
-            tabbed[0].raise_()
+        The scene map and the thing being inspected are different questions —
+        *which room am I in* against *what is this made of* — so the rooms keep
+        their own edge, the way a hierarchy and an inspector sit apart in every
+        editor that has both. Everything else goes into one stack behind an
+        icon rail (:mod:`mesh_xml.editor.rail`), because eleven panels in a
+        tabified dock is eleven panels you cannot find.
+        """
+        self.panels = build_panels(self.document)
+
+        rooms = self.panels.get("Rooms")
+        if rooms is not None:
+            dock = QDockWidget("Scene", self)
+            dock.setWidget(rooms)
+            dock.setObjectName("dock_scene")
+            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+            self._docks["Rooms"] = dock
+
+        self.inspector = Inspector(
+            {t: w for t, w in self.panels.items() if t != "Rooms"}, self
+        )
+        self.inspector.hints_requested.connect(self.set_hints_visible)
+        dock = QDockWidget("Inspector", self)
+        dock.setWidget(self.inspector)
+        dock.setObjectName("dock_inspector")
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self._docks["Inspector"] = dock
 
         # The render is the product, so it gets the room. Left to itself Qt
         # hands each dock its widest child's hint, which put the viewport at
         # under half the window while a one-room table and a column of
-        # four-character spin boxes took the rest. These two numbers are the
-        # floor of what the docks stay legible at — narrower and the Rooms
-        # table drops columns behind a scrollbar.
-        left = [d for t, d in self._docks.items() if t == "Rooms"]
-        right = [d for t, d in self._docks.items() if t != "Rooms"]
-        if left:
-            self.resizeDocks(left, [280] * len(left), Qt.Orientation.Horizontal)
-        if right:
-            self.resizeDocks(right, [440] * len(right), Qt.Orientation.Horizontal)
-        self._tidy_dock_tabs()
+        # four-character spin boxes took the rest. These are the floor of what
+        # the docks stay legible at — narrower and the Scene table starts
+        # dropping columns behind a scrollbar.
+        self.resizeDocks(
+            list(self._docks.values()),
+            [280 if t == "Rooms" else 420 for t in self._docks],
+            Qt.Orientation.Horizontal,
+        )
 
         self._wire_panels()
-
-    def _tidy_dock_tabs(self) -> None:
-        """Let the dock tab bar overflow instead of shrinking to initials.
-
-        Eight tabified panels do not fit any dock width worth giving them, and
-        Qt's default is to elide every label until the row reads "C… C… S… L…".
-        Scroll buttons keep the names whole and move the cost to a gesture,
-        which is the right trade: a tab you can read and scroll to beats eight
-        you cannot tell apart.
-        """
-        for bar in self.findChildren(QTabBar):
-            bar.setElideMode(Qt.TextElideMode.ElideNone)
-            bar.setUsesScrollButtons(True)
-            bar.setExpanding(False)
 
     def _wire_panels(self) -> None:
         """Connect the panel signals that address the viewport rather than the document."""
@@ -140,10 +167,6 @@ class MainWindow(QMainWindow):
             # rather than the two starting out disagreeing.
             surface.set_show_rig_overlay(self.viewport.show_rig)
             surface.set_orthographic(self.viewport.camera.orthographic)
-
-        playback = self.panels.get("Playback")
-        if playback is not None:
-            playback.stepped.connect(self.viewport.update)
 
         rooms = self.panels.get("Rooms")
         if rooms is not None:
@@ -181,7 +204,7 @@ class MainWindow(QMainWindow):
         """
         document = self.document
 
-        self.play_action = QAction("Play", self)
+        self.play_action = QAction(icons.icon("play"), "Play", self)
         self.play_action.setCheckable(True)
         self.play_action.setShortcut(QKeySequence(Qt.Key.Key_Space))
         self.play_action.setToolTip("Play or pause the scene (Space)")
@@ -190,7 +213,7 @@ class MainWindow(QMainWindow):
         )
         document.running_changed.connect(self._sync_play_action)
 
-        self.step_action = QAction("Step", self)
+        self.step_action = QAction(icons.icon("step"), "Step", self)
         self.step_action.setToolTip(
             "Advance one fixed tick while paused; the clock is not consumed"
         )
@@ -199,7 +222,7 @@ class MainWindow(QMainWindow):
             lambda running: self.step_action.setEnabled(not running)
         )
 
-        self.rest_action = QAction("Rest Pose", self)
+        self.rest_action = QAction(icons.icon("rest"), "Rest Pose", self)
         self.rest_action.setToolTip(
             "Return every chunk to the pose captured when playback last stopped"
         )
@@ -207,12 +230,12 @@ class MainWindow(QMainWindow):
             lambda checked=False: document.reset_pose()
         )
 
-        self.add_action = QAction("Add Chunk", self)
+        self.add_action = QAction(icons.icon("add"), "Add Chunk", self)
         self.add_action.setShortcut(QKeySequence("A"))
         self.add_action.setToolTip("Grow a chunk out of the selection (A)")
         self.add_action.triggered.connect(lambda checked=False: self.add_chunk())
 
-        self.autorig_action = QAction("Fit Autorig", self)
+        self.autorig_action = QAction(icons.icon("autorig"), "Fit Autorig", self)
         self.autorig_action.setToolTip(
             "Fit a spine, an idle breath and a wave driver to the body — "
             "the shipped examples' recipe, one undo step"
@@ -221,7 +244,7 @@ class MainWindow(QMainWindow):
             lambda checked=False: document.fit_autorig()
         )
 
-        self.rig_legs_action = QAction("Rig Legs", self)
+        self.rig_legs_action = QAction(icons.icon("legs"), "Rig Legs", self)
         self.rig_legs_action.setToolTip(
             "Compile the measured walker onto every leg-shaped appendage — "
             "three chunks grown from the spine, ending near the floor"
@@ -230,7 +253,15 @@ class MainWindow(QMainWindow):
             lambda checked=False: document.rig_legs()
         )
 
-        self.frame_action = QAction("Frame All", self)
+        self.hints_action = QAction(icons.icon("hint"), "Show &Hints", self)
+        self.hints_action.setCheckable(True)
+        self.hints_action.setShortcut(QKeySequence("F1"))
+        self.hints_action.setToolTip(
+            "Unfold the explanatory prose under each panel's controls (F1)"
+        )
+        self.hints_action.toggled.connect(self.set_hints_visible)
+
+        self.frame_action = QAction(icons.icon("frame"), "Frame All", self)
         self.frame_action.setShortcut(QKeySequence("F"))
         self.frame_action.setToolTip("Fit the camera to the creature (F)")
         self.frame_action.triggered.connect(
@@ -247,12 +278,28 @@ class MainWindow(QMainWindow):
             self.autorig_action,
             self.rig_legs_action,
             self.frame_action,
+            self.hints_action,
         ):
             self.addAction(action)
 
+    def set_hints_visible(self, visible: bool) -> int:
+        """Fold or unfold every panel's prose at once.
+
+        Window-wide rather than per dock: the Scene dock sits outside the
+        inspector, and a hint toggle that reached ten panels but not the two
+        paragraphs in the widest one would be the more annoying half of a fix.
+        """
+        if self.hints_action.isChecked() != visible:
+            self.hints_action.setChecked(visible)
+        self.inspector.set_hints_shown(visible)
+        return panels_module.set_hints_visible(self, visible)
+
     def _sync_play_action(self, running: bool) -> None:
         self.play_action.setChecked(running)
+        # Word and glyph both, because a transport button that says one state
+        # while drawing the other is the classic play/pause ambiguity.
         self.play_action.setText("Pause" if running else "Play")
+        self.play_action.setIcon(icons.icon("pause" if running else "play"))
 
     def step_once(self) -> None:
         """One paused tick from the window's own surfaces.
@@ -271,7 +318,13 @@ class MainWindow(QMainWindow):
         toolbar.setObjectName("toolbar_main")
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
-        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        # Icon *beside* text, not instead of it. These are domain verbs — "Fit
+        # Autorig", "Rig Legs" — that no glyph teaches on its own; the icon
+        # makes the row scannable and the word keeps it unambiguous. The rail
+        # is where icons stand alone, because there the header names the one
+        # that matters.
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        toolbar.setIconSize(QSize(15, 15))
         for action in (self.play_action, self.step_action, self.rest_action):
             toolbar.addAction(action)
         toolbar.addSeparator()
@@ -338,6 +391,8 @@ class MainWindow(QMainWindow):
             self._action(
                 view_menu, label, QKeySequence(key), lambda v=view: self.snap_view(v)
             )
+        view_menu.addSeparator()
+        view_menu.addAction(self.hints_action)
         view_menu.addSeparator()
         for title, dock in self._docks.items():
             view_menu.addAction(dock.toggleViewAction())
