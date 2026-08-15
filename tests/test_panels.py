@@ -136,6 +136,79 @@ class TestBuildPanels:
             assert isinstance(panel, QWidget)
             assert panel.document is document
 
+
+class TestInspectorRail:
+    """Navigation that hides itself is not navigation.
+
+    The panels used to live in a tabified dock whose tab row does not fit any
+    width worth giving it — Qt elided the labels to initials, and turning on
+    scroll buttons took two panels off screen entirely. The rail's whole claim
+    is that every panel is reachable at a glance, so these tests are about
+    reachability first and prettiness not at all.
+    """
+
+    def test_every_panel_gets_a_button_and_none_are_hidden(self, document):
+        from mesh_xml.editor.rail import Inspector
+
+        built = {t: w for t, w in panels.build_panels(document).items() if t != "Rooms"}
+        inspector = Inspector(built)
+
+        buttons = inspector._buttons.buttons()
+        assert len(buttons) == len(built), "a panel with no button is unreachable"
+        assert all(not b.isHidden() for b in buttons)
+        assert {b.toolTip() for b in buttons} == set(built)
+
+    def test_every_panel_has_an_icon_of_its_own(self, document):
+        """A missing name falls back to a letter, which is the old problem back.
+
+        This is the test that fails when a panel is added and its glyph is
+        not, rather than the panel quietly shipping as an initial in a strip
+        of pictures.
+        """
+        from mesh_xml.editor import icons
+
+        built = panels.build_panels(document)
+        missing = [t for t in built if icons.panel_icon(t) is None]
+        assert missing == [], f"panels with no icon: {missing}"
+
+    def test_choosing_a_panel_raises_it_and_says_its_name(self, document):
+        from mesh_xml.editor.rail import Inspector
+
+        built = {t: w for t, w in panels.build_panels(document).items() if t != "Rooms"}
+        inspector = Inspector(built)
+        seen: list[str] = []
+        inspector.shown.connect(seen.append)
+
+        index = list(built).index("Terrain")
+        inspector._buttons.button(index).click()
+
+        assert inspector.current == "Terrain"
+        assert inspector._stack.currentWidget() is built["Terrain"]
+        assert "TERRAIN" in inspector._heading.text()
+        assert seen[-1] == "Terrain"
+
+    def test_exactly_one_button_is_marked(self, document):
+        from mesh_xml.editor.rail import Inspector
+
+        built = {t: w for t, w in panels.build_panels(document).items() if t != "Rooms"}
+        inspector = Inspector(built)
+
+        inspector.show_panel("Lighting")
+        checked = [b for b in inspector._buttons.buttons() if b.isChecked()]
+        assert len(checked) == 1
+        assert checked[0].toolTip() == "Lighting"
+
+    def test_an_unknown_panel_name_is_ignored_rather_than_raising(self, document):
+        from mesh_xml.editor.rail import Inspector
+
+        built = {t: w for t, w in panels.build_panels(document).items() if t != "Rooms"}
+        inspector = Inspector(built)
+        before = inspector.current
+
+        inspector.show_panel("Nonesuch")
+
+        assert inspector.current == before
+
     def test_assembling_the_panels_edits_nothing(self, document):
         built = panels.build_panels(document)
         assert built

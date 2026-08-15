@@ -220,21 +220,25 @@ def _form() -> QFormLayout:
     return layout
 
 
-def _cap_rows(table: QTableWidget, rows: int) -> QTableWidget:
-    """Stop an empty table from claiming a dock's whole height.
+def _fit_rows(table: QTableWidget, cap: int) -> QTableWidget:
+    """Size a table to what it holds, up to ``cap`` rows.
 
     A table given a stretch factor takes every pixel offered whether or not it
-    has anything to put there, and the Rooms dock spent seven hundred vertical
-    pixels on a one-room list above an empty door list. Past ``rows`` the table
-    scrolls, which is the honest trade: the common case is a handful of rows,
-    and the uncommon one gets a scrollbar rather than the whole window.
+    has anything to put there, and the scene dock spent seven hundred vertical
+    pixels on a one-room list above an empty door list. Sizing to content and
+    capping is the honest shape: an empty list is a thin strip that says it is
+    empty, a full one stops growing before it eats the panel, and past the cap
+    it scrolls. Call it again whenever the row count changes.
     """
     header = table.horizontalHeader().sizeHint().height()
-    table.setMaximumHeight(header + rows * _ROW_HEIGHT_PX + 4)
+    shown = max(1, min(table.rowCount(), cap))
+    height = header + shown * _ROW_HEIGHT_PX + 4
+    table.setMinimumHeight(height)
+    table.setMaximumHeight(height)
     return table
 
 
-#: Assumed table row height in pixels for :func:`_cap_rows`. Qt computes the
+#: Assumed table row height in pixels for :func:`_fit_rows`. Qt computes the
 #: real one from the font at paint time; this only has to be close, because it
 #: sizes a maximum nothing depends on being exact.
 _ROW_HEIGHT_PX = 26
@@ -2037,7 +2041,7 @@ class RoomPanel(_Panel):
         self._remove_door = QPushButton("Remove Door")
 
         layout = QVBoxLayout(self)
-        layout.addWidget(_cap_rows(self._table, 8))
+        layout.addWidget(_fit_rows(self._table, 8))
         layout.addWidget(self._build_actions())
         layout.addWidget(
             _note(
@@ -2143,7 +2147,7 @@ class RoomPanel(_Panel):
     def _build_doors(self) -> QWidget:
         box = QGroupBox("Doors — the active room's exits")
         layout = QVBoxLayout(box)
-        layout.addWidget(_cap_rows(self._doors, 6))
+        layout.addWidget(_fit_rows(self._doors, 6))
         buttons = QWidget()
         buttons_layout = QHBoxLayout(buttons)
         buttons_layout.setContentsMargins(0, 0, 0, 0)
@@ -2341,6 +2345,12 @@ class RoomPanel(_Panel):
         for row, door in enumerate(doors):
             self._write_door_row(row, door)
         self._remove_door.setEnabled(bool(doors))
+
+        # Both tables follow their contents: a scene of one room and a room
+        # with no doors should look like what they are, not like two empty
+        # boxes waiting to be filled.
+        _fit_rows(self._table, 8)
+        _fit_rows(self._doors, 6)
 
 
 class ChunkPanel(_Panel):

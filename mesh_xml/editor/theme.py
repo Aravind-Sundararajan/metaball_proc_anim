@@ -305,6 +305,39 @@ QLabel#note {{
     color: {DIM};
 }}
 
+/* The inspector rail: eleven panels, all of them reachable at a glance. The
+   strip sits a shade darker than the panel beside it so it reads as an edge
+   of the window rather than a row of floating buttons, and the accent marks
+   exactly one — which is the whole job. */
+QWidget#rail {{
+    background: {FIELD};
+    border-left: 1px solid {BORDER};
+}}
+QToolButton#railButton {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+}}
+QToolButton#railButton:hover {{
+    background: {RAISED};
+}}
+QToolButton#railButton:checked {{
+    background: {SELECT};
+    border-color: {ACCENT};
+}}
+
+/* The active panel says its own name, so the rail's glyphs never have to
+   carry meaning alone — the pairing an icon-only navigation needs to be
+   learnable rather than memorised. */
+QLabel#inspectorHeading {{
+    color: {DIM};
+    background: {FIELD};
+    border-bottom: 1px solid {BORDER};
+    padding: 7px 12px;
+    font-size: 8pt;
+    letter-spacing: 1px;
+}}
+
 QScrollBar:vertical {{
     background: transparent;
     width: 10px;
