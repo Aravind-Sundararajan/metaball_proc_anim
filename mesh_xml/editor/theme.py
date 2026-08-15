@@ -471,11 +471,29 @@ QTableWidget::item:focus {{
     outline: none;
 }}
 
-/* Small print reads as small print. These sit permanently under the tables
-   they explain, and at full INK a paragraph of onboarding prose carried the
-   same weight as the values above it. */
-QLabel#note {{
+/* Small print reads as small print. A note reports state and stays; a hint
+   explains a control and folds away under &View > Show Hints. Both are prose
+   under the values they concern, so at full INK they carried the same weight
+   as the numbers above them. */
+QLabel#note, QLabel#hint {{
     color: {DIM};
+}}
+
+/* The hint toggle sits in the inspector's heading strip. Quiet until asked
+   for — it marks itself in the accent when the prose is unfolded, which is the
+   only time an author needs to know where it was. */
+QToolButton#hintButton {{
+    background: transparent;
+    border: none;
+    padding: 2px;
+}}
+QToolButton#hintButton:hover {{
+    background: {RAISED};
+    border-radius: 4px;
+}}
+QToolButton#hintButton:checked {{
+    background: {SELECT};
+    border-radius: 4px;
 }}
 
 /* The inspector rail: eleven panels, all of them reachable at a glance. The
@@ -502,10 +520,13 @@ QToolButton#railButton:checked {{
 /* The active panel says its own name, so the rail's glyphs never have to
    carry meaning alone — the pairing an icon-only navigation needs to be
    learnable rather than memorised. */
-QLabel#inspectorHeading {{
-    color: {DIM};
+QWidget#inspectorHeader {{
     background: {FIELD};
     border-bottom: 1px solid {BORDER};
+}}
+QLabel#inspectorHeading {{
+    color: {DIM};
+    background: transparent;
     padding: 7px 12px;
     font-size: 8pt;
     letter-spacing: 1px;

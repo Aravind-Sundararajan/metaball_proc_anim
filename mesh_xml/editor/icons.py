@@ -28,7 +28,6 @@ __all__ = ["PANEL", "icon", "panel_icon"]
 #: the docks share — a verb appearing in both must appear once here.
 NAMES: dict[str, str] = {
     # panels
-    "playback": "fa6s.gauge-high",
     "rooms": "fa6s.door-open",
     "chunks": "fa6s.circle-nodes",
     "creatures": "fa6s.paw",
@@ -48,12 +47,12 @@ NAMES: dict[str, str] = {
     "autorig": "fa6s.wand-magic-sparkles",
     "legs": "fa6s.shoe-prints",
     "frame": "fa6s.expand",
+    "hint": "fa6s.circle-question",
 }
 
 #: Dock title to concept, so the rail can be built from the panel table
 #: without every call site restating the mapping.
 PANEL = {
-    "Playback": "playback",
     "Rooms": "rooms",
     "Chunks": "chunks",
     "Creatures": "creatures",

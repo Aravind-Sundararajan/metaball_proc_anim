@@ -118,7 +118,6 @@ class TestBuildPanels:
     def test_returns_one_panel_per_dock_title(self, document):
         built = panels.build_panels(document)
         assert list(built) == [
-            "Playback",
             "Rooms",
             "Chunks",
             "Creatures",
@@ -216,63 +215,110 @@ class TestInspectorRail:
         assert not document.dirty
 
 
-class TestPlaybackPanel:
-    def test_the_play_button_drives_the_document(self, document):
-        panel = panels.PlaybackPanel(document)
-        panel._play.click()
-        assert document.running
+class TestHints:
+    """Prose an author reads once should not be furniture forever.
 
-    def test_the_document_drives_the_play_button(self, document):
-        panel = panels.PlaybackPanel(document)
-        document.set_running(True)
-        assert panel._play.isChecked()
-        assert panel._play.text() == "Pause"
+    The distinction these tests defend is hint against note: a hint explains a
+    control that is already on screen and already carries a tooltip, so it
+    folds; a note reports state that appears nowhere else, so it stays. Getting
+    that backwards would either hide a "no creatures yet" message or leave the
+    paragraphs in place, and both look like the toggle simply not working.
 
-    def test_rest_pose_restores_the_captured_positions(self, document):
-        panel = panels.PlaybackPanel(document)
-        target = document.body.chunk_ids()[3]
-        original = document.body.chunk(target).pos
+    Asserted with ``isHidden`` rather than ``isVisible``: an unshown panel's
+    children are all invisible whatever the toggle says, so ``isVisible`` here
+    would pass in every direction and prove nothing.
+    """
 
-        document.set_running(True)
-        document.advance(1.0)
-        assert document.body.chunk(target).pos != pytest.approx(original)
+    def test_hints_start_folded(self, document):
+        panel = panels.RoomPanel(document)
+        hints = panel.findChildren(QLabel, "hint")
 
-        panel._rest.click()
-        assert document.body.chunk(target).pos == pytest.approx(original)
+        assert hints, "the rooms dock's prose is no longer registered as hints"
+        assert all(h.isHidden() for h in hints)
 
-    def test_a_single_step_advances_a_paused_body(self, document):
-        panel = panels.PlaybackPanel(document)
-        seen = []
-        panel.stepped.connect(lambda: seen.append(1))
+    def test_the_toggle_unfolds_and_refolds_them(self, document):
+        panel = panels.RoomPanel(document)
+        try:
+            reached = panels.set_hints_visible(panel, True)
+            assert reached == len(panel.findChildren(QLabel, "hint"))
+            assert not any(h.isHidden() for h in panel.findChildren(QLabel, "hint"))
 
-        before = document.body.pos.copy()
-        panel.single_step()
+            panels.set_hints_visible(panel, False)
+            assert all(h.isHidden() for h in panel.findChildren(QLabel, "hint"))
+        finally:
+            panels.set_hints_visible(panel, False)
 
-        assert not np.array_equal(before, document.body.pos)
-        assert seen == [1]
+    def test_a_panel_built_later_agrees_with_the_ones_built_already(self, document):
+        """A panel is not only built at startup — rooms open, documents load.
 
-    def test_a_single_step_is_inert_while_running(self, document):
-        """Stepping a running simulation would double-tick it, invisibly."""
-        panel = panels.PlaybackPanel(document)
-        document.set_running(True)
-        before = document.body.pos.copy()
+        Without the module flag the newcomer would come up unfolded inside an
+        app whose prose is folded, and only that one panel would disagree.
+        """
+        panel = panels.RoomPanel(document)
+        try:
+            panels.set_hints_visible(panel, True)
+            unfolded = panels.SolverPanel(document)
+            assert not any(
+                h.isHidden() for h in unfolded.findChildren(QLabel, "hint")
+            )
 
-        panel.single_step()
-        assert np.array_equal(before, document.body.pos)
-        assert not panel._step.isEnabled()
+            panels.set_hints_visible(panel, False)
+            folded = panels.SolverPanel(document)
+            assert all(h.isHidden() for h in folded.findChildren(QLabel, "hint"))
+        finally:
+            panels.set_hints_visible(panel, False)
 
-    def test_the_readout_follows_the_clock(self, document):
-        panel = panels.PlaybackPanel(document)
-        assert panel._ticks.text() == "0"
+    def test_a_hint_is_never_shown_before_it_has_a_parent(self, document):
+        """setVisible(True) on a parentless widget opens a window, not a label."""
+        panel = panels.RoomPanel(document)
+        try:
+            panels.set_hints_visible(panel, True)
+            assert not panels._hint("late").isVisible(), (
+                "an unparented hint showed itself as a top-level window"
+            )
+        finally:
+            panels.set_hints_visible(panel, False)
 
-        document.set_running(True)
-        document.advance(0.5)
-        panel.refresh()
+    def test_folding_the_hints_leaves_the_state_notes_alone(self, document):
+        """A note is the only place its fact appears, so it never folds.
 
-        assert document.clock.ticks > 0
-        assert panel._ticks.text() == str(document.clock.ticks)
-        assert panel._dropped.text() == str(document.clock.dropped)
-        assert panel._alpha.text() == f"{document.clock.alpha:.3f}"
+        Read on an *empty* document, because that is when an empty-state note
+        is the thing on screen — on a populated one it is correctly hidden by
+        its own panel, and the toggle could break it without the test noticing.
+        """
+        empty = Document()
+        creatures = panels.CreaturePanel(empty)
+        controllers = panels.ControllerPanel(empty)
+
+        for panel in (creatures, controllers):
+            note = panel._empty
+            assert note.objectName() == "note"
+            assert note not in panel.findChildren(QLabel, "hint")
+            assert not note.isHidden(), "the empty-state note was not on screen"
+
+        panels.set_hints_visible(creatures, False)
+        panels.set_hints_visible(controllers, False)
+
+        assert not creatures._empty.isHidden(), "folding hints took a note with it"
+        assert not controllers._empty.isHidden()
+
+    def test_every_panel_that_carries_prose_carries_it_as_hints(self, document):
+        """The conversion, stated as a set so a new paragraph joins the fold."""
+        built = panels.build_panels(document)
+        carrying = {
+            title
+            for title, panel in built.items()
+            if panel.findChildren(QLabel, "hint")
+        }
+        assert carrying == {
+            "Rooms",
+            "Chunks",
+            "Surface",
+            "Lighting",
+            "Solver",
+            "Terrain",
+            "Smoothing",
+        }
 
 
 class TestSurfacePanel:

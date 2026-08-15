@@ -50,6 +50,10 @@ class Inspector(QWidget):
     #: know. Carries the panel's title.
     shown = Signal(str)
 
+    #: The author asked for the panels' prose to fold or unfold. The window owns
+    #: the answer, because the Scene dock's hints are outside this widget.
+    hints_requested = Signal(bool)
+
     def __init__(
         self, panels: dict[str, QWidget], parent: QWidget | None = None
     ) -> None:
@@ -97,11 +101,32 @@ class Inspector(QWidget):
 
         rail_layout.addStretch(1)
 
+        # The hint toggle rides the heading rather than the toolbar or the menu
+        # alone: folded prose that can only be found under &View is prose an
+        # author never learns exists, and this is the one strip that is always
+        # above the panel whose prose it unfolds.
+        self._hints = QToolButton()
+        self._hints.setObjectName("hintButton")
+        self._hints.setCheckable(True)
+        self._hints.setAutoRaise(True)
+        self._hints.setIcon(icons.icon("hint"))
+        self._hints.setIconSize(QSize(13, 13))
+        self._hints.setToolTip("Show the explanatory prose under these controls (F1)")
+        self._hints.toggled.connect(self.hints_requested.emit)
+
+        heading_row = QWidget()
+        heading_row.setObjectName("inspectorHeader")
+        heading_layout = QHBoxLayout(heading_row)
+        heading_layout.setContentsMargins(0, 0, 6, 0)
+        heading_layout.setSpacing(0)
+        heading_layout.addWidget(self._heading, 1)
+        heading_layout.addWidget(self._hints)
+
         panel_side = QWidget()
         panel_layout = QVBoxLayout(panel_side)
         panel_layout.setContentsMargins(0, 0, 0, 0)
         panel_layout.setSpacing(0)
-        panel_layout.addWidget(self._heading)
+        panel_layout.addWidget(heading_row)
         panel_layout.addWidget(self._stack, 1)
 
         layout = QHBoxLayout(self)
@@ -133,6 +158,13 @@ class Inspector(QWidget):
         """Raise the panel with this dock title, if there is one."""
         if title in self._titles:
             self.show_index(self._titles.index(title))
+
+    def set_hints_shown(self, shown: bool) -> None:
+        """Mark the toggle without re-asking the window that just answered."""
+        if self._hints.isChecked() != shown:
+            self._hints.blockSignals(True)
+            self._hints.setChecked(shown)
+            self._hints.blockSignals(False)
 
     @property
     def current(self) -> str:
