@@ -409,10 +409,9 @@ class FootholdPicker:
     one tip radius off the surface, reached from either side — instead of being
     flattened to ``ground_y``, and a foothold on a slope or a mound falls out
     of the same machinery that planted one on the plane. The radius rides in on
-    :attr:`LimbFrame.tip_radius`, and the offset exists for the same reason
-    :meth:`ControlContext.ground_level` adds one: contact holds a chunk a
-    radius off the surface, so aiming at the surface itself is aiming
-    underground. A set ``terrain`` supersedes ``ground_y``, mirroring the
+    :attr:`LimbFrame.tip_radius`, and the offset is not optional: contact holds
+    a chunk a radius off the surface, so aiming at the surface itself is aiming
+    underground and the foot seeks into the floor forever. A set ``terrain`` supersedes ``ground_y``, mirroring the
     precedence :class:`~mesh_xml.core.solver.SolverConfig` documents — the
     picker must aim at the same floor collision will actually hold the foot on.
     Left ``None``, the picker follows :attr:`ControlContext.terrain`, the world

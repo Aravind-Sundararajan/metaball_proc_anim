@@ -3,7 +3,7 @@
 Rain World's world is made of rooms — each one a space, a population, and a
 simulation that runs whether or not a camera is pointed at it. This module is
 that noun for this codebase, extracted from the editor's ``Document`` once
-the scene tier needed a plural (``docs/ROOMS.md`` package 2): a body, the
+the scene tier needed a plural: a body, the
 stack that drives it, the solver settings that are its physics, and the
 clock that ticks it. Nothing here imports Qt, and a test proves it stays
 that way — a game loop owns rooms directly, and the editor's ``Document`` is
@@ -15,7 +15,7 @@ falls out of frame forever. The library keeps that neutrality; a room is
 where a world begins, so it starts with a floor at zero and terrain replaces
 it the moment one is authored.
 
-Abstraction (``docs/ROOMS.md`` package 4) is the same room at its cheap
+Abstraction is the same room at its cheap
 tier, and the argument was sitting in the brain contract all along: a brain
 steers only its own pinned anchor, so a creature reduced to that anchor is
 one its brain cannot tell from the whole. :meth:`Room.abstract` keeps one

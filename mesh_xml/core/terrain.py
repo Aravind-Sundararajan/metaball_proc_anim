@@ -1,6 +1,6 @@
 """The world as a signed distance field, in the creature's own vocabulary.
 
-``docs/TERRAIN.md`` records why the world is a field rather than a heightfield
+The world is a field rather than a heightfield
 or a mesh; the short version is that the creature already is one, so collision
 is one subtraction, contact normals are the gradient, and a foothold is a
 projection. The vocabulary is deliberately small: infinite half-space planes
@@ -34,6 +34,7 @@ from __future__ import annotations
 import numpy as np
 
 from mesh_xml.core.distance import (
+    NORMAL_EPSILON,
     TETRAHEDRON,
     as_blend,
     round_cone,
@@ -41,9 +42,6 @@ from mesh_xml.core.distance import (
 )
 
 __all__ = ["Terrain"]
-
-#: Central-difference offset for :meth:`Terrain.normal`, matching the field's.
-NORMAL_EPSILON = 1e-4
 
 #: Newton-style projection passes in :meth:`Terrain.project`. The field is
 #: 1-Lipschitz, so each pass closes most of the remaining gap; three passes
@@ -146,15 +144,27 @@ class Terrain:
         Zero where the gradient vanishes — deep inside a blend pocket — rather
         than NaN, so a consumer must treat a zero normal as "no direction",
         exactly as :func:`mesh_xml.render.field.normal` behaves.
+
+        The four taps go through the fold in **one** call rather than four.
+        Each entry into :meth:`distance` pays a fixed per-primitive cost in
+        Python before any arithmetic happens, and a walking creature enters
+        this field seventy times a tick through :meth:`project`; stacking the
+        taps makes the tap count free. Bit-identical to four separate calls —
+        the fold is elementwise, so a row does not know how many neighbours it
+        was evaluated beside.
         """
         p, squeeze = self._widen(points)
         flat = p.reshape(-1, 3)
         if self.is_empty:
             out = np.zeros_like(flat)
         else:
+            taps = (flat[None, :, :] + TETRAHEDRON[:, None, :] * eps).reshape(-1, 3)
+            sampled = self.distance(taps).reshape(len(TETRAHEDRON), len(flat))
+            # The accumulation stays the original sequence — same terms, same
+            # order, so the batching cannot move a result by an ulp.
             gradient = np.zeros_like(flat)
-            for offset in TETRAHEDRON:
-                gradient += offset * self.distance(flat + offset * eps)[:, None]
+            for offset, tap in zip(TETRAHEDRON, sampled):
+                gradient += offset * tap[:, None]
             length = np.linalg.norm(gradient, axis=1)
             scale = np.where(length > 0.0, length, 1.0)
             out = gradient / scale[:, None]
@@ -167,10 +177,9 @@ class Terrain:
         Walks ``p -= (d(p) - clearance) * normal(p)`` a fixed number of passes.
         Works from either side: a point buried in the ground is carried out,
         one hanging in the air is brought down. This is what turns a desired
-        foothold into an actual one — ``clearance`` is the foot's radius, for
-        the same reason :meth:`ControlContext.ground_level` adds one: contact
-        holds a chunk a radius off the surface, so aiming at the surface itself
-        is aiming underground.
+        foothold into an actual one — ``clearance`` is the foot's radius,
+        because contact holds a chunk a radius off the surface and aiming at
+        the surface itself is aiming underground.
 
         Empty terrain returns the input unchanged; there is nothing to stand on
         and pretending otherwise would invent a floor.

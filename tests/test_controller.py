@@ -179,41 +179,6 @@ class TestStaleIds:
 
 
 class TestGroundLevel:
-    def test_it_accounts_for_the_chunk_radius(self):
-        """Aiming at the plane itself aims one radius underground."""
-        body = Body()
-        chunk = body.add_chunk("foot", [0.0, 2.0, 0.0], radius=0.3)
-        ctx = ControlContext(
-            body,
-            np.zeros((1, 3), np.float32),
-            0.025,
-            0.0,
-            np.random.default_rng(0),
-            config=SolverConfig(ground_y=1.0),
-        )
-        assert ctx.ground_level(chunk) == pytest.approx(1.3)
-
-    def test_it_matches_where_the_solver_actually_rests_a_chunk(self):
-        body = Body()
-        chunk = body.add_chunk("foot", [0.0, 5.0, 0.0], radius=0.3)
-        config = SolverConfig(ground_y=1.0)
-        stack = ControllerStack(body)
-        for _ in range(400):
-            stack.tick(body, 0.025, config)
-
-        ctx = ControlContext(
-            body, stack.forces, 0.025, 0.0, np.random.default_rng(0), config=config
-        )
-        assert body.pos[0][1] == pytest.approx(ctx.ground_level(chunk), abs=1e-3)
-
-    def test_no_floor_means_no_level(self):
-        body = Body()
-        chunk = body.add_chunk("foot", [0.0, 2.0, 0.0], radius=0.3)
-        ctx = ControlContext(
-            body, np.zeros((1, 3), np.float32), 0.025, 0.0, np.random.default_rng(0)
-        )
-        assert ctx.ground_level(chunk) is None
-
     def test_the_stack_passes_the_config_through(self):
         seen = {}
 

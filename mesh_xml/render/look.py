@@ -1,7 +1,7 @@
 """The look record: everything the shaded frame is, that the field is not.
 
 One dataclass for the key light, the fill it stands in, and the palette's
-base — the fields ``docs/LIGHTING.md`` designed together because they only
+base — fields that live together because they only
 mean anything together: the background colours are also the ambient's
 hues, the light colour is also the glow's, and a file that carried half
 the record would state a look nobody ever saw.
@@ -13,14 +13,13 @@ able to import the format module at all, and this module holds to it by
 importing nothing beyond the standard library. ``MetaballSettings``
 *composes* an instance rather than mirroring these fields, so the record
 the file round-trips and the record the frame renders are the same
-object and cannot drift (the twin-spelling rejection, SETTINGS.md §2).
+object and cannot drift — one spelling per value, never two.
 
 Every default below is load-bearing: an absent ``<look>`` section means
 this exact record, which reproduces the pre-arc render's four authored
 values (light direction, the three colours) and lands its exposure
 approximately — the old bounce term is deleted, not defaulted, so a
-pre-arc document reopens exposure-similar rather than pixel-identical
-(LIGHTING.md §5).
+pre-arc document reopens exposure-similar rather than pixel-identical.
 """
 
 from __future__ import annotations
@@ -54,13 +53,13 @@ class Look:
     Strengths are levels; colours are chromaticity, conventionally in
     ``0..1`` (the panel's swatches speak that range) but deliberately
     uncapped — a component above 1 overdrives on purpose, and the frame
-    clips per-channel exactly as ``damping="1.02"`` rings (LIGHTING.md
-    §4 names the artefact). ``shadow_strength`` is how much key the
+    clips per-channel exactly as ``damping="1.02"`` rings — the same class
+    of artefact, allowed for the same reason. ``shadow_strength`` is how much key the
     creature field blocks along the light — 1 removes a blocked key
     fully and reproduces the floor's landed shadow bit for bit, 0 skips
     the shadow march everywhere, floor included, and above 1
     extrapolates the penumbra toward black and clamps
-    (docs/CAST_SHADOWS.md §7). ``surface_colour`` is data as well as a
+    ``surface_colour`` is data as well as a
     uniform: it seeds the group table and the unpainted-chunk fallback,
     which is how it reaches OBJ vertex colours.
     """
@@ -80,7 +79,7 @@ class Look:
     def validate(self) -> "Look":
         """Refuse what breaks downstream; leave taste to the author.
 
-        The house rule (SETTINGS.md §4): every float finite — a NaN here
+        The house rule every settings reader follows: every float finite — a NaN here
         poisons every pixel rather than every position; the direction
         non-zero, because the shader normalizes it and zero has no
         direction to state; colours and strengths non-negative — negative

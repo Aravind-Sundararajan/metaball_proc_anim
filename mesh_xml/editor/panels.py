@@ -240,8 +240,7 @@ def _admit(box, value) -> None:
     """Widen a spin box's range to include a loaded value before showing it.
 
     A panel's range is an authoring suggestion; the format's domain is wider
-    (a damping of 1.02 rings, and the reader admits it — docs/SETTINGS.md
-    §4). Clamping the display would show physics the room is not running,
+    (a damping of 1.02 rings, and the reader admits it). Clamping the display would show physics the room is not running,
     and the next nudge would silently commit the clamp to the file.
     """
     if value < box.minimum():
@@ -514,7 +513,7 @@ class SurfacePanel(_Panel):
     def set_surface_colour(self, rgb: tuple[float, float, float]) -> None:
         # File-grade, not view-only: the colour rides the room's <look>
         # record now, so a clean flag over an unsaved pick would be a lie
-        # Save All acts on (docs/LIGHTING.md §6).
+        # Save All acts on.
         self._document.metaball.look.surface_colour = tuple(float(v) for v in rgb)
         self._document.settings_edited()
 
@@ -735,7 +734,7 @@ class LightingPanel(_Panel):
     Every control here writes the room's :class:`~mesh_xml.render.look.Look`
     record, and every write is file-grade — the record rides the room file
     as ``<look>``, so the panel calls :meth:`Document.settings_edited` and
-    the room dirties (docs/LIGHTING.md §6).
+    the room dirties.
 
     The light's record is the *vector* — ``look.light_direction``, the
     uniform's own spelling — and the azimuth/elevation spins are a view of
@@ -1378,7 +1377,7 @@ class CreaturePanel(_Panel):
     #: arrival. The frame is the gesture's act rather than the cut's: the
     #: viewport carries each room's stashed camera across a cut, so a bare
     #: cut lands pointed wherever the author last left the target and not at
-    #: the creature that just arrived (docs/MOVE_CREATURE.md §4).
+    #: the creature that just arrived.
     moved = Signal()
 
     def __init__(self, document: Document, parent: QWidget | None = None) -> None:
@@ -1564,7 +1563,7 @@ class TerrainPanel(_Panel):
     The dock exists because a world has two halves an author cannot grab. The
     cones are geometry and are authored as geometry — with Add, drag,
     Ctrl+click placement and every other gesture that already shapes a
-    creature, then promoted here (``docs/TERRAIN_AUTHORING.md`` §2: a chunk
+    creature, then promoted here (a chunk
     graph *is* a cone list). The rest has no shape to grab: the fold radius,
     the floor's height, and the ledger saying what the world currently
     contains. Those live here, and nothing else does.
@@ -1983,7 +1982,7 @@ class RoomPanel(_Panel):
     left addressing the old name). The Abstract checkbox moves a room
     between its tiers, deliberately per room rather than wholesale: an
     abstracted far side is a closed door, so parking rooms is an authoring
-    statement, never a side effect of looking away (SCENE_BINDING.md §3).
+    statement, never a side effect of looking away.
     The File column is read-only truth about where each room saves,
     starred while it holds unsaved changes.
 

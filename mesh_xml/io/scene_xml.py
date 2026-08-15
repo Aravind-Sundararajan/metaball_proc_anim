@@ -51,20 +51,24 @@ class SceneRef:
     src: str
 
 
-def is_manifest(path: str | Path) -> bool:
-    """Whether the file's root tag says ``<scene>``.
+def root_tag(path: str | Path) -> str | None:
+    """The file's root tag, or ``None`` if it has none this reader can see.
 
-    A sniff, not a validation: it answers "should this open as a scene or
-    as a rig" and nothing else, and an unreadable or unparseable file is
-    simply not a manifest — the opener that then runs will produce the
-    real error.
+    A sniff, not a validation: it answers "which reader owns this file" and
+    nothing else, and an unreadable or unparseable file simply has no tag —
+    the opener that then runs will produce the real error.
     """
     try:
         for _event, element in ET.iterparse(Path(path), events=("start",)):
-            return element.tag == "scene"
+            return element.tag
     except (OSError, ET.ParseError):
-        return False
-    return False
+        return None
+    return None
+
+
+def is_manifest(path: str | Path) -> bool:
+    """Whether the file's root tag says ``<scene>``."""
+    return root_tag(path) == "scene"
 
 
 def save_scene(

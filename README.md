@@ -33,8 +33,7 @@ spine points, on footfalls against friction, with no pins and no kinematic carry
 
 * **A soft-body core** — chunks and typed links under a fixed-timestep Verlet solver
   with momentum-conserving projection, position-level Coulomb friction, angle limits
-  compiled to brace links, opt-in self-contact, and SDF terrain
-  ([docs/CONTACT_MODEL.md](docs/CONTACT_MODEL.md), [docs/TERRAIN.md](docs/TERRAIN.md)).
+  compiled to brace links, opt-in self-contact, and SDF terrain.
 * **A metaball surface** — round cones along the links, folded by smooth minimum within
   a creature and hard minimum between them, sphere-traced in a GL 3.3 raymarcher that a
   float64 CPU oracle checks numerically. Bound culling, tiled broad phase and a cone
@@ -48,21 +47,20 @@ spine points, on footfalls against friction, with no pins and no kinematic carry
 * **Rooms and scenes** — `Room` as the unit of simulation, scenes of many rooms on one
   clock, doors that carry creatures between them, abstraction that drops an unwatched
   room to anchors-and-brains, and a scene manifest so the assembly survives a cold
-  start ([docs/ROOMS.md](docs/ROOMS.md), [docs/SCENE_BINDING.md](docs/SCENE_BINDING.md)).
+  start.
 * **Skins** — per-chunk colour folded beside the distance field by the same blend
   weight, stripe and countershade patterns riding each link's own frame, painted from
-  the editor and saved with the rig ([docs/TEXTURES.md](docs/TEXTURES.md)).
+  the editor and saved with the rig.
 * **An authored look** — one key light on azimuth/elevation knobs, a background
   gradient that doubles as the ambient fill (shadows cool toward the sky and horizon
   tones instead of tracking the key), SDF occlusion in the creases, a rim the skin
-  carries, and the whole record saved per room as `<look>`
-  ([docs/LIGHTING.md](docs/LIGHTING.md)).
+  carries, and the whole record saved per room as `<look>`.
 * **Exports** — watertight OBJ/STL by surface nets over the same field, with vertex
   colours carrying the skin; a painted herd arrives in Blender as separate, painted
   animals.
 * **The editor** — document/command architecture with full undo, dockable panels, a
   rooms dock, paint and pattern gestures, a toolbar of the core verbs, and a dark
-  theme sourced from the viewport's own palette ([docs/CHROME.md](docs/CHROME.md)).
+  theme sourced from the viewport's own palette.
 
 ![The key light swinging a full turn around a frozen stride: the shadow follows the light while the gradient holds the fill](docs/keylight.gif)
 
@@ -127,28 +125,16 @@ with the flesh about where a blend is.
 
 ![A procedurally animated worm rendered as metaballs](docs/metaballs.png)
 
-## The design docs
+## Where the decisions live
 
-Each arc lands with a design document that records its decisions, measurements, and the
-things implementation taught the design. They are the honest history of the project:
+In the tests. The design documents that used to sit here were removed deliberately: an
+audit found they had drifted from the code in ways that were actively misleading — a
+texture-unit roster that would hand the next reader a collision the code had already
+been bitten by and fixed, cost arguments that cut features on arithmetic nobody
+measured, invariants stated absolutely and tested only on the cases where they hold.
+Prose cannot be executed, so it rots silently while the suite stays green.
 
-| Doc | What it holds |
-| --- | --- |
-| [REFACTOR_PLAN.md](docs/REFACTOR_PLAN.md) | The original diagnosis, the phase plan, and the running ledger of everything landed since |
-| [CONTACT_MODEL.md](docs/CONTACT_MODEL.md) | Coulomb friction and angle limits — the two blockers that gated terrain — plus self-contact |
-| [TERRAIN.md](docs/TERRAIN.md) | The world as a second field: collision, footholds on slopes, the slope-μ law |
-| [ROOMS.md](docs/ROOMS.md) | Rooms, scenes, transfer, abstraction, doors — the world model |
-| [SCENE_BINDING.md](docs/SCENE_BINDING.md) | The editor learning the plural: one document re-pointed across rooms |
-| [TEXTURES.md](docs/TEXTURES.md) | The weighted skin, paint gestures, patterns, painted exports |
-| [CHROME.md](docs/CHROME.md) | The editor's dress: a theme sourced from the viewport's palette, the toolbar |
-| [SETTINGS.md](docs/SETTINGS.md) | The file states its physics: solver and blend persistence, and the dirty line between file-grade and view-only |
-| [PICK.md](docs/PICK.md) | Ctrl+click placement on the rendered surface: the ray, the trace, and the one Add rule |
-| [SELF_CONTACT.md](docs/SELF_CONTACT.md) | Capsule self-contact and self-friction: mid-spans are real, end zones belong to the spheres |
-| [LIGHTING.md](docs/LIGHTING.md) | The environment becomes the fill: the key, the gradient, occlusion, glow, and the `<look>` record |
-| [CAST_SHADOWS.md](docs/CAST_SHADOWS.md) | The floor's march learns every receiver, the shadow gates the key alone, the price owned as new spend |
-| [WORLD_CONTACT.md](docs/WORLD_CONTACT.md) | Spans meet the terrain through exact capsule clearance, deferring only what the spheres already own |
-| [MOVE_CREATURE.md](docs/MOVE_CREATURE.md) | The transfer's editor face: a creature moved between rooms whole, pre-flighted, file-grade on both sides |
-| [TERRAIN_AUTHORING.md](docs/TERRAIN_AUTHORING.md) | A chunk graph *is* a cone list, so the world is authored as flesh and promoted |
+The history is in git if you want it. What holds today is what `tests/` asserts.
 
 ## Development
 

@@ -612,7 +612,7 @@ class TestDoors:
     def test_the_money_path_a_dock_authored_door_pair_carries_a_grazer(
         self, document
     ):
-        """SCENE_BINDING.md's money test, short of the mouse.
+        """The money test, short of the mouse.
 
         Every step is the editor's own API — rename, add door, re-aim,
         play — and the grazer walks out of a room nobody re-plumbed by
@@ -659,7 +659,7 @@ class TestDoors:
 class TestMoveCreature:
     """The transfer's editor face: one verb, two rooms, no undo stack.
 
-    ``docs/MOVE_CREATURE.md``. The mechanism's own five proofs are in
+    The mechanism's own five proofs are in
     ``test_scene.py`` and this design adds no core motion; what is tested
     here is everything the editor wraps around it â€” the pre-flight that
     makes the wholesale promise keepable, the bookkeeping either side of

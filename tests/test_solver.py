@@ -661,7 +661,7 @@ class TestCoulombFriction:
         """The same floor twice: the fast path, and the SDF that must equal it.
 
         The guarantees in this class are what the terrain path is not allowed
-        to lose (docs/TERRAIN.md), so the key cases run against both worlds.
+        to lose, so the key cases run against both worlds.
         """
         if world == "ground_y":
             return SolverConfig(ground_y=0.0, ground_friction=mu)
@@ -861,7 +861,7 @@ class TestTerrainCollision:
     def test_a_ball_rests_on_a_buried_capsule_ramp(self):
         """Rest is ``distance == radius`` on the incline, not a global height.
 
-        The ramp is TERRAIN.md's vocabulary sentence: a plane with a tilted
+        The ramp is the vocabulary's whole sentence: a plane with a tilted
         buried capsule on top. The ball must come to rest a radius off the
         capsule's surface, well above where the buried plane would hold it —
         the assertion is against the field itself, so it cannot be satisfied
@@ -933,7 +933,7 @@ class TestTerrainCollision:
 class TestSlopeLaw:
     """A chunk on an incline holds while ``tan(theta) < mu`` and slides above.
 
-    docs/TERRAIN.md names this the acceptance test, and it needs no tuning
+    This is the terrain arc's acceptance test, and it needs no tuning
     because the identity is exact: a resting chunk reburies by ``g * dt**2``
     vertically each tick, which the field reads as ``cos(theta)`` of depth
     and ``sin(theta)`` of tangential slide, so the full-grip condition
@@ -1268,7 +1268,7 @@ class TestSelfContact:
 
 
 class TestCapsuleContact:
-    """The flesh between chunks collides (docs/SELF_CONTACT.md).
+    """The flesh between chunks collides.
 
     Geometry throughout keeps the families honest: spans are long enough
     (radius 0.2, rest 8) that end zones are a fortieth of the run and every
@@ -1544,7 +1544,7 @@ class TestReviewProbes:
 
 
 class TestWorldSpanContact:
-    """The flesh between chunks meets the terrain (docs/WORLD_CONTACT.md).
+    """The flesh between chunks meets the terrain.
 
     A span's world clearance is ``phi(t) = distance(p(t)) - lerp(r1, r2, t)``,
     exact for the rendered round cone by the sweep identity, so these cases

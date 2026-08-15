@@ -377,7 +377,7 @@ class TestAgainstTheCpuReference:
 
     def test_albedo_matches_the_oracle(self):
         """Debug mode 4 against field.albedo: colour joins depth in the
-        parity harness (docs/TEXTURES.md package 1), and every pattern in
+        parity harness, and every pattern in
         the vocabulary is in the frame (package 3) — one creature striped,
         the other countershaded, both over varied per-chunk colours."""
         from mesh_xml.render.gl.camera import OrbitCamera
@@ -983,7 +983,7 @@ class TestAgainstTheCpuReference:
 
 @needs_gl
 class TestShadedMode:
-    """Mode 0's lighting model, held to docs/LIGHTING.md's terms.
+    """Mode 0's lighting model: one key, a hemispheric fill, AO, glow.
 
     Not oracle comparisons — lighting has no CPU twin — so these pin
     behaviour instead: which side brightens, what darkens, what stays
@@ -1495,7 +1495,7 @@ class TestShadedMode:
         assert np.array_equal(intact, unbranched)
 
     def test_a_pixel_in_full_umbra_shades_as_if_the_key_were_off(self):
-        """The what-the-shadow-gates split (docs/CAST_SHADOWS.md 5) as
+        """The what-the-shadow-gates split as
         bytes, and byte equality is the correct strength — do not "fix"
         this into a tolerance: neither ``shadow_strength`` nor
         ``light_strength`` feeds ``trace()`` or the coarse pass, so both
@@ -1602,7 +1602,7 @@ class TestShadedMode:
         """The AO crease test's shape, aimed at the key term instead of
         the fill: two stacked chunks under an overhead key, and the lower
         chunk's covered top darkens at strength 1 against 0 — the cap
-        LIGHTING.md called honest comes off, and a crease in full key
+        the ambient-only cap comes off, and a crease in full key
         finally reads."""
         from mesh_xml.render.gl.camera import OrbitCamera
 
@@ -1641,7 +1641,7 @@ class TestShadedMode:
 
     def test_a_lone_convex_body_keeps_its_lit_side(self):
         """A convex body's only self-darkening is the terminator's own
-        bands (docs/CAST_SHADOWS.md 2), so the bright half of a lone
+        bands, so the bright half of a lone
         sphere must agree between strengths within 2/255 — the shadow may
         not invent occlusion where geometry offers none."""
         from mesh_xml.render.gl.camera import OrbitCamera

@@ -1,6 +1,6 @@
 """Does a saved creature reopen under the physics it was tuned under?
 
-The format half of docs/SETTINGS.md and docs/LIGHTING.md: ``<solver>``,
+The format half of the settings and lighting records: ``<solver>``,
 ``<metaball>`` and ``<look>`` are additive sections on ``<terrain>``'s
 terms, so the tests mirror ``test_gait_io``'s shape — a full round trip
 compared exactly, absence meaning what every older document already meant,
@@ -363,7 +363,7 @@ def test_a_look_without_a_shadow_strength_reopens_shadowed(tmp_path: Path) -> No
     """The format's first additive attribute whose default relights a saved
     record: a lighting-arc ``<look>`` predates ``shadow_strength``, absence
     inside the section means the dataclass default, and the default is the
-    full shadow — deliberate on the AO precedent (docs/CAST_SHADOWS.md §7),
+    full shadow — deliberate on the precedent ``ao_strength`` set,
     and the attribute exists so an author can state otherwise."""
     path = hand_authored(
         tmp_path, '<look light_strength="1.4" ao_strength="0.9"/>'
@@ -524,7 +524,7 @@ def test_the_format_module_never_imports_opengl() -> None:
     firewall, retold). ``Look`` lives in ``render/``, the first render
     import io has ever taken, and the render package's "only gl/ imports
     OpenGL" rule is what keeps a GL-less machine able to read and write
-    documents; a docstring is not an enforcement mechanism (LIGHTING.md §4).
+    documents; a docstring is not an enforcement mechanism.
     """
     probe = (
         "import sys\n"

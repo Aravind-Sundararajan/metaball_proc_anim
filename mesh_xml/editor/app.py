@@ -128,7 +128,7 @@ class MainWindow(QMainWindow):
         if creatures is not None:
             # The one cut that does ask for a frame: a move's proof is the
             # arrival on screen, and the camera is the window's resource,
-            # not the dock's (docs/MOVE_CREATURE.md §4).
+            # not the dock's.
             creatures.moved.connect(self.viewport.frame_all)
 
     def _set_rig_overlay(self, visible: bool) -> None:
@@ -148,7 +148,7 @@ class MainWindow(QMainWindow):
     def _build_shared_actions(self) -> None:
         """The gestures both the menus and the toolbar offer: one QAction
         each, so shortcut, enabled state and checked state have a single
-        owner and the two surfaces cannot disagree (docs/CHROME.md pkg 2).
+        owner and the two surfaces cannot disagree.
         """
         document = self.document
 
@@ -568,15 +568,15 @@ def main(argv: list[str] | None = None) -> int:
     configure_surface_format()
     app = ensure_application(argv if argv is not None else sys.argv)
     # The entrypoint dresses the app; the library never does, so tests and
-    # embedders meet stock widgets unless they opt in (docs/CHROME.md).
+    # embedders meet stock widgets unless they opt in.
     from PySide6.QtGui import QIcon
 
     from mesh_xml.editor import theme
 
     theme.apply(app)
     # Two metaballs mid-blend, drawn by the CPU field itself — the one-glyph
-    # summary of what the app computes. Regenerate with the script recorded
-    # in docs/CHROME.md if the accent ever moves.
+    # summary of what the app computes. Regenerate with scripts/make_icon.py
+    # if the accent ever moves.
     icon = Path(__file__).parent / "icon.png"
     if icon.is_file():
         app.setWindowIcon(QIcon(str(icon)))

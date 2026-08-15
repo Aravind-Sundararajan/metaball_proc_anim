@@ -311,7 +311,7 @@ class TestCreateChunk:
 class TestCreateChunkAt:
     """Add with a stated position — the surface pick's half of the rule.
 
-    The click states where (docs/PICK.md §3): the position lands verbatim,
+    The click states where: the position lands verbatim,
     the selection stands aside, and the hit chunk — when there is one —
     earns the link and lends its radius. Same command shapes, same undo
     grain, and the placed chunk still takes the selection, so a click then
@@ -1109,7 +1109,7 @@ class TestRefusalsSurface:
 
 
 class TestTerrainAuthoring:
-    """``docs/TERRAIN_AUTHORING.md``: the world is flesh that stopped moving.
+    """The world is flesh that stopped moving.
 
     The identity the arc stands on is that a chunk graph *is* a cone list â€”
     the same eight numbers ``sdf.pack`` writes, folded by the same

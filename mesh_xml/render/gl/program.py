@@ -111,10 +111,6 @@ class AssembledSource:
             return self.origins[line - 1]
         return None
 
-    def __str__(self) -> str:
-        return self.text
-
-
 def file_resolver(directory: Path | str = SHADER_DIR) -> Resolver:
     """Resolve include names against a directory.
 

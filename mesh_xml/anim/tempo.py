@@ -81,7 +81,7 @@ def retime(controller: object, factor: float) -> dict[str, object]:
             continue
         if name in tempo:
             changes[name] = _scale(value, factor ** float(tempo[name]), f"{cls.__name__}.{name}")
-        elif _registered(type(value)):
+        elif serialize.is_registered(type(value)):
             nested = retime(value, factor)
             if nested:
                 changes[name] = dataclasses.replace(value, **nested)
@@ -108,14 +108,6 @@ def chunk_refs(controller: object) -> frozenset[int]:
     for name in fields:
         _collect(getattr(controller, name), refs)
     return frozenset(refs)
-
-
-def _registered(cls: type) -> bool:
-    try:
-        serialize.fields_of(cls)
-    except serialize.ControllerFormatError:
-        return False
-    return True
 
 
 def _scale(value: object, mult: float, where: str) -> object:
@@ -147,6 +139,8 @@ def _collect(value: object, refs: set[int]) -> None:
         for item in value:
             _collect(item, refs)
         return
-    if not isinstance(value, (float, str, bytes, np.ndarray)) and _registered(type(value)):
+    if not isinstance(
+        value, (float, str, bytes, np.ndarray)
+    ) and serialize.is_registered(type(value)):
         for name in serialize.fields_of(type(value)):
             _collect(getattr(value, name), refs)

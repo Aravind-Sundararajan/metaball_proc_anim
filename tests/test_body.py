@@ -2,7 +2,7 @@
 
 Several of these encode defects that were reproduced against the old
 ``ArmatureManager`` before the rewrite; they are named after the section of
-``docs/REFACTOR_PLAN.md`` that documents them so the connection survives.
+each test's name states the defect it pins.
 """
 
 import numpy as np

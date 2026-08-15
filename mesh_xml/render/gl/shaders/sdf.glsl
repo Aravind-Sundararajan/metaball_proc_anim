@@ -72,7 +72,7 @@ float sdf_smooth_min(float a, float b, float k) {
 }
 
 // The same minimum, also reporting h — the convex weight of `a`. What the
-// albedo fold blends colour by (docs/TEXTURES.md): one h, two folds, so the
+// albedo fold blends colour by: one h, two folds, so the
 // skin cannot disagree with the flesh about where a blend is. At k == 0 the
 // weight is the step (a <= b) — ties go to the accumulated side — matching
 // core/distance.py's smooth_min_weight exactly. The plain variant above
@@ -248,7 +248,7 @@ vec3 sd_group_colour(int group) {
 }
 
 // Per-primitive end colours: the skin's counterpart of the primitive texture
-// (docs/TEXTURES.md), one stride-8 row per primitive row on its own unit —
+// one stride-8 row per primitive row on its own unit —
 // [ra_r, ra_g, ra_b, 0][rb_r, rb_g, rb_b, 0], the fourth lanes reserved for
 // the pattern vocabulary. Armed only when the count matches the primitive
 // count; sdf.pack_attributes packs an EMPTY table for a body whose chunks
@@ -279,7 +279,7 @@ const float SDF_SHADE_PALE = 0.6;
 // countershade keys on the radial direction's world-y, the one pattern
 // that references the world on purpose (a belly is a belly because light
 // comes from above). Both ride the link's own frame, so they translate
-// and rotate with the limb (docs/TEXTURES.md §2). CPU twin:
+// and rotate with the limb. CPU twin:
 // field._primitive_albedo.
 vec3 sd_primitive_albedo(vec3 p, int index) {
     vec4 head = texelFetch(u_primitives, ivec2(0, index), 0);
@@ -339,7 +339,7 @@ vec3 sd_normal(vec3 p, float eps) {
 }
 
 // ---------------------------------------------------------------------------
-// Terrain: the world as a second field (docs/TERRAIN.md), kept line-for-line
+// Terrain: the world as a second field, kept line-for-line
 // with Terrain.distance in mesh_xml/core/terrain.py.
 //
 // One texture holds both vocabularies, planes first: row i < plane count is a

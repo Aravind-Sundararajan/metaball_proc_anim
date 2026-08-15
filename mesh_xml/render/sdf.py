@@ -83,7 +83,7 @@ PATTERN_META = "pattern"
 PATTERN_PARAM_META = "pattern_param"
 
 #: The pattern vocabulary, name to the id the shader switches on.
-#: Axisymmetric by construction (``docs/TEXTURES.md``): stripes band along
+#: Axisymmetric by construction: stripes band along
 #: each link's own axis, countershade keys on the radial direction's
 #: world-y. Two names, not the design's four — on a limb, rings around the
 #: axis *are* stripes along it, and a gradient is per-chunk colours doing
@@ -241,7 +241,7 @@ def pack_attributes(
     """Per-primitive end colours: ``(P, 8) float32``, row *i* skinning
     :func:`pack` row *i*.
 
-    The weighted skin's data (``docs/TEXTURES.md``): each record carries its
+    The weighted skin's data: each record carries its
     primitive's two end colours and the creature's pattern —
     ``[ra_r, ra_g, ra_b, pattern, rb_r, rb_g, rb_b, param]`` — built in
     :func:`pack`'s own row order and sorted by the same stable key, so the
@@ -450,28 +450,13 @@ def _row_groups(body: Body) -> np.ndarray:
 
 
 def _component_labels(body: Body) -> np.ndarray:
-    """``(N,) int64`` component index per slot, numbered by first-seen slot."""
-    n = body.n_chunks
-    labels = np.full(n, -1, dtype=np.int64)
-    adjacency: list[list[int]] = [[] for _ in range(n)]
-    for a, b in zip(body.link_a, body.link_b):
-        adjacency[int(a)].append(int(b))
-        adjacency[int(b)].append(int(a))
+    """``(N,) int64`` component index per slot, numbered by first-seen slot.
 
-    group = 0
-    for seed in range(n):
-        if labels[seed] >= 0:
-            continue
-        stack = [seed]
-        labels[seed] = group
-        while stack:
-            node = stack.pop()
-            for neighbour in adjacency[node]:
-                if labels[neighbour] < 0:
-                    labels[neighbour] = group
-                    stack.append(neighbour)
-        group += 1
-    return labels
+    The body's own traversal, not a second one: blend-group numbering and the
+    roster's creature numbering have to be the same numbering, and the only way
+    to guarantee that is to share the walk rather than to write two that agree.
+    """
+    return body.component_labels()
 
 
 def _to_vec3(points: np.ndarray, dim: int) -> np.ndarray:

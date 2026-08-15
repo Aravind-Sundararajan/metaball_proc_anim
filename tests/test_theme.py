@@ -1,7 +1,7 @@
 """Tests for the editor's skin: provenance first, application second.
 
 The theme's whole argument is that it invents nothing — every colour is
-the viewport's own (docs/CHROME.md). That claim is enforced here rather
+the viewport's own. That claim is enforced here rather
 than remembered: if someone retunes the overlay's selection orange or the
 raymarcher's background, the matching chrome constant fails loudly instead
 of drifting into a second brand.

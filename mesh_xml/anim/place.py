@@ -52,21 +52,13 @@ def translate(controller: object, offset) -> dict[str, object]:
         value = getattr(controller, name)
         if value is None:
             continue
-        if name in placed and not _registered(type(value)):
+        if name in placed and not serialize.is_registered(type(value)):
             changes[name] = _moved(value, shift, f"{cls.__name__}.{name}")
-        elif _registered(type(value)):
+        elif serialize.is_registered(type(value)):
             nested = translate(value, offset)
             if nested:
                 changes[name] = dataclasses.replace(value, **nested)
     return changes
-
-
-def _registered(cls: type) -> bool:
-    try:
-        serialize.fields_of(cls)
-    except serialize.ControllerFormatError:
-        return False
-    return True
 
 
 def _moved(value: object, shift: np.ndarray, where: str) -> object:

@@ -526,6 +526,38 @@ class Body:
                 out.append(link.a)
         return out
 
+    def component_labels(self) -> np.ndarray:
+        """``(N,) int64`` component index per *slot*, numbered by first-seen slot.
+
+        The one flood fill. Every caller that wants creatures — the roster, the
+        renderer's blend groups, the editor's per-creature gestures, the
+        transfer — derives from this rather than walking :meth:`neighbors`,
+        which rescans every link per call and makes a component walk quadratic.
+        Sharing the traversal is also what makes "the roster's creature *n* is
+        the surface's group *n*" true by construction instead of by agreement.
+        """
+        adjacency: list[list[int]] = [[] for _ in range(self._n)]
+        for i in range(self._n_links):
+            a, b = int(self._link_a[i]), int(self._link_b[i])
+            adjacency[a].append(b)
+            adjacency[b].append(a)
+
+        label = np.full(self._n, -1, dtype=np.int64)
+        groups = 0
+        for seed in range(self._n):
+            if label[seed] >= 0:
+                continue
+            label[seed] = groups
+            stack = [seed]
+            while stack:
+                node = stack.pop()
+                for neighbour in adjacency[node]:
+                    if label[neighbour] < 0:
+                        label[neighbour] = groups
+                        stack.append(neighbour)
+            groups += 1
+        return label
+
     def components(self) -> list[list[int]]:
         """Connected components over every link, as lists of chunk ids.
 
@@ -536,26 +568,8 @@ class Body:
         the same numbering the renderer gives its blend groups — the roster's
         creature *n* is the surface's group *n*.
         """
-        adjacency: list[list[int]] = [[] for _ in range(self._n)]
-        for i in range(self._n_links):
-            a, b = int(self._link_a[i]), int(self._link_b[i])
-            adjacency[a].append(b)
-            adjacency[b].append(a)
-
-        label = np.full(self._n, -1, dtype=np.int64)
-        groups: list[list[int]] = []
-        for seed in range(self._n):
-            if label[seed] >= 0:
-                continue
-            label[seed] = len(groups)
-            stack = [seed]
-            while stack:
-                node = stack.pop()
-                for neighbour in adjacency[node]:
-                    if label[neighbour] < 0:
-                        label[neighbour] = label[seed]
-                        stack.append(neighbour)
-            groups.append([])
+        label = self.component_labels()
+        groups: list[list[int]] = [[] for _ in range(int(label.max()) + 1 if self._n else 0)]
         for slot in range(self._n):
             groups[int(label[slot])].append(int(self._ids[slot]))
         return groups

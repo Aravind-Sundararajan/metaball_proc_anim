@@ -330,7 +330,7 @@ class TestAuthoredColour:
 
 
 class TestPackAttributes:
-    """The weighted skin's table (docs/TEXTURES.md): paired with pack row
+    """The weighted skin's table: paired with pack row
     for row, and empty exactly when the flat path would draw the same
     picture — that emptiness is what makes "unpainted means unchanged"
     structural."""
