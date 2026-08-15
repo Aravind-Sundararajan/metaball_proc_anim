@@ -57,14 +57,33 @@ def flat_room(document: Document, name: str = "flat") -> Room:
 
 
 def snapshot(room: Room) -> tuple:
-    """Everything a refusal must leave exactly as it found it."""
+    """Everything a refusal must leave exactly as it found it.
+
+    Every field of every chunk and link, not just the ids and positions: the
+    refusal tests claim the rooms come out bit-identical, and a snapshot that
+    reads four fields can only ever prove four fields. Radii, masses, pin
+    state, link types, rests, elasticities, render flags and meta all ride
+    here, and the controllers are compared by identity rather than counted —
+    a stack that swapped one controller for another keeps its length.
+    """
     return (
         [
-            (cid, tuple(room.body.chunk(cid).pos))
+            (
+                cid,
+                room.body.chunk(cid).name,
+                tuple(room.body.chunk(cid).pos),
+                room.body.chunk(cid).radius,
+                room.body.chunk(cid).inv_mass,
+                room.body.chunk(cid).pinned,
+                tuple(sorted(room.body.meta_of(cid).items())),
+            )
             for cid in room.body.chunk_ids()
         ],
-        [(link.a, link.b) for link in room.body.links()],
-        len(room.controllers.controllers),
+        [
+            (link.a, link.b, link.rest, int(link.type), link.elasticity, link.render)
+            for link in room.body.links()
+        ],
+        [id(controller) for controller in room.controllers.controllers],
     )
 
 

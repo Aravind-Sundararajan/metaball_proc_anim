@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QMainWindow,
     QMessageBox,
+    QTabBar,
     QToolBar,
 )
 
@@ -99,7 +100,35 @@ class MainWindow(QMainWindow):
         if tabbed:
             tabbed[0].raise_()
 
+        # The render is the product, so it gets the room. Left to itself Qt
+        # hands each dock its widest child's hint, which put the viewport at
+        # under half the window while a one-room table and a column of
+        # four-character spin boxes took the rest. These two numbers are the
+        # floor of what the docks stay legible at — narrower and the Rooms
+        # table drops columns behind a scrollbar.
+        left = [d for t, d in self._docks.items() if t == "Rooms"]
+        right = [d for t, d in self._docks.items() if t != "Rooms"]
+        if left:
+            self.resizeDocks(left, [280] * len(left), Qt.Orientation.Horizontal)
+        if right:
+            self.resizeDocks(right, [440] * len(right), Qt.Orientation.Horizontal)
+        self._tidy_dock_tabs()
+
         self._wire_panels()
+
+    def _tidy_dock_tabs(self) -> None:
+        """Let the dock tab bar overflow instead of shrinking to initials.
+
+        Eight tabified panels do not fit any dock width worth giving them, and
+        Qt's default is to elide every label until the row reads "C… C… S… L…".
+        Scroll buttons keep the names whole and move the cost to a gesture,
+        which is the right trade: a tab you can read and scroll to beats eight
+        you cannot tell apart.
+        """
+        for bar in self.findChildren(QTabBar):
+            bar.setElideMode(Qt.TextElideMode.ElideNone)
+            bar.setUsesScrollButtons(True)
+            bar.setExpanding(False)
 
     def _wire_panels(self) -> None:
         """Connect the panel signals that address the viewport rather than the document."""

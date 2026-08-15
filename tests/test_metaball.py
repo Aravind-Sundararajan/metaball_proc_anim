@@ -573,6 +573,86 @@ class TestAgainstTheCpuReference:
             )
             assert np.array_equal(culled, plain), f"cull changed mode {mode}"
 
+    def test_the_cull_actually_skips_something(self):
+        """Invisible is only half the claim; the other half is that it acts.
+
+        Byte-equality against the unculled render proves the cull is *sound*.
+        It proves nothing about whether the cull ever fires — a lower bound
+        that always answers minus infinity is perfectly sound and does no
+        work at all, and the byte-identity tests above pass against exactly
+        that. Mutation-checked: with ``sd_group_lower_bound`` returning a
+        constant far below every field value, the whole suite stayed green.
+
+        So this asserts the complement. Shrink the uploaded reach and the
+        bound overstates: groups get skipped that would have lowered the
+        running minimum, and the image moves. A cull that never fires cannot
+        move it, which is what makes this the test that fails when the
+        machinery is dead.
+        """
+        from mesh_xml.render.gl.camera import OrbitCamera
+
+        body = Body()
+        for creature, (x0, y) in enumerate(((0.0, 0.0), (0.5, 1.1), (-4.0, 0.3))):
+            ids = [
+                body.add_chunk(f"w{creature}c{i}", [x0 + i * 0.8, y, 0.0], radius=0.4)
+                for i in range(3)
+            ]
+            for a, b in zip(ids, ids[1:]):
+                body.add_link(a, b)
+
+        primitives = sdf.pack(body)
+        groups = sdf.group_table(body)
+        blend = 0.3
+        bounds = sdf.group_bounds(primitives, groups, k=blend)
+        starved = bounds.copy()
+        starved[:, 3] *= np.float32(0.1)
+        size = (160, 120)
+        camera = OrbitCamera(distance=9.0, yaw=25.0, pitch=18.0)
+        settings = metaball.MetaballSettings(blend=blend, max_distance=20.0)
+
+        honest = self.render(
+            primitives, camera, settings, size, groups=groups, bounds=bounds
+        )
+        starved_frame = self.render(
+            primitives, camera, settings, size, groups=groups, bounds=starved
+        )
+        assert not np.array_equal(honest, starved_frame), (
+            "shrinking every group's reach changed no pixel, so the cull is "
+            "skipping nothing and its byte-identity is the identity of dead code"
+        )
+
+    def test_the_group_bound_is_rounded_outward(self):
+        """The bound must overstate its reach, never merely match it.
+
+        At ``k = 0`` the shader's ``length()``-based lower bound can land a
+        few float32 ulps above the group's own computed field, and a bound
+        that overstates by one ulp culls a group that would have lowered the
+        running minimum — a visible hole, from arithmetic that is correct in
+        real numbers. The padding is what retires that, and nothing else in
+        the suite notices when it goes: removing it left 1660 tests green.
+        """
+        body = Body()
+        ids = [
+            body.add_chunk(f"c{i}", [i * 0.8, 0.0, 0.0], radius=0.4) for i in range(3)
+        ]
+        for a, b in zip(ids, ids[1:]):
+            body.add_link(a, b)
+
+        primitives = sdf.pack(body)
+        groups = sdf.group_table(body)
+        blend = 0.3
+        bounds = sdf.group_bounds(primitives, groups, k=blend)
+
+        ends = np.vstack((primitives[:, 0:3], primitives[:, 4:7]))
+        radii = np.concatenate((primitives[:, 3], primitives[:, 7]))
+        lo = (ends - radii[:, None]).min(axis=0)
+        hi = (ends + radii[:, None]).max(axis=0)
+        centre = (lo + hi) * 0.5
+        reach = np.linalg.norm(ends - centre, axis=1) + radii
+        unpadded = np.float32(float(reach.max()) + blend)
+
+        assert bounds[0, 3] > unpadded, "the bound carries no outward rounding"
+
     def test_the_cull_is_invisible_under_the_floor_shadow_too(self):
         """The shadow march's bounds early-out must also change nothing.
 

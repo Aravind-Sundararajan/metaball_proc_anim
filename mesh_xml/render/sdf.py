@@ -101,23 +101,41 @@ PATTERN_DEFAULTS = {"stripes": 4.0, "countershade": 0.7}
 
 
 
-def primitive_count(body: Body) -> int:
-    """How many primitives :func:`pack` will emit for ``body``.
+def _row_plan(body: Body) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The row layout every packer shares: ``(link_a, link_b, lonely)``, slots.
+
+    One cone row per rendered link, then one sphere row per chunk no rendered
+    link claims — and the answer computed **once**, because four functions
+    used to derive it independently and nothing held them to the same answer.
+    The tests check that the tables are the same *length*; they never checked
+    that :func:`pack` row *i* and :func:`pack_attributes` row *i* describe the
+    same primitive. A drift there uploads an attribute texture misaligned with
+    the primitive texture and the shader paints one creature's colour onto
+    another's flesh — silently, with a green suite. Sharing the derivation is
+    what makes the pairing structural instead of a coincidence.
 
     Only rendered links count. A mechanism link — an angle stop compiled to a
     PUSH brace across a joint — constrains without carrying flesh, and a chunk
     whose every link is mechanism still emits its own sphere: it is held by
     braces, not fused into them.
+
+    ``link_a``/``link_b`` are already slot-indexed, so this never walks
+    :meth:`Body.links` or calls :meth:`Body.slot` — both of which rescan the
+    whole link array per call.
     """
-    linked = set()
-    rendered = 0
-    for link in body.links():
-        if not link.render:
-            continue
-        rendered += 1
-        linked.add(link.a)
-        linked.add(link.b)
-    return rendered + (body.n_chunks - len(linked))
+    rendered = body.link_render
+    link_a = body.link_a[rendered]
+    link_b = body.link_b[rendered]
+    claimed = np.zeros(body.n_chunks, dtype=bool)
+    claimed[link_a] = True
+    claimed[link_b] = True
+    return link_a, link_b, np.nonzero(~claimed)[0]
+
+
+def primitive_count(body: Body) -> int:
+    """How many primitives :func:`pack` will emit for ``body``."""
+    link_a, _, lonely = _row_plan(body)
+    return len(link_a) + len(lonely)
 
 
 def pack(
@@ -145,40 +163,27 @@ def pack(
     if rad.shape != (body.n_chunks,):
         raise ValueError(f"radii must have shape ({body.n_chunks},), got {rad.shape}")
 
-    count = primitive_count(body)
+    a, b, lonely = _row_plan(body)
+    n_rendered = len(a)
+    count = n_rendered + len(lonely)
     out = np.zeros((count, PRIMITIVE_STRIDE), dtype=np.float32)
     if count == 0:
         return out
 
-    rendered = body.link_render
-    n_rendered = int(rendered.sum())
     if n_rendered:
-        a = body.link_a[rendered]
-        b = body.link_b[rendered]
         out[:n_rendered, 0:3] = _to_vec3(pos[a], body.dim)
         out[:n_rendered, 3] = rad[a]
         out[:n_rendered, 4:7] = _to_vec3(pos[b], body.dim)
         out[:n_rendered, 7] = rad[b]
 
-    # Membership in the surface is decided by rendered links alone: a chunk
-    # held only by mechanism links is not fused into them and keeps its sphere.
-    linked = set()
-    for link in body.links():
-        if not link.render:
-            continue
-        linked.add(body.slot(link.a))
-        linked.add(body.slot(link.b))
-
-    row = n_rendered
-    for slot in range(body.n_chunks):
-        if slot in linked:
-            continue
-        centre = _to_vec3(pos[slot : slot + 1], body.dim)[0]
-        out[row, 0:3] = centre
-        out[row, 3] = rad[slot]
-        out[row, 4:7] = centre
-        out[row, 7] = rad[slot]
-        row += 1
+    # A chunk no rendered link claims keeps its own sphere — the degenerate
+    # cone whose ends coincide — because it is held by braces, not fused.
+    if len(lonely):
+        centres = _to_vec3(pos[lonely], body.dim)
+        out[n_rendered:, 0:3] = centres
+        out[n_rendered:, 3] = rad[lonely]
+        out[n_rendered:, 4:7] = centres
+        out[n_rendered:, 7] = rad[lonely]
 
     # Rows sort group-major so :func:`group_table` can describe each creature
     # as one contiguous range. The sort is stable, so within a group the order
@@ -292,25 +297,14 @@ def pack_attributes(
         return np.zeros((0, PRIMITIVE_STRIDE), dtype=np.float32)
 
     out = np.zeros((count, PRIMITIVE_STRIDE), dtype=np.float32)
-    rendered = body.link_render
-    n_rendered = int(rendered.sum())
+    a, b, lonely = _row_plan(body)
+    n_rendered = len(a)
     if n_rendered:
-        out[:n_rendered, 0:3] = per_slot[body.link_a[rendered]]
-        out[:n_rendered, 4:7] = per_slot[body.link_b[rendered]]
-
-    linked = set()
-    for link in body.links():
-        if not link.render:
-            continue
-        linked.add(body.slot(link.a))
-        linked.add(body.slot(link.b))
-    row = n_rendered
-    for slot in range(body.n_chunks):
-        if slot in linked:
-            continue
-        out[row, 0:3] = per_slot[slot]
-        out[row, 4:7] = per_slot[slot]
-        row += 1
+        out[:n_rendered, 0:3] = per_slot[a]
+        out[:n_rendered, 4:7] = per_slot[b]
+    if len(lonely):
+        out[n_rendered:, 0:3] = per_slot[lonely]
+        out[n_rendered:, 4:7] = per_slot[lonely]
 
     row_groups = _row_groups(body)
     out[:, 3] = patterns[row_groups]
@@ -432,21 +426,8 @@ def _row_groups(body: Body) -> np.ndarray:
     first-seen slot, which makes the labels deterministic for a given body.
     """
     labels = _component_labels(body)
-    rendered = body.link_render
-    link_groups = labels[body.link_a[rendered]]
-
-    linked = set()
-    for link in body.links():
-        if not link.render:
-            continue
-        linked.add(body.slot(link.a))
-        linked.add(body.slot(link.b))
-    lonely_groups = [
-        labels[slot] for slot in range(body.n_chunks) if slot not in linked
-    ]
-    return np.concatenate(
-        (link_groups, np.asarray(lonely_groups, dtype=np.int64))
-    ).astype(np.int64)
+    a, _, lonely = _row_plan(body)
+    return np.concatenate((labels[a], labels[lonely])).astype(np.int64)
 
 
 def _component_labels(body: Body) -> np.ndarray:

@@ -366,6 +366,52 @@ class TestPackAttributes:
             assert tuple(attr[4:7]) == by_x[float(prim[4])]
             assert attr[3] == 0.0 and attr[7] == 0.0, "pattern lanes reserved"
 
+    def test_the_pairing_survives_the_group_major_sort(self):
+        """The row-for-row claim, in a body where the sort actually permutes.
+
+        A 3-chain sorts to the identity, so pairing tests on one prove the
+        two tables agree only where no reordering happened. Here the links
+        interleave across creatures — pre-sort row groups ``[0, 1, 0]`` plus
+        a lonely chunk — so the stable group-major sort moves rows, and both
+        tables have to move them the same way. They do because they now
+        derive the layout from one place; before that, nothing checked it,
+        and a drift would have painted one creature's colour onto another's
+        flesh with every test still green.
+        """
+        body = Body()
+        colours = {}
+        made = {}
+        for name, x in (
+            ("a0", 0.0), ("a1", 1.0), ("b0", 8.0), ("b1", 9.0),
+            ("c", 20.0), ("a2", 2.0),
+        ):
+            colours[x] = (round(x / 100.0, 4), 0.5, round(1.0 - x / 100.0, 4))
+            made[name] = body.add_chunk(
+                name,
+                [x, 0.0, 0.0],
+                radius=0.4,
+                meta={sdf.COLOUR_META: " ".join(str(v) for v in colours[x])},
+            )
+        # Interleaved on purpose: link one creature, then the other, then
+        # back, so build order and group order disagree.
+        body.add_link(made["a0"], made["a1"])
+        body.add_link(made["b0"], made["b1"])
+        body.add_link(made["a1"], made["a2"])
+
+        groups = sdf._row_groups(body)
+        assert list(groups) != sorted(groups), "the fixture must actually permute"
+
+        prims = sdf.pack(body)
+        attrs = sdf.pack_attributes(body)
+        assert len(prims) == len(attrs) == sdf.primitive_count(body)
+        for prim, attr in zip(prims, attrs):
+            assert tuple(round(float(v), 4) for v in attr[0:3]) == colours[
+                round(float(prim[0]), 4)
+            ]
+            assert tuple(round(float(v), 4) for v in attr[4:7]) == colours[
+                round(float(prim[4]), 4)
+            ]
+
     def test_a_lonely_chunk_wears_its_colour_on_both_ends(self):
         body = chain(2)
         body.meta_of(body.chunk_ids()[0])[sdf.COLOUR_META] = "1 0 0"

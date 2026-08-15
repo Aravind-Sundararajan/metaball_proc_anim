@@ -1174,9 +1174,17 @@ class TestSelfContact:
 
     def test_a_free_cluster_does_not_drift(self):
         """Uneven contact degrees — ends touch one stranger, middles two — is
-        exactly the shape that pumped momentum before the symmetric weight."""
+        exactly the shape that pumped momentum before the symmetric weight.
+
+        The spacing is deliberately **asymmetric**. An evenly spaced row is a
+        mirror image of itself, so a momentum pump cancels exactly in the
+        centre of mass and the assertion below passes while the defect runs:
+        mutation-checked, per-side normalization on the even spacing drifts
+        5.5e-05 against a 1e-3 threshold, and moving one chunk by 0.1 takes
+        the same mutation to 2.4 — three orders over.
+        """
         body = Body(dim=3)
-        for i, x in enumerate((0.0, 0.6, 1.2, 1.8)):
+        for i, x in enumerate((0.0, 0.55, 1.1, 1.9)):
             body.add_chunk(f"c{i}", (x, 0.0, 0.0))
         com0 = body.pos.mean(axis=0).copy()
 

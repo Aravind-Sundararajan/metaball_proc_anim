@@ -640,8 +640,13 @@ class TestControllerCommands:
         assert document.controllers.controllers == []
         for chunk in document.body.chunks():
             assert not chunk.pinned
-        if wave.anchor == first:
-            assert document.body.chunk(first).mass == pytest.approx(anchor_mass)
+        # On the chunk the autorig actually pinned, not on the one the test
+        # happened to tune: the anchor is chosen by shape, and guarding this
+        # on `wave.anchor == first` made it dead code — measured, the guard
+        # was False every run, so undo's mass restoration had no coverage.
+        assert document.body.chunk(wave.anchor).mass == pytest.approx(
+            anchor_mass if wave.anchor == first else 1.0
+        )
         assert not document.can_undo
 
 

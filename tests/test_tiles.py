@@ -56,8 +56,18 @@ class TestConservatism:
             target=tuple(rng.uniform(-1.0, 1.0, size=3)),
             orthographic=orthographic,
         )
+        # Kept inside the frustum on purpose. The original spread put spheres
+        # at ±4 around a target that wandered to ±1, so at these distances a
+        # group could land wholly off-screen or behind the eye and assert
+        # nothing — which is what the guard below caught in four of the six
+        # parametrizations. The property under test is tile coverage, not
+        # clipping, so the geometry stays in frame and the randomness stays
+        # in the camera.
         spheres = [
-            (tuple(rng.uniform(-4.0, 4.0, size=3)), float(rng.uniform(0.3, 1.5)))
+            (
+                tuple(rng.uniform(-1.2, 1.2, size=3) + camera.target),
+                float(rng.uniform(0.3, 0.8)),
+            )
             for _ in range(6)
         ]
         bounds = sphere_rows(spheres)
@@ -73,6 +83,15 @@ class TestConservatism:
                 np.asarray(origins), directions, np.asarray(centre), far=200.0
             ) < (radius + 0.45)
             ys, xs = np.nonzero(near)
+            # A sphere drawn behind the eye or off the edge contributes no
+            # pixels, and the loop below then asserts nothing at all. Measured
+            # before this guard: four of six parametrizations had at least one
+            # group with zero asserted pixels, in a test the file's own
+            # docstring calls load-bearing.
+            assert ys.size > 0, (
+                f"group {group} lands no near pixels [camera seed {seed}, "
+                f"ortho={orthographic}], so it asserts nothing"
+            )
             for y, x in zip(ys, xs):
                 assert bit_of(masks, y // TILE_SIZE, x // TILE_SIZE, group), (
                     f"group {group} missing from tile of pixel ({x}, {y}) "

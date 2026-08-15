@@ -12,6 +12,15 @@ paint half their widgets from OS resources a palette never reaches. The
 stylesheet then covers what palettes cannot say: group-box framing, dock
 titles, slim scrollbars, accent focus rings.
 
+Two rules the chrome answers to, both learned from looking at it. **The accent
+is a mark, never a field**: at the size of a focus ring or a tab's underline it
+reads as "chosen", and at the size of a table row it reads as an alarm louder
+than the render. :data:`SELECT` is what selection uses instead. And **frames
+group, they do not decorate**: a bordered box inside a panel inside a tabbed
+dock stacks three outlines around six numbers, so a section here is a hairline
+and a label. What the chrome is framing is the viewport, and it should be
+quieter than what it frames.
+
 Applied only by :func:`apply`, which only ``main()`` calls: tests and
 embedders get stock widgets unless they opt in, so no assertion elsewhere
 quietly starts depending on a stylesheet.
@@ -22,7 +31,7 @@ from __future__ import annotations
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
-__all__ = ["ACCENT", "FIELD", "INK", "INFO", "WINDOW", "apply"]
+__all__ = ["ACCENT", "FIELD", "INK", "INFO", "SELECT", "WINDOW", "apply"]
 
 # ----------------------------------------------------------------------
 # the palette, with each colour's source named
@@ -55,11 +64,19 @@ DIM = "#9aa3b4"
 QUIET = "#5d6474"
 
 #: The accent: viewport.SELECTED_COLOUR, the orange the app has always
-#: meant "chosen" by. Selection highlights, focus rings, checked states.
+#: meant "chosen" by. Focus rings, checked states, the active tab's rule.
 ACCENT = "#ffba48"
 
 #: Ink for text sitting on the accent.
 ON_ACCENT = "#1f1607"
+
+#: Selected rows: the accent at about a quarter strength over FIELD, not the
+#: accent itself. A table row filled edge to edge with full ACCENT was the
+#: brightest thing in the window — brighter than the creature the window
+#: exists to show — and a one-room list read as an alarm. The accent still
+#: says "chosen" everywhere it is a small mark; at row scale it needs to be
+#: a tint. Kept in the accent's own hue so the vocabulary is unbroken.
+SELECT = "#5b4a2e"
 
 #: Informational blue: viewport.LINK_COLOUR, the overlay's link stroke.
 INFO = "#78beeb"
@@ -173,16 +190,20 @@ QTabBar::tab:hover:!selected {{
     background: {HOVER};
 }}
 
+/* Sections are a rule and a label, not a box. A group box inside a panel
+   inside a tabbed dock stacked three borders deep around six spin boxes, and
+   the frames read louder than the values they were framing. The hairline
+   still groups; it just stops competing. */
 QGroupBox {{
-    border: 1px solid {BORDER};
-    border-radius: 6px;
-    margin-top: 12px;
-    padding-top: 6px;
+    border: none;
+    border-top: 1px solid {BORDER};
+    margin-top: 15px;
+    padding-top: 9px;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
-    left: 8px;
-    padding: 0 4px;
+    left: 0px;
+    padding: 0 8px 0 0;
     color: {DIM};
     font-size: 8pt;
     text-transform: uppercase;
@@ -217,8 +238,17 @@ QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{
     border: 1px solid {BORDER};
     border-radius: 5px;
     padding: 3px 8px;
+    min-height: 17px;
     selection-background-color: {ACCENT};
     selection-color: {ON_ACCENT};
+}}
+/* Numbers are capped; text is not. A four-character value stretched across
+   four hundred pixels of dock puts the label and its number at opposite ends
+   of the eye's travel, and every row in the panel is that shape. Names and
+   dropdowns still take the width they are given, because their content
+   genuinely uses it. */
+QSpinBox, QDoubleSpinBox {{
+    max-width: 118px;
 }}
 QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{
     border-color: {ACCENT};
@@ -260,8 +290,19 @@ QHeaderView::section {{
    Rooms and Doors tables shipped reading "AN|" and "ROC". Dock titles
    and group-box titles keep the treatment; nothing measures them. */
 QTableWidget::item:selected {{
-    background: {ACCENT};
-    color: {ON_ACCENT};
+    background: {SELECT};
+    color: {INK};
+}}
+QTableWidget::item:focus {{
+    border: none;
+    outline: none;
+}}
+
+/* Small print reads as small print. These sit permanently under the tables
+   they explain, and at full INK a paragraph of onboarding prose carried the
+   same weight as the values above it. */
+QLabel#note {{
+    color: {DIM};
 }}
 
 QScrollBar:vertical {{
