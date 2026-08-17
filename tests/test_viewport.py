@@ -681,6 +681,56 @@ class TestViewport:
         view.show_rig = False
         assert not np.array_equal(with_rig, self.image(view))
 
+    def test_a_pinned_chunk_wears_a_square_and_a_free_one_does_not(self):
+        """A pin outranks the world, so it has to look different from a dot.
+
+        The floor and the terrain both skip pinned chunks — ``inv_mass > 0``
+        masks them out of every world pass — so a held chunk dragged under the
+        floor stays under it, correctly and with nothing on screen to say why.
+        The overlay is where that gets said.
+
+        Asserted at the *corner*, not by "the pixels differ": a square covers
+        the diagonal its inscribed circle leaves empty, and that is the whole
+        claim. Sampling anywhere else would pass just as well for a slightly
+        fatter dot.
+        """
+        from mesh_xml.editor import viewport as viewport_module
+
+        body = worm(n=2, spacing=2.4)
+        held, loose = body.chunk_ids()
+        body.set_pinned(held, True)
+        view = self.viewport(document_with(body))
+
+        view.show_rig = False
+        clean = self.image(view)
+        view.show_rig = True
+        changed = (clean != self.image(view)).any(axis=2)
+
+        # One dot-radius out along *both* axes, so the sample sits √2 radii
+        # from the centre: outside the dot with room for its antialiasing,
+        # inside the square with room for the rounding. Both bounds are
+        # asserted rather than assumed, so retuning either mark fails here
+        # instead of quietly making the test measure nothing.
+        offset = viewport_module.CHUNK_RADIUS_PX
+        assert offset * 2**0.5 > viewport_module.CHUNK_RADIUS_PX + 1.0, (
+            "the sample is inside the free dot's own antialiasing"
+        )
+        assert offset < viewport_module.PINNED_HALF_PX - 1.0, (
+            "the sample is outside the square, or the two marks no longer separate"
+        )
+
+        ratio = view.devicePixelRatioF()
+        points = view.rig_screen_points()
+
+        def corner_painted(chunk_id: int) -> bool:
+            x, y = points[chunk_id]
+            row = int(round((y + offset) * ratio))
+            column = int(round((x + offset) * ratio))
+            return bool(changed[row, column])
+
+        assert corner_painted(held), "the pinned chunk drew no corner — not a square"
+        assert not corner_painted(loose), "the free chunk drew a corner — not a circle"
+
     def test_the_overlay_lands_on_the_projected_chunks(self):
         """A dot drawn in the wrong place is still 'the overlay reached the frame'."""
         view = self.viewport()
