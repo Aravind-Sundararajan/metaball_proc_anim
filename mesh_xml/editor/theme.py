@@ -508,6 +508,14 @@ QToolButton#railButton {{
     background: transparent;
     border: 1px solid transparent;
     border-radius: 6px;
+    /* Zero, and stated rather than inherited. The generic QToolButton rule
+       below carries `padding: 4px 12px` for the toolbar, where the glyph sits
+       beside a word and needs the room. A rail button is a fixed 36px square
+       holding a 19px glyph and nothing else, so those same 12px each side left
+       a ten-pixel content box and Qt clipped every icon's flanks against it —
+       the paw, the walker and the wave all shipped shaved down one edge. Any
+       button given a fixed size has to say its own padding. */
+    padding: 0;
 }}
 QToolButton#railButton:hover {{
     background: {RAISED};

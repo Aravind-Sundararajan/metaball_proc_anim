@@ -107,6 +107,72 @@ class TestMarks:
             assert sub_control in theme.QSS, f"{sub_control} is unstyled and so unpainted"
 
 
+def _painted_width(button) -> int:
+    """Width of the region a widget actually paints, in device pixels.
+
+    Read off a real render rather than off geometry, because the thing being
+    measured — a style sheet's padding squeezing a fixed-size button's content
+    box — never appears in ``contentsRect``. Qt applies style-sheet padding at
+    paint time, so painting is where it has to be caught.
+    """
+    image = button.grab().toImage()
+    background = image.pixel(0, 0)
+    left, right = image.width(), -1
+    for x in range(image.width()):
+        for y in range(image.height()):
+            if image.pixel(x, y) != background:
+                left = min(left, x)
+                right = max(right, x)
+                break
+    return 0 if right < 0 else right - left + 1
+
+
+class TestRailButtons:
+    """A fixed-size button has to declare its own padding.
+
+    The generic ``QToolButton`` rule carries ``padding: 4px 12px`` for the
+    toolbar, where a glyph sits beside a word and needs the room. A rail button
+    is a 36px square holding a 19px glyph, so inheriting those same 12px each
+    side left a ten-pixel content box, and Qt clipped every icon's flanks
+    against it — the whole rail shipped shaved down one edge, which is easy to
+    read as "that is just what the icon looks like".
+    """
+
+    def test_a_rail_glyph_paints_at_its_full_width(self):
+        from PySide6.QtWidgets import QWidget
+
+        from mesh_xml.editor.rail import Inspector
+
+        def measure() -> int:
+            inspector = Inspector(
+                {"Chunks": QWidget(), "Terrain": QWidget(), "Creatures": QWidget()}
+            )
+            inspector.show()
+            APPLICATION.processEvents()
+            # Not button 0: the rail marks it on construction, so it paints its
+            # checked background edge to edge and measures the button, not the
+            # glyph inside it.
+            width = _painted_width(inspector._buttons.buttons()[1])
+            inspector.hide()
+            return width
+
+        APPLICATION.setStyleSheet("")
+        unstyled = measure()
+
+        theme.apply(APPLICATION)
+        try:
+            themed = measure()
+        finally:
+            APPLICATION.setStyleSheet("")
+            APPLICATION.setPalette(QPalette())
+
+        assert unstyled > 0, "the reference render painted nothing to compare against"
+        assert themed == unstyled, (
+            f"the themed rail glyph paints {themed}px where an unstyled one "
+            f"paints {unstyled}px — the stylesheet is clipping it"
+        )
+
+
 class TestApply:
     def test_apply_dresses_the_application(self):
         theme.apply(APPLICATION)
