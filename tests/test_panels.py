@@ -208,6 +208,71 @@ class TestInspectorRail:
 
         assert inspector.current == before
 
+    def test_the_mark_lands_on_the_button_it_marks(self, document):
+        """The mark is a separate widget now, so it can be in the wrong place.
+
+        Under the old stylesheet the checked button painted its own background
+        and could not miss. A sliding widget is positioned by hand and has no
+        idea the layout moved, which is exactly the failure this pins.
+        """
+        from mesh_xml.editor.rail import Inspector
+
+        built = {t: w for t, w in panels.build_panels(document).items() if t != "Rooms"}
+        inspector = Inspector(built)
+        inspector.resize(360, 700)
+        inspector.show()
+        APPLICATION.processEvents()
+        try:
+            for title in ("Terrain", "Curve", "Chunks"):
+                inspector.show_panel(title)
+                inspector._slide.setCurrentTime(inspector._slide.duration())
+                APPLICATION.processEvents()
+                button = inspector._buttons.button(inspector._stack.currentIndex())
+                assert inspector._marker.geometry() == button.geometry(), (
+                    f"the mark missed the {title} button"
+                )
+        finally:
+            inspector.hide()
+
+    def test_switching_slides_the_mark_rather_than_moving_it(self, document):
+        """Where the selection came from is the whole point of animating it."""
+        from mesh_xml.editor.rail import Inspector
+
+        built = {t: w for t, w in panels.build_panels(document).items() if t != "Rooms"}
+        inspector = Inspector(built)
+        inspector.resize(360, 700)
+        inspector.show()
+        APPLICATION.processEvents()
+        try:
+            start = inspector._marker.geometry()
+            inspector.show_panel("Terrain")
+            APPLICATION.processEvents()
+
+            assert inspector._slide.state() == inspector._slide.State.Running
+            assert inspector._marker.geometry() != inspector._buttons.button(
+                inspector._stack.currentIndex()
+            ).geometry(), "the mark arrived instantly — nothing was animated"
+            assert inspector._slide.startValue() == start
+        finally:
+            inspector.hide()
+
+    def test_the_first_placement_does_not_fly_in(self, document):
+        """A mark sliding in from the corner on open announces a change that
+        never happened. There is nothing to slide *from* the first time."""
+        from mesh_xml.editor.rail import Inspector
+
+        built = {t: w for t, w in panels.build_panels(document).items() if t != "Rooms"}
+        inspector = Inspector(built)
+        inspector.resize(360, 700)
+        inspector.show()
+        APPLICATION.processEvents()
+        try:
+            assert inspector._slide.state() != inspector._slide.State.Running
+            button = inspector._buttons.button(inspector._stack.currentIndex())
+            assert inspector._marker.geometry() == button.geometry()
+        finally:
+            inspector.hide()
+
     def test_assembling_the_panels_edits_nothing(self, document):
         built = panels.build_panels(document)
         assert built

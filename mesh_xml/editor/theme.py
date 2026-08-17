@@ -520,9 +520,17 @@ QToolButton#railButton {{
 QToolButton#railButton:hover {{
     background: {RAISED};
 }}
-QToolButton#railButton:checked {{
+
+/* The checked button paints nothing: the mark is a separate widget sliding
+   underneath (:mod:`mesh_xml.editor.rail`), so that switching panels shows
+   which way the selection moved rather than teleporting. A checked background
+   here as well would be a second mark, stationary, arriving before the first
+   one had left. The glyph still swaps to the accent — that is the button's
+   own half of saying "this one". */
+QWidget#railMarker {{
     background: {SELECT};
-    border-color: {ACCENT};
+    border: 1px solid {ACCENT};
+    border-radius: 6px;
 }}
 
 /* The active panel says its own name, so the rail's glyphs never have to
