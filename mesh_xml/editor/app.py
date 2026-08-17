@@ -264,8 +264,11 @@ class MainWindow(QMainWindow):
         self.frame_action = QAction(icons.icon("frame"), "Frame All", self)
         self.frame_action.setShortcut(QKeySequence("F"))
         self.frame_action.setToolTip("Fit the camera to the creature (F)")
+        # The one framing that eases: the author asked to be shown this
+        # creature, so the move is continuous. Every other caller of
+        # frame_all is content changing underneath the camera and cuts.
         self.frame_action.triggered.connect(
-            lambda checked=False: self.viewport.frame_all()
+            lambda checked=False: self.viewport.frame_all(animate=True)
         )
 
         # Registered on the window as well, so the shortcuts fire while
@@ -422,8 +425,14 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def snap_view(self, view: str) -> None:
-        self.viewport.camera.snap_view(view)
-        self.viewport.camera_changed.emit()
+        """Travel to a named axis view rather than cutting to it.
+
+        A cut here costs the author the one thing the gesture is for: Top and
+        Bottom, or Left and Right, are indistinguishable on arrival, so the
+        frame after the jump does not say which way the subject turned. The
+        sweep says it, and the gizmo's handles go the same way.
+        """
+        self.viewport.glide_to(self.viewport.camera.view_pose(view))
 
     def toggle_rig(self) -> None:
         visible = not self.viewport.show_rig

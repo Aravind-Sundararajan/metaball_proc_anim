@@ -46,6 +46,7 @@ __all__ = [
     "ZOOM_PER_WHEEL_UNIT",
     "CameraPose",
     "OrbitCamera",
+    "blend_poses",
     "viewport_aspect",
 ]
 
@@ -98,6 +99,47 @@ class CameraPose:
     yaw: float
     pitch: float
     target: tuple[float, float, float]
+
+
+def blend_poses(start: CameraPose, end: CameraPose, t: float) -> CameraPose:
+    """A pose ``t`` of the way from ``start`` to ``end``, linear in ``t``.
+
+    Linear on purpose: easing is the caller's, so the shape of a move can be
+    tuned where the move is felt without this having to be re-derived. What
+    lives here is the part that is *not* a straight lerp, and there are two.
+
+    **Yaw takes the shortest arc.** The angles are unwrapped degrees, so
+    interpolating 170 to −170 the obvious way sweeps 340° the long way round —
+    the camera whips past the back of the subject to arrive one notch over.
+    The difference is folded into ±180 first, which is also why the result can
+    leave the range its endpoints were in; the setter wraps it.
+
+    **Distance interpolates geometrically.** Distance is a zoom, and zoom is
+    multiplicative: a linear path from 2 to 200 is still above 100 at the
+    halfway point, so a fit-to-creature from far out appears to hang in space
+    and then arrive all at once. A constant *ratio* per unit time is what
+    reads as a steady approach. Degenerate or non-positive distances fall back
+    to the linear path rather than raising, since a camera has no business
+    throwing from inside a frame loop.
+    """
+    t = min(max(float(t), 0.0), 1.0)
+
+    turn = (end.yaw - start.yaw + 180.0) % 360.0 - 180.0
+    yaw = start.yaw + turn * t
+
+    if start.distance > 0.0 and end.distance > 0.0:
+        distance = start.distance * (end.distance / start.distance) ** t
+    else:
+        distance = start.distance + (end.distance - start.distance) * t
+
+    return CameraPose(
+        distance=distance,
+        yaw=yaw,
+        pitch=start.pitch + (end.pitch - start.pitch) * t,
+        target=tuple(
+            a + (b - a) * t for a, b in zip(start.target, end.target, strict=True)
+        ),
+    )
 
 
 def viewport_aspect(width: int, height: int) -> float:
@@ -329,14 +371,27 @@ class OrbitCamera:
         so each view is exactly the yaw/pitch that puts that row on the axis.
         Only yaw and pitch change; framing is the user's and stays put.
         """
+        self.set_pose(self.view_pose(view))
+
+    def view_pose(self, view: str) -> CameraPose:
+        """Where :meth:`snap_view` would land, without going there.
+
+        Split out so a caller that wants to *travel* to an axis view can ask
+        for the destination and ease toward it, rather than re-deriving the
+        angles beside the table that owns them.
+        """
         try:
             yaw, pitch = AXIS_VIEWS[view]
         except KeyError:
             raise ValueError(
                 f"unknown view {view!r}, expected one of {sorted(AXIS_VIEWS)}"
             ) from None
-        self.yaw = yaw
-        self.pitch = pitch
+        return CameraPose(
+            distance=self._distance,
+            yaw=yaw,
+            pitch=pitch,
+            target=tuple(float(v) for v in self._target),
+        )
 
     def orbit(self, dx: float, dy: float) -> None:
         """Apply a mouse drag in pixels.

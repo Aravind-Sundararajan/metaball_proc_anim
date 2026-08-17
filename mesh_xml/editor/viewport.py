@@ -67,12 +67,18 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QShowEvent,
+    QWheelEvent,
 )
 
 from mesh_xml.core import Body
 from mesh_xml.editor.document import Document
 from mesh_xml.render import field, sdf, tiles
-from mesh_xml.render.gl.camera import OrbitCamera, viewport_aspect
+from mesh_xml.render.gl.camera import (
+    CameraPose,
+    OrbitCamera,
+    blend_poses,
+    viewport_aspect,
+)
 from mesh_xml.render.gl.context import RaymarchView
 
 if TYPE_CHECKING:
@@ -115,6 +121,13 @@ FRAME_MARGIN = 1.15
 #: Below this dot product a ray is parallel to the drag plane and the
 #: intersection runs off to infinity.
 PARALLEL_EPSILON = 1e-6
+
+#: How long an eased camera move takes, in seconds. Long enough to read as a
+#: turn rather than a cut, short enough that an author repeating it — snapping
+#: between two axis views to compare them — never waits on it. Past about a
+#: third of a second the same move stops feeling like the app answering and
+#: starts feeling like the app deciding.
+GLIDE_SECONDS = 0.22
 
 LINK_COLOUR = QColor(120, 190, 235, 150)
 CHUNK_COLOUR = QColor(232, 238, 248, 210)
@@ -520,6 +533,40 @@ class _ChunkDrag:
     moved: bool = False
 
 
+@dataclass
+class _CameraGlide:
+    """One eased camera move, from wherever the camera was to a named pose.
+
+    A cut costs the viewer the answer to "which way did I turn": the frame
+    before and the frame after share no landmark, so a snap to Top and a snap
+    to Bottom look identical on arrival. Sweeping the same move over a fifth of
+    a second carries that answer for free, and is short enough not to become a
+    thing the author waits through.
+
+    Held as data rather than as a ``QPropertyAnimation`` because the viewport
+    already owns a frame loop that decides per frame whether anything can have
+    changed. A second timer driving the camera behind that gate's back would
+    animate a widget that had stopped repainting.
+    """
+
+    start: CameraPose
+    end: CameraPose
+    #: Seconds elapsed so far, advanced by the frame loop's own measured dt.
+    elapsed: float = 0.0
+
+    def at(self, duration: float) -> tuple[CameraPose, bool]:
+        """The pose for the current elapsed time, and whether the move is done.
+
+        Eased in and out with smoothstep: a camera that starts and stops
+        abruptly reads as a cut with a delay in front of it, which is the worst
+        of both. The final frame is the target *exactly* — ``t`` reaching 1
+        gives ``blend_poses`` back its endpoint — so a glide can never leave
+        the camera a rounding error away from the view it was asked for.
+        """
+        t = 1.0 if duration <= 0.0 else min(self.elapsed / duration, 1.0)
+        return blend_poses(self.start, self.end, t * t * (3.0 - 2.0 * t)), t >= 1.0
+
+
 class MetaballViewport(RaymarchView):
     """A raymarched view of a :class:`Document` that the mouse can edit.
 
@@ -584,6 +631,7 @@ class MetaballViewport(RaymarchView):
         self._needs_upload = True
         self._needs_repaint = True
         self._drag: _ChunkDrag | None = None
+        self._glide: _CameraGlide | None = None
 
         self._elapsed = QElapsedTimer()
         self._elapsed.start()
@@ -678,6 +726,7 @@ class MetaballViewport(RaymarchView):
             return
 
         self._set_idle(False)
+        self._advance_glide(elapsed)
         self._document.advance(elapsed)
         self._repack()
         self._needs_repaint = False
@@ -689,8 +738,43 @@ class MetaballViewport(RaymarchView):
             self._document.running
             or self._needs_upload
             or self._needs_repaint
+            or self._glide is not None
             or not self._settled()
         )
+
+    def glide_to(self, pose: CameraPose) -> None:
+        """Sweep the camera to ``pose`` instead of cutting to it.
+
+        Starting a glide replaces any glide already running, from wherever the
+        camera has actually reached — so mashing Top then Front reads as one
+        change of mind rather than as a queue. A move that would land where the
+        camera already is is dropped, because a zero-length glide still costs
+        :attr:`idle` a fifth of a second of repainting to accomplish nothing.
+        """
+        current = self.camera.pose()
+        if pose == current:
+            return
+        self._glide = _CameraGlide(start=current, end=pose)
+        self._invalidate_frame()
+
+    def cancel_glide(self) -> None:
+        """Drop any glide in flight, leaving the camera where it has reached.
+
+        The hand always wins: a glide that kept running under an orbit drag
+        would fight the mouse for the rest of its duration, and the author's
+        own gesture is never the thing that should give way.
+        """
+        self._glide = None
+
+    def _advance_glide(self, elapsed: float) -> None:
+        if self._glide is None:
+            return
+        self._glide.elapsed += elapsed
+        pose, done = self._glide.at(GLIDE_SECONDS)
+        if done:
+            self._glide = None
+        self.camera.set_pose(pose)
+        self.camera_changed.emit()
 
     def _settled(self) -> bool:
         """Whether the draw-point springs have finished chasing the chunks.
@@ -1085,8 +1169,16 @@ class MetaballViewport(RaymarchView):
     # camera
     # ------------------------------------------------------------------
 
-    def frame_all(self) -> None:
+    def frame_all(self, animate: bool = False) -> None:
         """Fit the camera to the rig's blended bounds.
+
+        Cuts by default, and eases only when asked. Of the places that frame,
+        all but one are "the content just changed underneath you" — a file
+        opened, a scene loaded, a room entered for the first time, a creature
+        arriving through a door — and easing there would sweep the camera
+        between two spaces that share no landmark, asserting a continuity that
+        is not there. The one caller that *is* continuous is the author asking
+        to be shown this creature, and that one asks.
 
         Widens the camera's dolly limits and far plane to reach, which
         :class:`OrbitCamera` documents as the intended response to a rig
@@ -1100,16 +1192,31 @@ class MetaballViewport(RaymarchView):
         """
         lo, hi = field.bounds(self._document.primitives(), self._document.metaball.blend)
         radius = float(np.linalg.norm(hi - lo)) * 0.5
-        self.camera.target = (lo + hi) * 0.5
+        centre = (lo + hi) * 0.5
+        distance = self.camera.distance
 
         if radius > 0.0:
             aspect = viewport_aspect(max(self.width(), 1), max(self.height(), 1))
             fit = radius / (self.camera.tan_half_fov * min(1.0, aspect)) * FRAME_MARGIN
+            # The dolly bounds and the far plane move now either way: they are
+            # what the pose is allowed to reach, so widening them partway
+            # through a glide would clamp the frames before it.
             self.camera.min_distance = min(self.camera.min_distance, fit)
             self.camera.max_distance = max(self.camera.max_distance, fit)
             self.camera.far = max(self.camera.far, fit + radius * 2.0)
-            self.camera.distance = fit
+            distance = fit
 
+        framed = CameraPose(
+            distance=distance,
+            yaw=self.camera.yaw,
+            pitch=self.camera.pitch,
+            target=tuple(float(v) for v in centre),
+        )
+        if animate:
+            self.glide_to(framed)
+            return
+        self.cancel_glide()
+        self.camera.set_pose(framed)
         self.camera_changed.emit()
 
     def _carry_camera(self) -> None:
@@ -1231,7 +1338,23 @@ class MetaballViewport(RaymarchView):
         at = tuple(float(v) for v in centre)
         self._document.create_chunk(at=at, attach_to=attach_to, radius=radius)
 
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        """Zoom, after standing the glide down.
+
+        The base view knows nothing about glides — it is the GL layer, and a
+        camera that eases is an editor idea — so the stand-down happens on the
+        way past. Without it a frame-all still in flight would keep writing
+        its own distance over every notch the author scrolled.
+        """
+        self.cancel_glide()
+        super().wheelEvent(event)
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        # Any press ends a glide in flight. The hand outranks the animation:
+        # a camera still easing toward Top while the author has started
+        # orbiting somewhere else fights the mouse for the rest of its
+        # duration, and the gesture is never the thing that should give way.
+        self.cancel_glide()
         if (
             event.button() == Qt.MouseButton.LeftButton
             and event.modifiers() == Qt.KeyboardModifier.ControlModifier
@@ -1254,9 +1377,7 @@ class MetaballViewport(RaymarchView):
                 position.y(),
             )
             if view is not None:
-                self.camera.snap_view(view)
-                self.camera_changed.emit()
-                self.update()
+                self.glide_to(self.camera.view_pose(view))
                 return
 
             chunk_id = self.pick(position.x(), position.y())

@@ -21,7 +21,13 @@ converges on.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QPropertyAnimation,
+    QRect,
+    QSize,
+    Signal,
+)
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -41,6 +47,20 @@ __all__ = ["Inspector"]
 #: without aiming, small enough that eleven of them do not fill the column.
 BUTTON_PX = 36
 GLYPH_PX = 19
+
+#: How long the marker takes to travel between two buttons, in milliseconds.
+#: Shorter than the viewport's camera glide on purpose: that one is carrying a
+#: rotation an author has to read, while this is carrying "the mark is now
+#: here" over a few dozen pixels, and a slow answer to a click reads as lag
+#: rather than as motion.
+MARKER_MS = 140
+
+#: Driven by ``QPropertyAnimation`` rather than by the frame loop that eases
+#: the camera. The two look alike and are not: the viewport's loop exists to
+#: *stop* repainting a raymarched shader when nothing changes, and everything
+#: it drives has to answer to that gate. A widget marker has no such gate — Qt
+#: repaints it when it moves — so borrowing the loop would couple a dock's
+#: chrome to the GL surface's idle policy for nothing.
 
 
 class Inspector(QWidget):
@@ -76,6 +96,18 @@ class Inspector(QWidget):
         rail_layout = QVBoxLayout(rail)
         rail_layout.setContentsMargins(4, 6, 4, 6)
         rail_layout.setSpacing(2)
+
+        # Built before the buttons so it sits under them in the sibling stack:
+        # the buttons paint transparently, so the marker shows through, and a
+        # marker painted *over* a glyph would hide the thing it is marking.
+        self._marker = QWidget(rail)
+        self._marker.setObjectName("railMarker")
+        self._marker.hide()
+        self._slide = QPropertyAnimation(self._marker, b"geometry", self)
+        self._slide.setDuration(MARKER_MS)
+        self._slide.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._rail = rail
+        rail.installEventFilter(self)
 
         for index, (title, widget) in enumerate(panels.items()):
             self._titles.append(title)
@@ -152,7 +184,44 @@ class Inspector(QWidget):
             if other is not None and glyphs is not None:
                 other.setIcon(glyphs[1] if slot == index else glyphs[0])
         self._heading.setText(self._titles[index].upper())
+        self._place_marker(animate=True)
         self.shown.emit(self._titles[index])
+
+    def eventFilter(self, watched: QWidget, event) -> bool:
+        """Keep the marker on its button when the rail is laid out or resized.
+
+        The marker's geometry is set by hand rather than by the layout, so it
+        has no idea the buttons have moved. It also cannot be placed in
+        ``__init__``: nothing has been laid out yet there, every button reports
+        a null rectangle, and the marker would open life as a stripe in the
+        corner. Show and resize are the two moments the truth changes.
+        """
+        if watched is self._rail and event.type() in (
+            event.Type.Show,
+            event.Type.Resize,
+        ):
+            self._place_marker(animate=False)
+        return super().eventFilter(watched, event)
+
+    def _place_marker(self, animate: bool) -> None:
+        """Move the mark to the checked button, sliding or snapping."""
+        button = self._buttons.button(self._stack.currentIndex())
+        if button is None or not button.width():
+            # Pre-layout: no geometry to move to yet. The show event that
+            # follows will place it, so leaving it hidden is the honest state.
+            return
+        self._slide.stop()
+        target = button.geometry()
+        if animate and self._marker.isVisible():
+            self._slide.setStartValue(self._marker.geometry())
+            self._slide.setEndValue(target)
+            self._slide.start()
+        else:
+            # Nothing to slide *from* on the first placement, and a marker that
+            # flew in from the corner on open would announce a change that had
+            # not happened.
+            self._marker.setGeometry(QRect(target))
+        self._marker.show()
 
     def show_panel(self, title: str) -> None:
         """Raise the panel with this dock title, if there is one."""

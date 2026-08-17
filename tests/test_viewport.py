@@ -28,6 +28,7 @@ from mesh_xml.core.terrain import Terrain
 from mesh_xml.editor.document import Document, MoveChunk
 from mesh_xml.editor.viewport import (
     GIZMO_HANDLE_PX,
+    GLIDE_SECONDS,
     GIZMO_MARGIN_PX,
     GIZMO_RADIUS_PX,
     MetaballViewport,
@@ -1292,3 +1293,149 @@ class TestCameraAcrossTheCut:
         document.set_active_room(meadow)
         document.set_active_room(first)
         assert view.camera.pose() == after_open
+
+
+class TestCameraGlide:
+    """An eased camera move, and the gate it has to answer to.
+
+    A snap cut costs the author the answer to "which way did I turn": Top and
+    Bottom, or Left and Right, are indistinguishable on arrival because the
+    frames before and after share no landmark. The sweep carries it.
+
+    The half most likely to be wrong is not the easing — it is the frame loop.
+    This viewport stops repainting when nothing can have changed, so a glide
+    that does not register with that gate animates a widget which has already
+    gone to sleep, and the camera arrives in one jump the next time something
+    unrelated wakes it.
+    """
+
+    @staticmethod
+    def viewport(document: Document | None = None) -> MetaballViewport:
+        try:
+            gl_context.ensure_application()
+        except Exception as exc:  # pragma: no cover - no Qt platform plugin
+            pytest.skip(f"no Qt platform available: {exc}")
+        view = MetaballViewport(document if document is not None else document_with(worm()))
+        view.resize(*SIZE)
+        return view
+
+    @staticmethod
+    def run_glide(view: MetaballViewport, seconds: float = 1.0) -> int:
+        """Drive the frame loop by hand until the glide finishes."""
+        frames = 0
+        step = GLIDE_SECONDS / 8.0
+        while view._glide is not None and frames * step < seconds:
+            view._glide.elapsed += step
+            pose, done = view._glide.at(GLIDE_SECONDS)
+            if done:
+                view._glide = None
+            view.camera.set_pose(pose)
+            frames += 1
+        return frames
+
+    def test_the_loop_stays_awake_for_the_whole_glide(self):
+        """The gate question, asked at the moment it actually bites.
+
+        Asking right after ``glide_to`` proves nothing: that call dirties the
+        repaint flag too, so the loop would want a frame either way. The flag
+        is *consumed* by every tick, and what has to keep the loop running for
+        the remaining frames is the glide itself. So the clearing a tick does
+        is reproduced here first, and only then is the gate asked.
+        """
+        view = self.viewport()
+        view._needs_repaint = False
+        view._needs_upload = False
+        assert not view._needs_frame(), "the viewport was already busy; test is blind"
+
+        view.glide_to(view.camera.view_pose("top"))
+        view._needs_repaint = False  # what tick() does at the end of every frame
+
+        assert view._glide is not None, "the glide ended before it began"
+        assert view._needs_frame(), (
+            "the loop went to sleep with a glide still in flight — the camera "
+            "would arrive in one jump whenever something unrelated woke it"
+        )
+
+    def test_it_arrives_exactly_where_it_was_sent(self):
+        view = self.viewport()
+        destination = view.camera.view_pose("top")
+
+        view.glide_to(destination)
+        frames = self.run_glide(view)
+
+        assert frames > 1, "the glide finished in one frame — that is a cut"
+        assert view._glide is None
+        assert view.camera.pose() == destination
+
+    def test_it_takes_the_scenic_route_rather_than_jumping(self):
+        """Content, not "something changed": the middle must be in between."""
+        view = self.viewport()
+        view.camera.snap_view("front")
+        start = view.camera.pitch
+        view.glide_to(view.camera.view_pose("top"))
+
+        view._glide.elapsed = GLIDE_SECONDS * 0.5
+        pose, done = view._glide.at(GLIDE_SECONDS)
+
+        assert not done
+        assert start < pose.pitch < 90.0, "the camera was not partway between"
+
+    def test_a_glide_to_where_the_camera_already_is_does_nothing(self):
+        """A zero-length move still costs a fifth of a second of repainting."""
+        view = self.viewport()
+        view._needs_repaint = False
+        view._needs_upload = False
+
+        view.glide_to(view.camera.pose())
+
+        assert view._glide is None
+        assert not view._needs_frame()
+
+    def test_the_hand_outranks_the_glide(self):
+        """A glide still running under a drag fights the mouse for its duration."""
+        view = self.viewport()
+        view.glide_to(view.camera.view_pose("back"))
+        assert view._glide is not None
+
+        press(view, 4, 4)
+
+        assert view._glide is None, "the press did not stand the glide down"
+
+    def test_a_second_glide_departs_from_where_the_first_reached(self):
+        """Mashing two views reads as one change of mind, not as a queue."""
+        view = self.viewport()
+        view.glide_to(view.camera.view_pose("top"))
+        view._glide.elapsed = GLIDE_SECONDS * 0.5
+        view.camera.set_pose(view._glide.at(GLIDE_SECONDS)[0])
+        midway = view.camera.pose()
+
+        view.glide_to(view.camera.view_pose("front"))
+
+        assert view._glide.start == midway
+
+    def test_framing_cuts_unless_it_is_asked_not_to(self):
+        """Five of six framing callers are content changing underneath you."""
+        view = self.viewport()
+        view.camera.distance = 40.0
+
+        view.frame_all()
+        assert view._glide is None, "a plain frame_all animated"
+        cut_to = view.camera.pose()
+
+        view.camera.distance = 40.0
+        view.frame_all(animate=True)
+        assert view._glide is not None, "frame_all(animate=True) cut"
+        assert view.camera.pose().distance == 40.0, "an animated frame jumped first"
+        self.run_glide(view)
+        assert view.camera.pose().distance == pytest.approx(cut_to.distance)
+
+    def test_a_room_cut_never_eases(self):
+        """Two rooms share no landmark; easing between them asserts a lie."""
+        document = document_with(worm())
+        view = self.viewport(document)
+        meadow = document.add_room(Room(name="meadow"))
+        meadow.body.add_chunk("m0", (9.0, 1.0, 0.0), radius=0.3)
+
+        document.set_active_room(meadow)
+
+        assert view._glide is None, "the room cut animated across two spaces"

@@ -13,11 +13,14 @@ import numpy as np
 import pytest
 
 from mesh_xml.render.gl.camera import (
+    AXIS_VIEWS,
     MAX_DISTANCE,
     MIN_DISTANCE,
     ORBIT_DEGREES_PER_PIXEL,
     PITCH_LIMIT,
+    CameraPose,
     OrbitCamera,
+    blend_poses,
     viewport_aspect,
 )
 
@@ -474,3 +477,104 @@ class TestPose:
         camera.set_pose(framed.pose())
 
         assert camera.distance == 80.0
+
+
+class TestBlendPoses:
+    """The two places a camera move is not a straight lerp.
+
+    Both exist because the parameters are not the quantities they look like:
+    yaw is an angle on a circle, and distance is a zoom. Interpolating either
+    the obvious way produces a move that is arithmetically correct and reads
+    as a bug.
+    """
+
+    @staticmethod
+    def pose(distance=10.0, yaw=0.0, pitch=0.0, target=(0.0, 0.0, 0.0)):
+        return CameraPose(distance=distance, yaw=yaw, pitch=pitch, target=target)
+
+    def test_the_endpoints_are_exact(self):
+        """A glide's last frame is the view that was asked for, not near it."""
+        start = self.pose(distance=4.0, yaw=10.0, pitch=-5.0, target=(1.0, 2.0, 3.0))
+        end = self.pose(distance=9.0, yaw=200.0, pitch=40.0, target=(-1.0, 0.5, 8.0))
+
+        assert blend_poses(start, end, 0.0) == start
+        landed = blend_poses(start, end, 1.0)
+        assert landed.distance == pytest.approx(end.distance)
+        assert landed.pitch == pytest.approx(end.pitch)
+        assert landed.target == pytest.approx(end.target)
+        # Yaw lands on an equivalent angle rather than the same number: the
+        # shortest arc from 10 to 200 runs backwards through -160.
+        assert math.cos(math.radians(landed.yaw)) == pytest.approx(
+            math.cos(math.radians(end.yaw)), abs=1e-9
+        )
+        assert math.sin(math.radians(landed.yaw)) == pytest.approx(
+            math.sin(math.radians(end.yaw)), abs=1e-9
+        )
+
+    def test_yaw_takes_the_short_way_round(self):
+        """170 to -170 is twenty degrees, not three hundred and forty.
+
+        The long way is what an unwrapped lerp does, and it whips the camera
+        past the back of the subject to arrive one notch over.
+        """
+        start, end = self.pose(yaw=170.0), self.pose(yaw=-170.0)
+
+        swept = abs(blend_poses(start, end, 1.0).yaw - start.yaw)
+        assert swept == pytest.approx(20.0)
+        assert abs(blend_poses(start, end, 0.5).yaw) == pytest.approx(180.0)
+
+    def test_yaw_never_sweeps_more_than_half_a_turn(self):
+        for a in range(-360, 361, 15):
+            for b in range(-360, 361, 15):
+                start, end = self.pose(yaw=float(a)), self.pose(yaw=float(b))
+                swept = abs(blend_poses(start, end, 1.0).yaw - start.yaw)
+                assert swept <= 180.0 + 1e-9, f"{a} to {b} went the long way"
+
+    def test_distance_interpolates_geometrically(self):
+        """Halfway from 2 to 200 is 20, not 101.
+
+        Zoom is multiplicative: on the linear path the camera is still above
+        a hundred units out at the midpoint, so a fit-to-creature from far
+        away appears to hang in space and then arrive all at once.
+        """
+        start, end = self.pose(distance=2.0), self.pose(distance=200.0)
+
+        assert blend_poses(start, end, 0.5).distance == pytest.approx(20.0)
+
+    def test_a_zero_distance_falls_back_instead_of_raising(self):
+        """A camera has no business throwing from inside a frame loop."""
+        start, end = self.pose(distance=0.0), self.pose(distance=10.0)
+
+        assert blend_poses(start, end, 0.5).distance == pytest.approx(5.0)
+
+    def test_t_is_clamped_to_the_journey(self):
+        start, end = self.pose(yaw=0.0), self.pose(yaw=90.0)
+
+        assert blend_poses(start, end, -1.0) == start
+        assert blend_poses(start, end, 2.0).yaw == pytest.approx(90.0)
+
+    def test_the_target_walks_a_straight_line(self):
+        start = self.pose(target=(0.0, 0.0, 0.0))
+        end = self.pose(target=(2.0, -4.0, 6.0))
+
+        assert blend_poses(start, end, 0.25).target == pytest.approx((0.5, -1.0, 1.5))
+
+
+class TestViewPose:
+    def test_it_reports_where_snap_view_would_land(self):
+        """One owner for the axis table: the travelling caller asks it too."""
+        for view in AXIS_VIEWS:
+            camera = OrbitCamera(distance=7.0, yaw=33.0, pitch=12.0, target=(1.0, 2.0, 3.0))
+            destination = camera.view_pose(view)
+            camera.snap_view(view)
+            assert camera.pose() == destination
+
+    def test_it_keeps_the_framing_the_author_chose(self):
+        camera = OrbitCamera(distance=7.0, yaw=33.0, pitch=12.0, target=(1.0, 2.0, 3.0))
+        pose = camera.view_pose("top")
+        assert pose.distance == 7.0
+        assert pose.target == (1.0, 2.0, 3.0)
+
+    def test_an_unknown_view_is_refused(self):
+        with pytest.raises(ValueError, match="unknown view"):
+            OrbitCamera().view_pose("sideways")
