@@ -124,6 +124,29 @@ LINK_WIDTH = 1.4
 CHUNK_RADIUS_PX = 3.0
 SELECTED_RADIUS_PX = 6.5
 
+#: Half-edge of the square a pinned chunk draws instead of a dot. Half again
+#: the dot's radius, because at parity the square read as "a slightly bigger
+#: dot" and the two have to separate at a glance, not on inspection. Filled
+#: rather than outlined on purpose: these marks are drawn over the creature as
+#: often as over the backdrop, and an outline is mostly background — the one
+#: mark that must survive a pale flank is the one saying this chunk is held.
+PINNED_HALF_PX = 4.4
+
+
+def _mark(painter: QPainter, centre: QPointF, half: float, square: bool) -> None:
+    """Draw one overlay mark: a square for a held chunk, a circle otherwise.
+
+    Both the filled mark and the selection ring go through here, so the ring
+    always takes the shape of the thing it is ringing.
+    """
+    if square:
+        painter.drawRect(
+            QRectF(centre.x() - half, centre.y() - half, half * 2.0, half * 2.0)
+        )
+    else:
+        painter.drawEllipse(centre, half, half)
+
+
 #: Orientation gizmo layout, in device-independent pixels from the top-right
 #: corner. The handle radius doubles as the click target's core; the hit test
 #: pads it slightly.
@@ -1031,18 +1054,34 @@ class MetaballViewport(RaymarchView):
                 )
 
         selection = self._document.selection
+        # Read off ``inv_mass`` rather than off each chunk's ``pinned`` flag,
+        # because that array is the same one every world pass masks against —
+        # so the mark and the physics cannot disagree about what is held.
+        pinned = body.inv_mass == 0.0
         for slot in range(body.n_chunks):
             if not visible[slot]:
                 continue
             centre = QPointF(*screen[slot].tolist())
             selected = body.id_at(slot) in selection
+            # Shape says what a chunk *is*, colour says whether it is chosen.
+            # Keeping those on separate axes is what lets a pinned chunk also
+            # be selected without either mark having to give way — and a pin
+            # needs a mark of its own, because a pin outranks the world: the
+            # floor and the terrain both skip it, so a held chunk dragged
+            # underground stays there, and nothing on screen said why.
+            held = bool(pinned[slot])
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(SELECTED_COLOUR if selected else CHUNK_COLOUR)
-            painter.drawEllipse(centre, CHUNK_RADIUS_PX, CHUNK_RADIUS_PX)
+            _mark(painter, centre, PINNED_HALF_PX if held else CHUNK_RADIUS_PX, held)
             if selected:
+                # The ring takes the mark's own shape rather than always being
+                # a circle: a square inside a circle of this size puts its
+                # corners a quarter-pixel off the ring and the pair reads as
+                # one blob. Nesting like with like keeps the gap that says
+                # these are two marks.
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.setPen(QPen(SELECTED_COLOUR, LINK_WIDTH + 0.4))
-                painter.drawEllipse(centre, SELECTED_RADIUS_PX, SELECTED_RADIUS_PX)
+                _mark(painter, centre, SELECTED_RADIUS_PX, held)
 
     def _restore_gl_state(self) -> None:
         from OpenGL.GL import (
